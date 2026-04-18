@@ -107,16 +107,16 @@ export default function MultiCalendarPanel() {
     price: 0
   });
 
-  useEffect(() => {
-    try {
-      const email = getActiveTenantEmail();
-      if (!email) return;
-      fetch(`/api/bookings?email=${encodeURIComponent(email)}`)
-        .then((r) => r.json())
-        .then((data) => { if (data.properties?.length) setProperties(data.properties); })
-        .catch(() => {});
-    } catch {}
-  }, []);
+  const loadData = () => {
+    const email = getActiveTenantEmail();
+    if (!email) return;
+    fetch(`/api/bookings?email=${encodeURIComponent(email)}`)
+      .then((r) => r.json())
+      .then((data) => { if (data.properties?.length) setProperties(data.properties); })
+      .catch(() => {});
+  };
+
+  useEffect(() => { loadData(); }, []);
 
   // Pago de servicios extras
   const [isChargeOpen, setIsChargeOpen] = useState(false);
@@ -150,57 +150,51 @@ export default function MultiCalendarPanel() {
       });
       const data = await res.json();
       if (data.ok) {
-        // Optimistically add block to local state
-        setProperties(prev => prev.map(p =>
-          p.id.toString() === blockForm.propertyId
-            ? { ...p, bookings: [...p.bookings, { id: data.id, guest: "Bloqueado", start: blockForm.start, end: blockForm.end, status: "blocked", channel: "block" }] }
-            : p
-        ));
         setIsBlockOpen(false);
         setBlockForm({ propertyId: "", start: "", end: "", note: "" });
+        loadData();
       }
     } catch {}
     setSavingBlock(false);
   };
 
-  const handleCreateBooking = () => {
+  const [savingBooking, setSavingBooking] = useState(false);
+
+  const handleCreateBooking = async () => {
     if (!newBooking.guest || !newBooking.start || !newBooking.end) return;
-    
-    setProperties(prev => prev.map(p => {
-      if (p.id.toString() === newBooking.propertyId) {
-        return {
-          ...p,
-          bookings: [
-            ...p.bookings,
-            {
-              id: `b${Date.now()}`,
-              guest: newBooking.guest,
-              start: newBooking.start,
-              end: newBooking.end,
-              status: newBooking.status,
-              channel: newBooking.channel,
-              price: newBooking.price
-            }
-          ]
-        };
+    setSavingBooking(true);
+    try {
+      const email = getActiveTenantEmail();
+      const res = await fetch("/api/bookings", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          propertyId: newBooking.propertyId,
+          tenantEmail: email,
+          checkIn: newBooking.start,
+          checkOut: newBooking.end,
+          guestName: newBooking.guest,
+          guestPhone: newBooking.telefono || null,
+          guestDoc: newBooking.docIdentidad || null,
+          guestNationality: newBooking.nacionalidad || null,
+          source: newBooking.channel,
+          numGuests: newBooking.numHuespedes,
+          totalPrice: newBooking.price,
+        }),
+      });
+      const data = await res.json();
+      if (data.ok) {
+        setIsNewBookingOpen(false);
+        setNewBooking({ propertyId: "1", guest: "", docIdentidad: "", nacionalidad: "", telefono: "", numHuespedes: 2, start: "", end: "", channel: "direct", status: "confirmed", price: 0 });
+        loadData();
       }
-      return p;
-    }));
-    
-    setIsNewBookingOpen(false);
-    setNewBooking({
-      propertyId: "1",
-      guest: "",
-      docIdentidad: "",
-      nacionalidad: "",
-      telefono: "",
-      numHuespedes: 2,
-      start: "",
-      end: "",
-      channel: "direct",
-      status: "confirmed",
-      price: 0
-    });
+    } catch {}
+    setSavingBooking(false);
+  };
+
+  const handleDeleteBooking = async (bookingId: string) => {
+    await fetch(`/api/bookings?bookingId=${bookingId}`, { method: "DELETE" });
+    loadData();
   };
   const daysToShow = 21; // Mostrar 3 semanas
 
@@ -478,7 +472,7 @@ export default function MultiCalendarPanel() {
 
               <div className="px-6 py-4 bg-muted/10 border-t flex gap-3 mt-auto">
                 <Button variant="outline" className="flex-1 h-12 rounded-xl" onClick={() => setIsNewBookingOpen(false)}>Cancelar</Button>
-                <Button className="gradient-primary text-white font-bold flex-[1.5] h-12 rounded-xl" onClick={handleCreateBooking}>Crear Registro</Button>
+                <Button className="gradient-primary text-white font-bold flex-[1.5] h-12 rounded-xl" onClick={handleCreateBooking} disabled={savingBooking}>{savingBooking ? "Guardando..." : "Crear Registro"}</Button>
               </div>
             </SheetContent>
 
@@ -648,13 +642,23 @@ export default function MultiCalendarPanel() {
                             <span className="text-emerald-600 dark:text-emerald-400">${property.price * Math.max(1, Math.ceil((new Date(booking.end).getTime() - new Date(booking.start).getTime()) / (1000 * 3600 * 24)))}</span>
                           </div>
 
-                          <Button 
-                            className="w-full bg-[#635BFF] hover:bg-[#524be3] text-white text-[11px] font-black h-9 rounded-xl gap-2 shadow-lg shadow-blue-500/10"
-                            onClick={() => openChargeDrawer(booking, property.name)}
-                          >
-                            <DollarSign className="w-3.5 h-3.5" />
-                            COBRAR EXTRA
-                          </Button>
+                          <div className="flex gap-2">
+                            <Button
+                              className="flex-1 bg-[#635BFF] hover:bg-[#524be3] text-white text-[11px] font-black h-9 rounded-xl gap-2 shadow-lg shadow-blue-500/10"
+                              onClick={() => openChargeDrawer(booking, property.name)}
+                            >
+                              <DollarSign className="w-3.5 h-3.5" />
+                              COBRAR EXTRA
+                            </Button>
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              className="h-9 px-3 rounded-xl border-red-200 text-red-500 hover:bg-red-50 hover:text-red-600 text-[11px] font-black"
+                              onClick={() => handleDeleteBooking(booking.id)}
+                            >
+                              Eliminar
+                            </Button>
+                          </div>
                         </PopoverContent>
                         </PopoverPrimitive.Portal>
                       </Popover>

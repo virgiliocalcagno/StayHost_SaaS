@@ -5,7 +5,12 @@ import { supabaseAdmin } from "@/lib/supabase/server";
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
-    const { propertyId, tenantEmail, checkIn, checkOut, guestName, source, note } = body;
+    const {
+      propertyId, tenantEmail, checkIn, checkOut,
+      guestName, guestPhone, guestDoc, guestNationality,
+      source, note, numGuests, totalPrice,
+    } = body;
+
     if (!propertyId || !tenantEmail || !checkIn || !checkOut) {
       return NextResponse.json({ error: "propertyId, tenantEmail, checkIn, checkOut required" }, { status: 400 });
     }
@@ -18,16 +23,23 @@ export async function POST(req: NextRequest) {
 
     if (!tenant) return NextResponse.json({ error: "Tenant not found" }, { status: 404 });
 
+    const isBlock = source === "block";
+
     const { data, error } = await supabaseAdmin.from("bookings").insert({
       property_id: propertyId,
       tenant_id: (tenant as any).id,
       source_uid: `manual-${Date.now()}`,
       source: source ?? "manual",
-      guest_name: guestName ?? (source === "block" ? "Bloqueado" : "Huésped"),
+      guest_name: guestName ?? (isBlock ? "Bloqueado" : "Huésped"),
+      guest_phone: guestPhone ?? null,
+      guest_doc: guestDoc ?? null,
+      guest_nationality: guestNationality ?? null,
       check_in: checkIn,
       check_out: checkOut,
-      status: source === "block" ? "blocked" : "confirmed",
-      booking_url: note ?? null,
+      status: isBlock ? "blocked" : "confirmed",
+      total_price: totalPrice ?? 0,
+      num_guests: numGuests ?? 1,
+      note: note ?? null,
     } as any).select("id").single();
 
     if (error) return NextResponse.json({ error: error.message }, { status: 500 });
@@ -61,35 +73,46 @@ export async function GET(req: NextRequest) {
 
   const { data: props } = await supabaseAdmin
     .from("properties")
-    .select("id, name, address")
+    .select("id, name, address, price, ical_airbnb, ical_vrbo")
     .eq("tenant_id", (tenant as any).id);
 
   if (!props?.length) return NextResponse.json({ properties: [] });
 
   const { data: bookings } = await supabaseAdmin
     .from("bookings")
-    .select("id, property_id, guest_name, guest_phone, check_in, check_out, status, source, booking_url, source_uid")
-    .in("property_id", (props as any[]).map((p) => p.id));
+    .select("id, property_id, guest_name, guest_phone, guest_doc, guest_nationality, check_in, check_out, status, source, booking_url, source_uid, total_price, num_guests, note")
+    .in("property_id", (props as any[]).map((p) => p.id))
+    .neq("status", "cancelled");
 
-  const result = (props as any[]).map((prop) => ({
-    id: prop.id,
-    name: prop.name,
-    address: prop.address ?? "",
-    bookings: ((bookings ?? []) as any[])
-      .filter((b) => b.property_id === prop.id)
-      .map((b) => ({
-        id: b.id,
-        guest: b.guest_name,
-        phone: b.guest_phone ?? null,
-        phone4: b.guest_phone ? b.guest_phone.replace(/\D/g, "").slice(-4) : null,
-        start: b.check_in,
-        end: b.check_out,
-        status: b.status,
-        channel: b.source,
-        bookingUrl: b.booking_url ?? null,
-        sourceUid: b.source_uid ?? null,
-      })),
-  }));
+  const result = (props as any[]).map((prop) => {
+    const channel = prop.ical_airbnb ? "airbnb" : prop.ical_vrbo ? "vrbo" : "direct";
+    return {
+      id: prop.id,
+      name: prop.name,
+      address: prop.address ?? "",
+      price: prop.price ?? 0,
+      channel,
+      bookings: ((bookings ?? []) as any[])
+        .filter((b) => b.property_id === prop.id)
+        .map((b) => ({
+          id: b.id,
+          guest: b.guest_name,
+          phone: b.guest_phone ?? null,
+          phone4: b.guest_phone ? b.guest_phone.replace(/\D/g, "").slice(-4) : null,
+          guestDoc: b.guest_doc ?? null,
+          guestNationality: b.guest_nationality ?? null,
+          start: b.check_in,
+          end: b.check_out,
+          status: b.status,
+          channel: b.source,
+          bookingUrl: b.booking_url ?? null,
+          sourceUid: b.source_uid ?? null,
+          totalPrice: b.total_price ?? 0,
+          numGuests: b.num_guests ?? 1,
+          note: b.note ?? null,
+        })),
+    };
+  });
 
   return NextResponse.json({ properties: result });
 }
