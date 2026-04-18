@@ -24,7 +24,7 @@ import {
   Globe,
   Phone
 } from "lucide-react";
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import { cn } from "@/lib/utils";
 import { Sheet, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
 import { Label } from "@/components/ui/label";
@@ -102,11 +102,23 @@ export default function MultiCalendarPanel() {
     price: 0
   });
 
+  useEffect(() => {
+    try {
+      const session = localStorage.getItem("stayhost_session");
+      const email = session ? JSON.parse(session).email : null;
+      if (!email) return;
+      fetch(`/api/bookings?email=${encodeURIComponent(email)}`)
+        .then((r) => r.json())
+        .then((data) => { if (data.properties?.length) setProperties(data.properties); })
+        .catch(() => {});
+    } catch {}
+  }, []);
+
   // Pago de servicios extras
   const [isChargeOpen, setIsChargeOpen] = useState(false);
   const [selectedBookingForCharge, setSelectedBookingForCharge] = useState<{id: string, guest: string, property: string} | null>(null);
 
-  const openChargeDrawer = (booking: any, propertyName: string) => {
+  const openChargeDrawer = (booking: { id: string; guest: string }, propertyName: string) => {
     setSelectedBookingForCharge({
       id: booking.id,
       guest: booking.guest,

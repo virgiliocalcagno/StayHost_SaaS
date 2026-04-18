@@ -459,11 +459,11 @@ export default function PropertiesPanel() {
         });
         if (syncRes.ok) {
           // Then import iCal bookings
-          const { id: tenantId } = await syncRes.json().catch(() => ({}));
+          const syncData = await syncRes.json().catch(() => ({}));
           await fetch("/api/ical/import", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ propertyId: editingProperty.id, tenantId }),
+            body: JSON.stringify({ propertyId: editingProperty.id, tenantId: syncData.tenant_id }),
           });
         }
       }

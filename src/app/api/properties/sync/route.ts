@@ -12,15 +12,16 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "property.id and tenantEmail required" }, { status: 400 });
     }
 
-    // Resolve tenant by email
-    const { data: tenant } = await supabaseAdmin
+    // Upsert tenant by email (creates if not exists)
+    const { data: tenant, error: tenantErr } = await supabaseAdmin
       .from("tenants")
+      .upsert({ email: tenantEmail }, { onConflict: "email" })
       .select("id")
-      .eq("email", tenantEmail)
       .single();
 
-    if (!tenant) {
-      return NextResponse.json({ error: "Tenant not found" }, { status: 404 });
+    if (tenantErr || !tenant) {
+      console.error("[properties/sync] tenant upsert failed", tenantErr);
+      return NextResponse.json({ error: "Could not resolve tenant" }, { status: 500 });
     }
 
     // Extract iCal URLs from channels array
@@ -52,7 +53,7 @@ export async function POST(req: NextRequest) {
     }
 
     // Return the ical_token so the frontend can show the blocking URL
-    return NextResponse.json({ ok: true, id: data.id, ical_token: data.ical_token });
+    return NextResponse.json({ ok: true, id: data.id, tenant_id: tenant.id, ical_token: data.ical_token });
   } catch (err) {
     console.error("[properties/sync]", err);
     return NextResponse.json({ error: "Internal error" }, { status: 500 });
