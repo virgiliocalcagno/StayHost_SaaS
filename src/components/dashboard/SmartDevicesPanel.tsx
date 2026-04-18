@@ -1575,35 +1575,16 @@ export default function SmartDevicesPanel() {
                 {selectedProvider === 'ttlock' ? (
                   <div className="space-y-3">
                     <div className="space-y-1.5">
-                      <Label className="text-xs font-bold">Client ID <span className="text-muted-foreground font-normal">(Open Platform)</span></Label>
+                      <Label className="text-xs font-bold">Email / Usuario</Label>
                       <Input
-                        placeholder="14cd5571cd874538afe52406a89da19c"
-                        className="rounded-xl h-11 font-mono text-sm"
-                        value={integrations.ttlock.clientId}
-                        onChange={e => setIntegrations(prev => ({ ...prev, ttlock: { ...prev.ttlock, clientId: e.target.value } }))}
-                      />
-                    </div>
-                    <div className="space-y-1.5">
-                      <Label className="text-xs font-bold">Client Secret</Label>
-                      <Input
-                        type="password"
-                        placeholder="••••••••••••••••"
-                        className="rounded-xl h-11 font-mono text-sm"
-                        value={integrations.ttlock.clientSecret}
-                        onChange={e => setIntegrations(prev => ({ ...prev, ttlock: { ...prev.ttlock, clientSecret: e.target.value } }))}
-                      />
-                    </div>
-                    <div className="space-y-1.5">
-                      <Label className="text-xs font-bold">Email / Usuario <span className="text-muted-foreground font-normal">(App TTLock)</span></Label>
-                      <Input
-                        placeholder="+119417992044"
+                        placeholder="+1 809 000 0000"
                         className="rounded-xl h-11"
                         value={integrations.ttlock.username}
                         onChange={e => setIntegrations(prev => ({ ...prev, ttlock: { ...prev.ttlock, username: e.target.value } }))}
                       />
                     </div>
                     <div className="space-y-1.5">
-                      <Label className="text-xs font-bold">Contraseña <span className="text-muted-foreground font-normal">(App TTLock)</span></Label>
+                      <Label className="text-xs font-bold">Contraseña</Label>
                       <Input
                         type="password"
                         placeholder="••••••••"
@@ -1675,39 +1656,31 @@ export default function SmartDevicesPanel() {
                       setImporting(true);
                       try {
                         if (selectedProvider === 'ttlock') {
-                          // Call TTLock API to get token
+                          // Credentials come from server env vars — only send user/pass
                           const res = await fetch("/api/ttlock", {
                             method: "POST",
                             headers: { "Content-Type": "application/json" },
-                            body: JSON.stringify({ 
-                              action: "getToken", 
-                              username: integrations.ttlock.username, 
+                            body: JSON.stringify({
+                              action: "getToken",
+                              username: integrations.ttlock.username,
                               password: integrations.ttlock.password,
-                              credentials: {
-                                clientId: integrations.ttlock.clientId,
-                                clientSecret: integrations.ttlock.clientSecret
-                              }
                             })
                           });
                           const data = await res.json();
                           if (data.errcode && data.errcode !== 0) throw new Error(data.errmsg || "Error de autenticación");
                           if (data.error) throw new Error(data.error_description || data.error);
-                          
+
                           const token = data.access_token;
                           setIntegrations(prev => ({ ...prev, ttlock: { ...prev.ttlock, accessToken: token } }));
-                          
+
                           setImportStep('discovery');
-                          
+
                           const listRes = await fetch("/api/ttlock", {
                             method: "POST",
                             headers: { "Content-Type": "application/json" },
-                            body: JSON.stringify({ 
-                              action: "listLocks", 
+                            body: JSON.stringify({
+                              action: "listLocks",
                               accessToken: token,
-                              credentials: {
-                                clientId: integrations.ttlock.clientId,
-                                clientSecret: integrations.ttlock.clientSecret
-                              }
                             })
                           });
                           const listData = await listRes.json();
