@@ -354,6 +354,58 @@ export default function PropertiesPanel() {
   useEffect(() => {
     localStorage.setItem("stayhost_properties", JSON.stringify(properties));
   }, [properties]);
+
+  // Load from Supabase when localStorage is empty (run once on mount)
+  useEffect(() => {
+    if (properties.length > 0) return;
+    try {
+      const session = localStorage.getItem("stayhost_session");
+      const email = (session ? JSON.parse(session).email : null)
+        || localStorage.getItem("stayhost_owner_email");
+      if (!email) return;
+      fetch(`/api/properties?email=${encodeURIComponent(email)}`)
+        .then(r => r.json())
+        .then(data => {
+          if (!data.properties?.length) return;
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const restored: Property[] = data.properties.map((p: any) => ({
+            id: p.id,
+            name: p.name,
+            address: p.address ?? "",
+            city: "",
+            image: p.cover_image ?? "",
+            type: "apartment" as const,
+            price: 0,
+            currency: "USD",
+            rating: 0,
+            reviews: 0,
+            beds: 1,
+            baths: 1,
+            maxGuests: 2,
+            status: "active" as const,
+            bookingStatus: "available" as const,
+            occupancy: 0,
+            monthlyRevenue: 0,
+            ownerPayout: 0,
+            staffPay: 0,
+            amenities: [],
+            channels: [
+              { name: "Airbnb", connected: !!p.ical_airbnb, color: "bg-rose-500", icon: "A", icalUrl: p.ical_airbnb ?? undefined },
+              { name: "Booking", connected: false, color: "bg-blue-600", icon: "B" },
+              { name: "VRBO", connected: !!p.ical_vrbo, color: "bg-indigo-500", icon: "V", icalUrl: p.ical_vrbo ?? undefined },
+              { name: "Directa", connected: false, color: "bg-emerald-500", icon: "D" },
+            ],
+            wifiSsid: p.wifi_name ?? undefined,
+            wifiPassword: p.wifi_password ?? undefined,
+            electricityEnabled: p.electricity_enabled ?? false,
+            electricityRate: p.electricity_rate ?? 0,
+            ttlockLockId: p.ttlock_lock_id ?? undefined,
+          }));
+          setProperties(restored);
+        })
+        .catch(() => {});
+    } catch {}
+  }, []);
   const [selectedProperty, setSelectedProperty] = useState<Property | null>(null);
 
   const [modalTab, setModalTab] = useState<"propiedad" | "photo-tour" | "amenidades" | "comercial" | "operativa">("propiedad");
