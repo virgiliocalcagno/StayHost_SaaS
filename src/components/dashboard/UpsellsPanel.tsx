@@ -157,11 +157,11 @@ const iconsMap: Record<string, React.ElementType> = {
 
 export default function UpsellsPanel() {
   const [upsells, setUpsells] = useState<UpsellProduct[]>(() => {
-    if (typeof window === "undefined") return defaultUpsells;
+    if (typeof window === "undefined") return [];
     try {
       const raw = localStorage.getItem("stayhost_upsells");
-      return raw ? JSON.parse(raw) : defaultUpsells;
-    } catch { return defaultUpsells; }
+      return raw ? JSON.parse(raw) : [];
+    } catch { return []; }
   });
   const [isSheetOpen, setIsSheetOpen] = useState(false);
   const [currentEditing, setCurrentEditing] = useState<UpsellProduct | null>(null);

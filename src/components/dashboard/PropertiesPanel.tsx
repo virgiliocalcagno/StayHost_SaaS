@@ -346,7 +346,7 @@ export default function PropertiesPanel() {
         try { return JSON.parse(saved); } catch { /* fall through */ }
       }
     }
-    return mockProperties;
+    return [];
   });
 
   // Persist to localStorage on change

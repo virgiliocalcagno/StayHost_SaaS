@@ -84,7 +84,7 @@ const ChannelIcon = ({ channel, className }: { channel?: string, className?: str
 };
 
 export default function MultiCalendarPanel() {
-  const [properties, setProperties] = useState(initialMockBookings);
+  const [properties, setProperties] = useState<typeof initialMockBookings>([]);
   const [currentDate, setCurrentDate] = useState(new Date()); 
   const [viewMode, setViewMode] = useState<"calendar" | "price">("calendar");
   const [isNewBookingOpen, setIsNewBookingOpen] = useState(false);

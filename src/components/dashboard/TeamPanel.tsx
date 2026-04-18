@@ -242,7 +242,7 @@ export default function TeamPanel() {
   const [editingMember, setEditingMember] = useState<TeamMember | null>(null);
   const [isClient, setIsClient] = useState(false);
   
-  const [team, setTeam] = useState<TeamMember[]>(mockTeam);
+  const [team, setTeam] = useState<TeamMember[]>([]);
 
   useEffect(() => {
     setIsClient(true);

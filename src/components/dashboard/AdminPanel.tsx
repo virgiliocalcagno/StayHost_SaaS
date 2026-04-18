@@ -32,13 +32,6 @@ interface Tenant {
 // ─── Static mock data ─────────────────────────────────────────────────────────
 
 const MOCK_TENANTS: Tenant[] = [
-  { id:"t1", name:"Carlos Medina",    email:"carlos@villamar.com",   company:"Villa Mar Group", plan:"Master",  mrr:179, properties:12, status:"active",    lastLogin:"Hace 2h"    },
-  { id:"t2", name:"María Sánchez",    email:"maria@luxuryrd.com",    company:"Luxury RD",        plan:"Growth",  mrr:79,  properties:4,  status:"active",    lastLogin:"Hace 1d"    },
-  { id:"t3", name:"Pedro González",   email:"pedro@casamar.com",     company:"Casa Mar",         plan:"Starter", mrr:29,  properties:2,  status:"active",    lastLogin:"Hace 3d"    },
-  { id:"t4", name:"Ana Rodríguez",    email:"ana@rentals.com",       company:undefined,          plan:"Trial",   mrr:0,   properties:1,  status:"trial",     lastLogin:"Hace 5h"    },
-  { id:"t5", name:"Roberto Ferreira", email:"roberto@paradise.com",  company:"Paradise Stays",   plan:"Master",  mrr:179, properties:23, status:"active",    lastLogin:"Hace 30min" },
-  { id:"t6", name:"Luisa Torres",     email:"luisa@colonial.com",    company:"Colonial Suites",  plan:"Growth",  mrr:79,  properties:6,  status:"active",    lastLogin:"Hace 2d"    },
-  { id:"t7", name:"Miguel Castro",    email:"miguel@beachfront.com", company:undefined,          plan:"Starter", mrr:29,  properties:1,  status:"suspended", lastLogin:"Hace 14d"   },
 ];
 
 const MRR_TREND = [
