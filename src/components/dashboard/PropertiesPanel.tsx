@@ -449,7 +449,8 @@ export default function PropertiesPanel() {
     setSyncingChannel(channelName);
     try {
       const session = localStorage.getItem("stayhost_session");
-      const email = session ? JSON.parse(session).email : null;
+      const email = (session ? JSON.parse(session).email : null)
+        || localStorage.getItem("stayhost_owner_email");
       if (email) {
         // Ensure property exists in Supabase first
         const syncRes = await fetch("/api/properties/sync", {
