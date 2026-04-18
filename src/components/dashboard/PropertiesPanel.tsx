@@ -370,8 +370,8 @@ export default function PropertiesPanel() {
           return {
             id: p.id,
             name: p.name,
-            address: p.address ?? "",
-            city: local?.city ?? "",
+            address: p.address ?? local?.address ?? "",
+            city: p.city ?? local?.city ?? "",
             image: p.cover_image ?? local?.image ?? "",
             type: local?.type ?? ("apartment" as const),
             price: local?.price ?? 0,

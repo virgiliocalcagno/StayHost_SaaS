@@ -16,7 +16,7 @@ export async function GET(req: NextRequest) {
 
   const { data: props } = await supabaseAdmin
     .from("properties")
-    .select("id, name, address, cover_image, ical_airbnb, ical_vrbo, wifi_name, wifi_password, electricity_enabled, electricity_rate, ttlock_lock_id, created_at")
+    .select("id, name, address, city, cover_image, ical_airbnb, ical_vrbo, wifi_name, wifi_password, electricity_enabled, electricity_rate, ttlock_lock_id, created_at")
     .eq("tenant_id", (tenant as any).id);
 
   return NextResponse.json({ properties: (props ?? []) as any[] });

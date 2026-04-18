@@ -35,6 +35,7 @@ export async function POST(req: NextRequest) {
           tenant_id: (tenant as any).id,
           name: property.name,
           address: property.address ?? null,
+          city: property.city ?? null,
           cover_image: property.image ?? null,
           ical_airbnb,
           ical_vrbo,
