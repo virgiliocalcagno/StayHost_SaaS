@@ -41,32 +41,42 @@ export async function GET(req: NextRequest) {
     ((storedTasks ?? []) as any[]).map((t: any) => t.booking_id).filter(Boolean)
   );
 
-  // Load upcoming/recent bookings to auto-generate tasks
+  // Load ALL bookings (not just checkouts) to cross-reference entries
   const today = new Date();
-  today.setDate(today.getDate() - 7);
+  today.setDate(today.getDate() - 14); // Wider range for duration calcs
   const cutoff = today.toISOString().split("T")[0];
 
   const { data: bookings } = await supabaseAdmin
     .from("bookings")
-    .select("id, property_id, guest_name, check_in, check_out, source")
+    .select("id, property_id, guest_name, check_in, check_out, source, guests_count")
     .in("property_id", propIds)
     .gte("check_out", cutoff)
     .neq("status", "cancelled")
     .neq("source", "block");
 
-  // Auto-create tasks for bookings that don't have one yet
-  const newTasks: any[] = [];
+  // Map bookings by property for fast lookup
   const bookingsByProp: Record<string, any[]> = {};
   for (const b of (bookings ?? []) as any[]) {
     if (!bookingsByProp[b.property_id]) bookingsByProp[b.property_id] = [];
     bookingsByProp[b.property_id].push(b);
   }
 
+  // Auto-create tasks for bookings that don't have one yet
+  const newTasks: any[] = [];
   for (const b of (bookings ?? []) as any[]) {
     const taskId = `booking-${b.id}`;
     if (existingBookingIds.has(b.id)) continue;
+
     const propBookings = bookingsByProp[b.property_id] ?? [];
-    const isBackToBack = propBookings.some((o: any) => o.id !== b.id && o.check_in === b.check_out);
+    const arrivingBooking = propBookings.find((o: any) => o.id !== b.id && o.check_in === b.check_out);
+    const isBackToBack = !!arrivingBooking;
+    const isVacant = !isBackToBack;
+
+    // Calculate nights
+    const outDate = new Date(b.check_out);
+    const inDate = new Date(b.check_in);
+    const nights = Math.ceil((outDate.getTime() - inDate.getTime()) / (1000 * 60 * 60 * 24));
+
     newTasks.push({
       id: taskId,
       property_id: b.property_id,
@@ -77,7 +87,13 @@ export async function GET(req: NextRequest) {
       status: "pending",
       priority: isBackToBack ? "critical" : "medium",
       is_back_to_back: isBackToBack,
+      is_vacant: isVacant,
       guest_name: b.guest_name ?? "Huésped",
+      guest_count: b.guests_count ?? null,
+      stay_duration: nights,
+      // Metadata enrichment from the arriving guest
+      arriving_guest_name: arrivingBooking?.guest_name ?? null,
+      arriving_guest_count: arrivingBooking?.guests_count ?? null,
       checklist_items: [
         { id: "c1", label: "Cambiar sábanas y toallas", done: false, type: "general" },
         { id: "c2", label: "Limpieza general", done: false, type: "general" },
@@ -127,7 +143,9 @@ export async function GET(req: NextRequest) {
       declinedByIds: t.declined_by_ids ?? [],
       acceptanceStatus: (t.status === "accepted" ? "accepted" : t.status === "rejected" ? "declined" : "pending") as any,
       standardInstructions: prop.standard_instructions ?? undefined,
-      stayDuration: 2,
+      stayDuration: t.stay_duration ?? 2,
+      arrivingGuestName: t.arriving_guest_name ?? undefined,
+      arrivingGuestCount: t.arriving_guest_count ?? undefined,
     };
   });
 

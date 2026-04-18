@@ -13,9 +13,10 @@ async function ttlockRequest(
   path: string,
   params: Record<string, unknown>,
   accessToken?: string,
+  credentials?: { clientId?: string; clientSecret?: string }
 ) {
-  const clientId = process.env.TTLOCK_CLIENT_ID;
-  if (!clientId) throw new Error("TTLOCK_CLIENT_ID not configured in environment");
+  const clientId = credentials?.clientId || process.env.TTLOCK_CLIENT_ID;
+  if (!clientId) throw new Error("TTLOCK_CLIENT_ID not configured");
 
   const base: Record<string, unknown> = { clientId, accessToken, date: Date.now(), ...params };
   const url = new URL(`${TTLOCK_BASE}${path}`);
@@ -38,10 +39,10 @@ async function ttlockRequest(
   })).json();
 }
 
-async function getAccessToken(username: string, password: string) {
-  const clientId = process.env.TTLOCK_CLIENT_ID;
-  const clientSecret = process.env.TTLOCK_CLIENT_SECRET;
-  if (!clientId || !clientSecret) throw new Error("TTLock credentials not configured in environment");
+async function getAccessToken(username: string, password: string, credentials?: { clientId?: string; clientSecret?: string }) {
+  const clientId = credentials?.clientId || process.env.TTLOCK_CLIENT_ID;
+  const clientSecret = credentials?.clientSecret || process.env.TTLOCK_CLIENT_SECRET;
+  if (!clientId || !clientSecret) throw new Error("TTLock credentials not configured");
 
   const body = new URLSearchParams({
     client_id: clientId,
@@ -61,10 +62,13 @@ async function getAccessToken(username: string, password: string) {
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json() as Record<string, unknown>;
-    const { action, accessToken, ...params } = body;
+    const { action, accessToken, credentials: creds, ...params } = body;
+    const credentials = creds as { clientId?: string; clientSecret?: string };
 
-    // Demo mode when env vars not configured
-    if (!process.env.TTLOCK_CLIENT_ID) {
+    const clientId = credentials?.clientId || process.env.TTLOCK_CLIENT_ID;
+
+    // Demo mode when no credentials provided and environment variable is also missing
+    if (!clientId) {
       return NextResponse.json({
         mock: true,
         message: "TTLock no configurado. Modo demo activo.",
@@ -75,20 +79,20 @@ export async function POST(req: NextRequest) {
     switch (action) {
       case "getToken": {
         const { username, password } = params as { username: string; password: string };
-        return NextResponse.json(await getAccessToken(username, password));
+        return NextResponse.json(await getAccessToken(username, password, credentials));
       }
       case "listLocks":
-        return NextResponse.json(await ttlockRequest("GET", "/v3/lock/list", { pageNo: 1, pageSize: 20, ...params }, accessToken as string));
+        return NextResponse.json(await ttlockRequest("GET", "/v3/lock/list", { pageNo: 1, pageSize: 20, ...params }, accessToken as string, credentials));
       case "lockDetail":
-        return NextResponse.json(await ttlockRequest("GET", "/v3/lock/detail", params, accessToken as string));
+        return NextResponse.json(await ttlockRequest("GET", "/v3/lock/detail", params, accessToken as string, credentials));
       case "createPin":
-        return NextResponse.json(await ttlockRequest("POST", "/v3/keyboardPwd/add", { addType: 2, ...params }, accessToken as string));
+        return NextResponse.json(await ttlockRequest("POST", "/v3/keyboardPwd/add", { addType: 2, ...params }, accessToken as string, credentials));
       case "deletePin":
-        return NextResponse.json(await ttlockRequest("POST", "/v3/keyboardPwd/delete", params, accessToken as string));
+        return NextResponse.json(await ttlockRequest("POST", "/v3/keyboardPwd/delete", params, accessToken as string, credentials));
       case "lockRecords":
-        return NextResponse.json(await ttlockRequest("GET", "/v3/lockRecord/list", { pageNo: 1, pageSize: 20, ...params }, accessToken as string));
+        return NextResponse.json(await ttlockRequest("GET", "/v3/lockRecord/list", { pageNo: 1, pageSize: 20, ...params }, accessToken as string, credentials));
       case "remoteUnlock":
-        return NextResponse.json(await ttlockRequest("POST", "/v3/lock/unlock", params, accessToken as string));
+        return NextResponse.json(await ttlockRequest("POST", "/v3/lock/unlock", params, accessToken as string, credentials));
       default:
         return NextResponse.json({ error: "Acción no reconocida" }, { status: 400 });
     }

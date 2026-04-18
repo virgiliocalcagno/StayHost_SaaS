@@ -154,18 +154,7 @@ function formatDateTime(iso: string) {
   return new Date(iso).toLocaleDateString("es-MX", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" });
 }
 
-// ─── Demo data ────────────────────────────────────────────────────────────────
-
-const DEMO_DEVICES: SmartDevice[] = [
-  { id: "d1", remoteId: "ttlock-12345", name: "Cerradura Entrada Principal", type: "lock_ttlock", provider: "ttlock", propertyId: "1", propertyName: "Villa Mar Azul", online: true, battery: 85, locked: true, lastSync: new Date().toISOString() },
-  { id: "d2", remoteId: "ttlock-12346", name: "Cerradura Acceso Piscina", type: "lock_ttlock", provider: "ttlock", propertyId: "1", propertyName: "Villa Mar Azul", online: true, battery: 62, locked: false, lastSync: new Date().toISOString() },
-  { id: "d3", remoteId: "tuya-abc123", name: "Termostato Sala Principal", type: "thermostat", provider: "tuya", propertyId: "1", propertyName: "Villa Mar Azul", online: true, battery: 100, temperature: 22, humidity: 58, lastSync: new Date().toISOString() },
-  { id: "d4", remoteId: "tuya-abc124", name: "Sensor Temperatura Piscina", type: "sensor_pool", provider: "tuya", propertyId: "1", propertyName: "Villa Mar Azul", online: true, temperature: 28, lastSync: new Date().toISOString() },
-  { id: "d5", remoteId: "ttlock-22345", name: "Cerradura Entrada", type: "lock_ttlock", provider: "ttlock", propertyId: "2", propertyName: "Apartamento Centro", online: true, battery: 45, locked: true, lastSync: new Date().toISOString() },
-  { id: "d6", remoteId: "ttlock-22346", name: "Cerradura Garage", type: "lock_ttlock", provider: "ttlock", propertyId: "3", propertyName: "Casa de Playa", online: false, battery: 8, locked: true, lastSync: new Date(Date.now() - 3 * 86400000).toISOString() },
-];
-
-// ─── Component ────────────────────────────────────────────────────────────────
+// ——— Component ————————————————————————————————————————————————
 
 export default function SmartDevicesPanel() {
   const { userRole } = useModules();
@@ -188,8 +177,16 @@ export default function SmartDevicesPanel() {
 
   // ── State ──────────────────────────────────────────────────────────────────
   const [devices, setDevices] = useState<SmartDevice[]>(() => {
-    if (typeof window === "undefined") return DEMO_DEVICES;
-    try { const r = localStorage.getItem("stayhost_smart_devices"); return r ? JSON.parse(r) : DEMO_DEVICES; } catch { return DEMO_DEVICES; }
+    if (typeof window === "undefined") return [];
+    try { 
+      const r = localStorage.getItem("stayhost_smart_devices");
+      const list = r ? JSON.parse(r) : [];
+      // Auto-limpieza si detectamos dispositivos demo antiguos (id: d1, d2...)
+      if (list.length > 0 && list.some((d: any) => d.id && /^d[1-6]$/.test(d.id))) {
+        return [];
+      }
+      return list;
+    } catch { return []; }
   });
 
   const [pins, setPins] = useState<AccessPin[]>(() => {
@@ -1443,6 +1440,40 @@ export default function SmartDevicesPanel() {
                 <p className="text-[10px] text-zinc-500">Las API routes <code className="bg-zinc-800 px-1 rounded">/api/ttlock</code> y <code className="bg-zinc-800 px-1 rounded">/api/tuya</code> ya leen estas variables automáticamente.</p>
               </CardContent>
             </Card>
+
+            <div className="pt-6 mt-6 border-t border-red-100">
+              <h4 className="text-sm font-black text-red-600 uppercase tracking-widest mb-3 flex items-center gap-2">
+                <AlertTriangle className="h-4 w-4" /> Zona de Peligro
+              </h4>
+              <p className="text-xs text-slate-500 mb-4">Usa estas opciones solo si quieres reiniciar la configuración de dispositivos desde cero.</p>
+              <div className="flex flex-wrap gap-2">
+                <Button 
+                  variant="destructive" 
+                  className="rounded-xl font-bold bg-red-50 text-red-600 border-red-100 hover:bg-red-600 hover:text-white transition-all shadow-none h-11 px-6"
+                  onClick={() => {
+                    if (confirm("¿Estás seguro de que quieres eliminar TODOS los dispositivos? Esta acción no se puede deshacer.")) {
+                      setDevices([]);
+                      localStorage.removeItem("stayhost_smart_devices");
+                      alert("Dispositivos eliminados. La página se actualizará.");
+                    }
+                  }}
+                >
+                  <Trash2 className="h-4 w-4 mr-2" /> Eliminar todos los dispositivos
+                </Button>
+                <Button 
+                  variant="outline" 
+                  className="rounded-xl font-bold border-slate-200 text-slate-500 hover:bg-slate-50 h-11 px-6"
+                  onClick={() => {
+                    if (confirm("Esto borrará TODA la configuración local (LLaves, iCals, integraciones, etc). ¿Continuar?")) {
+                      localStorage.clear();
+                      window.location.reload();
+                    }
+                  }}
+                >
+                  <RefreshCw className="h-4 w-4 mr-2" /> Reiniciar toda la APP
+                </Button>
+              </div>
+            </div>
           </div>
         </div>
       )}

@@ -103,14 +103,32 @@ export function StaffTaskDetail({
                   </div>
                 )}
 
-                {/* Back-to-back alert */}
+                {/* Back-to-back alert & Arrival context */}
                 {task.isBackToBack && (
-                  <div className="p-3 rounded-2xl bg-rose-50 border border-rose-200 flex items-center gap-3 animate-pulse">
-                    <AlertTriangle className="h-5 w-5 text-rose-500 flex-shrink-0" />
-                    <div>
-                      <p className="text-xs font-black text-rose-700 uppercase tracking-wider">⚡ Back-to-Back</p>
-                      <p className="text-[11px] text-rose-600">Hay check-in hoy. Prioridad máxima.</p>
+                  <div className="space-y-3">
+                    <div className="p-3 rounded-2xl bg-rose-50 border border-rose-200 flex items-center gap-3 animate-pulse">
+                      <AlertTriangle className="h-5 w-5 text-rose-500 flex-shrink-0" />
+                      <div>
+                        <p className="text-xs font-black text-rose-700 uppercase tracking-wider">⚡ Back-to-Back</p>
+                        <p className="text-[11px] text-rose-600">Hay check-in hoy. Prioridad máxima.</p>
+                      </div>
                     </div>
+                    {task.arrivingGuestName && (
+                      <div className="p-4 rounded-2xl bg-slate-50 border border-slate-200">
+                        <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">Próximo Huésped (Entrada Hoy)</p>
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-2">
+                             <div className="h-2 w-2 rounded-full bg-emerald-500"></div>
+                             <p className="text-sm font-bold text-slate-800">{task.arrivingGuestName}</p>
+                          </div>
+                          {task.arrivingGuestCount && (
+                            <Badge variant="outline" className="text-[10px] border-slate-200 text-slate-500">
+                              {task.arrivingGuestCount} pax
+                            </Badge>
+                          )}
+                        </div>
+                      </div>
+                    )}
                   </div>
                 )}
 

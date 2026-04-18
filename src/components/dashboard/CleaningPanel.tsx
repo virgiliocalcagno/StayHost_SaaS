@@ -93,6 +93,8 @@ interface CleaningTask {
   stayDuration?: number;
   acceptanceStatus?: "pending" | "accepted" | "declined";
   startTime?: string; // Hora en que inició la limpieza
+  arrivingGuestName?: string;  // Huésped que entra hoy
+  arrivingGuestCount?: number; // Pax que entra hoy
   isWaitingValidation?: boolean;
   closurePhotos?: { category: string; url: string }[];
   reportedIssues?: string[];
@@ -150,6 +152,7 @@ export default function CleaningPanel() {
   };
 
   const [selectedStaff, setSelectedStaff] = useState<string>("all");
+  const [activeDate, setActiveDate] = useState<string>(getDateStr(0));
   const [team, setTeam] = useState<TeamMember[]>(MOCK_TEAM);
   const [rawTeam, setRawTeam] = useState<RawTeamMember[]>([]);
 
@@ -239,38 +242,54 @@ export default function CleaningPanel() {
 
   const filteredTasks = useMemo(() => {
     let result = tasks;
-    if (view === "day") {
+    
+    // Si estamos en vista semana, filtramos por la fecha seleccionada en las pestañas
+    if (view === "week") {
+      result = result.filter(t => t.dueDate === activeDate);
+    } else if (view === "day") {
       result = result.filter(t => t.dueDate === getDateStr(0));
     }
+
     if (selectedStaff !== "all") {
       result = result.filter(t => t.assigneeId === selectedStaff);
     }
+
     return result.sort((a, b) => {
       // Vacantes al final (baja prioridad), críticos al frente
       if (a.isVacant && !b.isVacant) return 1;
       if (!a.isVacant && b.isVacant) return -1;
       return a.priority === "critical" ? -1 : 1;
     });
-  }, [tasks, view, selectedStaff]);
+  }, [tasks, view, selectedStaff, activeDate]);
 
   // ─── Linen Summary (ropa de cama necesaria hoy) ───────────────────────────
   const linenSummary = useMemo(() => {
-    const todayTasks = tasks.filter(t => t.dueDate === getDateStr(0));
-    const items: Record<string, number> = {};
-    todayTasks.forEach(t => {
+    const targetTasks = tasks.filter(t => t.dueDate === activeDate);
+    const beds: Record<string, number> = {};
+    let totalTowels = 0;
+
+    targetTasks.forEach(t => {
       const prop = properties.find(p => p.id === t.propertyId);
       if (!prop?.bedConfiguration) return;
-      // Parsea "2 Queen, 1 King" → { Queen: 2, King: 1 }
+      
+      // Calculate towels (2 per guest)
+      totalTowels += (t.guestCount || 2) * 2;
+
+      // Parse bed configuration
       prop.bedConfiguration.split(",").forEach(part => {
         const match = part.trim().match(/^(\d+)\s+(.+)$/);
         if (match) {
           const qty = parseInt(match[1]);
           const type = match[2].trim();
-          items[type] = (items[type] || 0) + qty;
+          beds[type] = (beds[type] || 0) + qty;
         }
       });
     });
-    return Object.entries(items).map(([type, qty]) => ({ type, qty }));
+
+    return {
+      beds: Object.entries(beds).map(([type, qty]) => ({ type, qty })),
+      towels: totalTowels
+    };
   }, [tasks, properties]);
 
   const getStatusBadge = (task: CleaningTask) => {
@@ -797,31 +816,65 @@ export default function CleaningPanel() {
         ))}
       </div>
 
-      {/* ─── Linen Summary ──────────────────────────────────────────────── */}
-      {linenSummary.length > 0 && (
-        <div className="relative overflow-hidden rounded-2xl border border-primary/20 bg-gradient-to-r from-primary/5 via-background to-emerald-500/5 p-4 shadow-soft">
-          <div className="flex flex-wrap items-center gap-4">
-            <div className="flex items-center gap-2 text-sm font-bold text-primary shrink-0">
-              <div className="p-2 rounded-xl bg-primary/10">
-                <Bed className="h-4 w-4" />
-              </div>
-              Ropa de Cama — Hoy
+      {/* ─── Linen & Workday Summary ────────────────────────────────────────── */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        <Card className="lg:col-span-2 border-none shadow-soft bg-white rounded-[2rem] overflow-hidden">
+          <CardHeader className="pb-2">
+            <div className="flex items-center justify-between">
+              <CardTitle className="text-lg font-bold flex items-center gap-2">
+                <Layers className="h-5 w-5 text-primary" />
+                Logística de Lencería para Hoy
+              </CardTitle>
+              <Badge variant="outline" className="border-primary/20 text-primary font-bold">
+                {stats.total} Propiedades
+              </Badge>
             </div>
-            <div className="flex flex-wrap gap-2">
-              {linenSummary.map(({ type, qty }) => (
-                <div key={type} className="flex items-center gap-1.5 px-3 py-1.5 bg-white rounded-full border shadow-sm text-xs font-semibold">
-                  <span className="h-2 w-2 rounded-full bg-primary/60 flex-shrink-0" />
-                  <span className="text-primary font-black">{qty}×</span>
-                  <span>{type}</span>
+          </CardHeader>
+          <CardContent className="p-6">
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+              {linenSummary.beds.map((item, idx) => (
+                <div key={idx} className="bg-slate-50 p-4 rounded-2xl border border-slate-100 group hover:border-primary/20 transition-all">
+                  <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1 group-hover:text-primary transition-colors">Sábanas {item.type}</p>
+                  <p className="text-2xl font-black text-slate-800">{item.qty} sets</p>
                 </div>
               ))}
+              <div className="bg-primary/5 p-4 rounded-2xl border border-primary/10">
+                <p className="text-[10px] font-black text-primary uppercase tracking-widest mb-1">Total Toallas</p>
+                <p className="text-2xl font-black text-primary">{linenSummary.towels} unidades</p>
+              </div>
             </div>
-            <div className="ml-auto text-[11px] text-muted-foreground hidden sm:block">
-              {linenSummary.reduce((s, i) => s + i.qty, 0)} juegos en total
-            </div>
-          </div>
-        </div>
-      )}
+          </CardContent>
+        </Card>
+
+        <Card className="border-none shadow-soft bg-slate-900 text-white rounded-[2rem] overflow-hidden">
+          <CardHeader className="pb-2">
+             <CardTitle className="text-lg font-bold flex items-center gap-2">
+               <Zap className="h-5 w-5 text-amber-400" />
+               Jornada Estimada
+             </CardTitle>
+          </CardHeader>
+          <CardContent className="p-6 space-y-4">
+             <div className="flex items-end justify-between">
+                <div>
+                   <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Horas de Trabajo</p>
+                   <p className="text-3xl font-black text-white">{stats.total * 2.5}h</p>
+                </div>
+                <div className="text-right">
+                   <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Costo Proyectado</p>
+                   <p className="text-xl font-bold text-amber-400">${stats.total * 35}</p>
+                </div>
+             </div>
+             <div className="h-1.5 w-full bg-slate-800 rounded-full overflow-hidden">
+                <div 
+                  className="h-full bg-amber-400 rounded-full transition-all duration-1000" 
+                  style={{ width: `${(stats.completed / (stats.total || 1)) * 100}%` }}
+                />
+             </div>
+             <p className="text-[10px] text-slate-400 font-medium">Progreso basado en tareas completadas ({stats.completed}/{stats.total})</p>
+          </CardContent>
+        </Card>
+      </div>
+
 
       {/* ─── Main Content ───────────────────────────────────────────────── */}
       <div className="grid lg:grid-cols-12 gap-6">
@@ -832,25 +885,42 @@ export default function CleaningPanel() {
           {/* Day selection for Weekly view */}
           {view === "week" && (
             <div className="flex gap-2 overflow-x-auto pb-2 scrollbar-none">
-              {dayTabs.map((day) => (
-                <button
-                  key={day.date}
-                  className={cn(
-                    "flex flex-col items-center min-w-[70px] p-3 rounded-2xl transition-all border",
-                    day.date === getDateStr(0) 
-                      ? "bg-primary/5 border-primary/20 ring-1 ring-primary/20" 
-                      : "bg-white border-muted hover:border-primary/20"
-                  )}
-                >
-                  <span className="text-xs font-medium uppercase text-muted-foreground mb-1">{day.label}</span>
-                  <span className="text-xl font-bold">{new Date(day.date + "T00:00:00").getDate()}</span>
-                  <div className="flex gap-0.5 mt-2">
-                    {Array.from({ length: Math.min(day.count, 3) }).map((_, i) => (
-                      <div key={i} className="h-1 w-1 rounded-full bg-primary" />
-                    ))}
-                  </div>
-                </button>
-              ))}
+              {dayTabs.map((day) => {
+                const isActive = day.date === activeDate;
+                return (
+                  <button
+                    key={day.date}
+                    onClick={() => setActiveDate(day.date)}
+                    className={cn(
+                      "flex flex-col items-center min-w-[70px] p-3 rounded-2xl transition-all border outline-none",
+                      isActive 
+                        ? "bg-primary/5 border-primary/20 ring-1 ring-primary/20" 
+                        : "bg-white border-muted hover:border-primary/20 hover:bg-slate-50"
+                    )}
+                  >
+                    <span className={cn(
+                      "text-[10px] font-bold uppercase mb-1",
+                      isActive ? "text-primary" : "text-slate-400"
+                    )}>
+                      {day.label}
+                    </span>
+                    <span className={cn(
+                      "text-xl font-black",
+                      isActive ? "text-primary" : "text-slate-700"
+                    )}>
+                      {new Date(day.date + "T00:00:00").getDate()}
+                    </span>
+                    <div className="flex gap-0.5 mt-2 h-1 justify-center">
+                      {Array.from({ length: Math.min(day.count, 3) }).map((_, i) => (
+                        <div key={i} className={cn(
+                          "h-1 w-1 rounded-full",
+                          isActive ? "bg-primary" : "bg-amber-400"
+                        )} />
+                      ))}
+                    </div>
+                  </button>
+                );
+              })}
             </div>
           )}
 
@@ -1004,19 +1074,34 @@ export default function CleaningPanel() {
                               </div>
                            </div>
 
-                           {/* Guest Info */}
-                           <div className="flex-1 px-4 py-2 bg-muted/30 rounded-xl flex items-center">
+                           {/* Guest Info (Out/In) */}
+                           <div className="flex-1 px-4 py-2 bg-slate-50 border border-slate-100 rounded-xl flex items-center justify-between">
                               <div className="flex items-center gap-3">
-                                 <div className="h-8 w-8 rounded-full bg-white flex items-center justify-center text-muted-foreground shadow-sm">
+                                 <div className="h-8 w-8 rounded-full bg-white flex items-center justify-center text-slate-400 shadow-sm">
                                     <User className="h-4 w-4" />
                                  </div>
-                                 <div>
-                                    <p className="text-[10px] uppercase text-muted-foreground font-bold">
-                                      Salida: {task.dueTime}{task.guestCount ? ` · ${task.guestCount} huésp.` : ""}
-                                    </p>
-                                    <p className="text-sm font-bold truncate max-w-[120px]">{task.guestName}</p>
+                                 <div className="flex flex-col sm:flex-row sm:items-center sm:gap-6">
+                                    <div>
+                                       <p className="text-[9px] uppercase text-muted-foreground font-bold leading-none mb-1">
+                                         Salida: {task.dueTime}
+                                       </p>
+                                       <p className="text-xs font-bold truncate max-w-[100px]">{task.guestName}</p>
+                                    </div>
+                                    {task.isBackToBack && task.arrivingGuestName && (
+                                       <div className="pt-2 sm:pt-0 sm:pl-4 sm:border-l border-slate-200">
+                                          <p className="text-[9px] uppercase text-emerald-600 font-bold leading-none mb-1">
+                                            Entrada hoy
+                                          </p>
+                                          <p className="text-xs font-bold text-slate-700 truncate max-w-[100px]">{task.arrivingGuestName}</p>
+                                       </div>
+                                    )}
                                  </div>
                               </div>
+                              {task.stayDuration && (
+                                <Badge variant="secondary" className="bg-white text-[9px] h-5 font-bold border-slate-100">
+                                  {task.stayDuration} noches
+                                </Badge>
+                              )}
                            </div>
 
                            {/* Bed config badge */}

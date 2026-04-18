@@ -24,6 +24,8 @@ export interface CleaningTask {
   stayDuration?: number;
   acceptanceStatus?: "pending" | "accepted" | "declined";
   startTime?: string;
+  arrivingGuestName?: string;
+  arrivingGuestCount?: number;
   isWaitingValidation?: boolean;
   closurePhotos?: { category: string; url: string }[];
   reportedIssues?: string[];
