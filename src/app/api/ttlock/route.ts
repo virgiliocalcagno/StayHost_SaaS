@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import crypto from "crypto";
 
-const TTLOCK_BASE = "https://euapi.ttlock.com";
+const TTLOCK_BASE = process.env.TTLOCK_API_URL ?? "https://euapi.ttlock.com";
 
 function md5(str: string) {
   return crypto.createHash("md5").update(str).digest("hex");
