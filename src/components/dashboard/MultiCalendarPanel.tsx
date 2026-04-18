@@ -105,7 +105,8 @@ export default function MultiCalendarPanel() {
   useEffect(() => {
     try {
       const session = localStorage.getItem("stayhost_session");
-      const email = session ? JSON.parse(session).email : null;
+      const email = (session ? JSON.parse(session).email : null)
+        || localStorage.getItem("stayhost_owner_email");
       if (!email) return;
       fetch(`/api/bookings?email=${encodeURIComponent(email)}`)
         .then((r) => r.json())
