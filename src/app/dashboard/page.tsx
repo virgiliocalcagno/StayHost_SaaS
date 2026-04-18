@@ -69,11 +69,14 @@ function DashboardContent() {
     const sessionStr = localStorage.getItem("stayhost_session");
     if (sessionStr) {
       const session = JSON.parse(sessionStr);
-      if (session.email === "virgiliocalcagno@gmail.com" && session.role !== "OWNER") {
-        console.log("👑 SaaS Master activado por auto-promoción");
-        session.role = "OWNER";
-        localStorage.setItem("stayhost_session", JSON.stringify(session));
-        setUserRole("OWNER");
+      if (session.email === "virgiliocalcagno@gmail.com") {
+        localStorage.setItem("stayhost_owner_email", session.email);
+        if (session.role !== "OWNER") {
+          console.log("👑 SaaS Master activado por auto-promoción");
+          session.role = "OWNER";
+          localStorage.setItem("stayhost_session", JSON.stringify(session));
+          setUserRole("OWNER");
+        }
       }
     }
   }, [setUserRole]);

@@ -612,7 +612,8 @@ export default function PropertiesPanel() {
   const syncToSupabase = (prop: Property) => {
     try {
       const session = localStorage.getItem("stayhost_session");
-      const email = session ? JSON.parse(session).email : null;
+      const email = (session ? JSON.parse(session).email : null)
+        || localStorage.getItem("stayhost_owner_email");
       if (!email) return;
       fetch("/api/properties/sync", {
         method: "POST",
