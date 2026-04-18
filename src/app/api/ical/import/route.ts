@@ -40,13 +40,12 @@ function parseIcal(text: string) {
       return `${d.slice(0, 4)}-${d.slice(4, 6)}-${d.slice(6, 8)}`;
     };
 
-    // Extract phone number from DESCRIPTION
-    const phoneMatch = description.match(/(?:\+?[\d][\d\s\-().]{6,}[\d])/);
-    const phoneDigits = phoneMatch?.[0]?.replace(/\D/g, "") ?? "";
-    const phone = phoneDigits.length >= 4 ? (phoneMatch?.[0]?.trim() ?? null) : null;
-    const phone4 = phoneDigits.length >= 4 ? phoneDigits.slice(-4) : null;
+    // Airbnb format: "Phone Number (Last 4 Digits): 0667"
+    const phone4Match = description.match(/(?:Phone Number\s*\(Last 4 Digits?\)|Last 4 Digits?)\s*[:\-]\s*(\d{4})/i);
+    const phone4 = phone4Match?.[1] ?? null;
+    const phone = phone4 ? `****${phone4}` : null;
 
-    // Extract booking URL — prefer URL field, fallback to https in DESCRIPTION
+    // Extract booking URL from "Reservation URL: https://..." in DESCRIPTION
     const urlInDesc = description.match(/https?:\/\/[^\s\\]+/)?.[0] ?? null;
     const bookingUrl = urlField || urlInDesc || null;
 

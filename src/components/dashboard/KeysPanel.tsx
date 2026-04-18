@@ -1,8 +1,7 @@
 "use client";
 
 import { useEffect, useState, useMemo } from "react";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
+import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -102,6 +101,8 @@ export default function KeysPanel() {
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState<"all" | AccessStatus>("all");
   const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editingCode, setEditingCode] = useState("");
 
   const fetchBookings = () => {
     setLoading(true);
@@ -284,14 +285,35 @@ export default function KeysPanel() {
               )}>
                 <CardContent className="p-4">
                   <div className="flex items-start gap-4">
-                    {/* Left: Code */}
+                    {/* Left: Code — click to edit */}
                     <div className="flex-shrink-0 text-center">
-                      <div className="w-16 h-16 rounded-2xl bg-slate-900 flex flex-col items-center justify-center shadow-lg">
-                        <Key className="h-4 w-4 text-white/60 mb-0.5" />
-                        <span className="text-xl font-black text-white tracking-widest">
-                          {entry.accessCode}
-                        </span>
-                      </div>
+                      {editingId === entry.bookingId ? (
+                        <div className="w-16 flex flex-col items-center gap-1">
+                          <input
+                            autoFocus
+                            aria-label="Código de acceso"
+                            maxLength={6}
+                            value={editingCode}
+                            onChange={e => setEditingCode(e.target.value.replace(/\D/g, ""))}
+                            onKeyDown={e => {
+                              if (e.key === "Enter") { updateEntry(entry.bookingId, entry.status, editingCode); setEditingId(null); }
+                              if (e.key === "Escape") setEditingId(null);
+                            }}
+                            onBlur={() => { updateEntry(entry.bookingId, entry.status, editingCode); setEditingId(null); }}
+                            className="w-16 h-16 rounded-2xl bg-slate-900 text-white text-center text-xl font-black tracking-widest border-2 border-amber-400 outline-none"
+                          />
+                          <p className="text-[9px] text-amber-600 font-bold">ENTER</p>
+                        </div>
+                      ) : (
+                        <div
+                          className="w-16 h-16 rounded-2xl bg-slate-900 flex flex-col items-center justify-center shadow-lg cursor-pointer hover:bg-slate-700 transition-colors group"
+                          title="Click para editar el código"
+                          onClick={() => { setEditingId(entry.bookingId); setEditingCode(entry.accessCode); }}
+                        >
+                          <Key className="h-3 w-3 text-white/40 mb-0.5 group-hover:text-amber-400 transition-colors" />
+                          <span className="text-xl font-black text-white tracking-widest">{entry.accessCode}</span>
+                        </div>
+                      )}
                       <p className="text-[9px] text-muted-foreground mt-1 font-medium">CÓDIGO</p>
                     </div>
 
