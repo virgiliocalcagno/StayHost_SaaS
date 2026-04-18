@@ -122,23 +122,21 @@ export async function POST(req: NextRequest) {
       const channel = detectChannel(feed.url);
 
       for (const ev of events) {
-        if (/^(blocked|not available|airbnb)/i.test(ev.summary)) {
-          skipped++;
-          continue;
-        }
+        // "Airbnb (Not available)", "Blocked", "Not available" = manual blocks from platform
+        const isBlock = /not available|blocked/i.test(ev.summary);
 
         const baseRow: Record<string, unknown> = {
           property_id: propertyId,
           tenant_id: tenantId,
           source_uid: ev.uid,
-          source: channel,
-          guest_name: extractGuestName(ev.summary),
+          source: isBlock ? "block" : channel,
+          guest_name: isBlock ? "Bloqueado" : extractGuestName(ev.summary),
           guest_email: null,
-          guest_phone: ev.phone,
+          guest_phone: isBlock ? null : ev.phone,
           check_in: ev.dtstart,
           check_out: ev.dtend,
-          status: "confirmed",
-          booking_url: ev.bookingUrl,
+          status: isBlock ? "blocked" : "confirmed",
+          booking_url: isBlock ? null : ev.bookingUrl,
         };
 
         let { error } = await supabaseAdmin.from("bookings").upsert(
