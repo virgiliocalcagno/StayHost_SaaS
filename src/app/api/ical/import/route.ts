@@ -1,35 +1,56 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabase/server";
 
-// Minimal iCal parser — no external dependency needed
+// Unfold RFC-5545 line continuations before parsing
+function unfold(text: string) {
+  return text.replace(/\r?\n[ \t]/g, "");
+}
+
 function parseIcal(text: string) {
+  const unfolded = unfold(text);
   const events: {
     uid: string;
     summary: string;
     dtstart: string;
     dtend: string;
+    phone: string | null;
+    phone4: string | null;
+    bookingUrl: string | null;
   }[] = [];
 
-  const blocks = text.split("BEGIN:VEVENT");
+  const blocks = unfolded.split("BEGIN:VEVENT");
   for (let i = 1; i < blocks.length; i++) {
     const block = blocks[i];
     const get = (key: string) => {
       const match = block.match(new RegExp(`${key}(?:;[^:]*)?:([^\r\n]+)`));
       return match?.[1]?.trim() ?? "";
     };
+
     const uid = get("UID");
     const summary = get("SUMMARY");
     const rawStart = get("DTSTART");
     const rawEnd = get("DTEND");
+    const description = get("DESCRIPTION");
+    const urlField = get("URL");
+
     if (!uid || !rawStart || !rawEnd) continue;
 
-    // Convert YYYYMMDD or YYYYMMDDTHHmmssZ to ISO date
     const toDate = (raw: string) => {
       const d = raw.replace(/T.*$/, "");
       return `${d.slice(0, 4)}-${d.slice(4, 6)}-${d.slice(6, 8)}`;
     };
 
-    events.push({ uid, summary, dtstart: toDate(rawStart), dtend: toDate(rawEnd) });
+    // Extract phone number from DESCRIPTION
+    const phoneMatch = description.match(/(?:\+?[\d][\d\s\-().]{6,}[\d])/);
+    const phoneDigits = phoneMatch?.[0]?.replace(/\D/g, "") ?? "";
+    const phone = phoneDigits.length >= 4 ? (phoneMatch?.[0]?.trim() ?? null) : null;
+    const phone4 = phoneDigits.length >= 4 ? phoneDigits.slice(-4) : null;
+
+    // Extract booking URL — prefer URL field, fallback to https in DESCRIPTION
+    const urlInDesc = description.match(/https?:\/\/[^\s\\]+/)?.[0] ?? null;
+    const bookingUrl = urlField || urlInDesc || null;
+
+    events.push({ uid, summary, dtstart: toDate(rawStart), dtend: toDate(rawEnd), phone, phone4, bookingUrl });
   }
   return events;
 }
@@ -41,14 +62,10 @@ function detectChannel(url: string): "airbnb" | "vrbo" | "booking" | "manual" {
   return "manual";
 }
 
-function extractGuestName(summary: string): { first: string; last: string } {
-  // Airbnb: "Reserved", "John D." / VRBO: "John Doe - vrbo" / Booking: "CLOSED"
+function extractGuestName(summary: string): string {
   const clean = summary.replace(/[-–]\s*(airbnb|vrbo|booking\.com).*/i, "").trim();
-  if (!clean || /^(reserved|closed|blocked|airbnb)/i.test(clean)) {
-    return { first: "Reserva", last: "Confirmada" };
-  }
-  const parts = clean.split(/\s+/);
-  return { first: parts[0] ?? "Huésped", last: parts.slice(1).join(" ") || "" };
+  if (!clean || /^(reserved|closed|blocked|airbnb)/i.test(clean)) return "Reserva Confirmada";
+  return clean.split(/\s+/)[0] ?? "Huésped";
 }
 
 // POST /api/ical/import
@@ -60,7 +77,6 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "propertyId and tenantId required" }, { status: 400 });
     }
 
-    // Load property iCal URLs
     const { data: property, error: propErr } = await supabaseAdmin
       .from("properties")
       .select("id, ical_airbnb, ical_vrbo")
@@ -72,9 +88,10 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Property not found" }, { status: 404 });
     }
 
+    const prop = property as any;
     const feeds: { url: string; source: "airbnb" | "vrbo" | "booking" | "manual" }[] = [];
-    if (property.ical_airbnb) feeds.push({ url: property.ical_airbnb, source: "airbnb" });
-    if (property.ical_vrbo) feeds.push({ url: property.ical_vrbo, source: "vrbo" });
+    if (prop.ical_airbnb) feeds.push({ url: prop.ical_airbnb, source: "airbnb" });
+    if (prop.ical_vrbo) feeds.push({ url: prop.ical_vrbo, source: "vrbo" });
 
     if (feeds.length === 0) {
       return NextResponse.json({ imported: 0, message: "No iCal URLs configured" });
@@ -106,32 +123,30 @@ export async function POST(req: NextRequest) {
       const channel = detectChannel(feed.url);
 
       for (const ev of events) {
-        // Skip blocked/unavailable slots (no real guest)
         if (/^(blocked|not available|airbnb)/i.test(ev.summary)) {
           skipped++;
           continue;
         }
 
-        const { first } = extractGuestName(ev.summary);
-
-        // Upsert by (property_id, source_uid) — safe to re-run
         const { error } = await supabaseAdmin.from("bookings").upsert(
           {
             property_id: propertyId,
             tenant_id: tenantId,
             source_uid: ev.uid,
             source: channel,
-            guest_name: first,
+            guest_name: extractGuestName(ev.summary),
             guest_email: null,
-            guest_phone: null,
+            guest_phone: ev.phone,
             check_in: ev.dtstart,
             check_out: ev.dtend,
             status: "confirmed",
-          },
+            booking_url: ev.bookingUrl,
+          } as any,
           { onConflict: "property_id,source_uid", ignoreDuplicates: false }
         );
 
         if (!error) imported++;
+        else console.error("[ical/import] upsert error:", error);
       }
     }
 
