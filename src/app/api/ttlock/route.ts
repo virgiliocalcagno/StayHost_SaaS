@@ -52,11 +52,15 @@ async function getAccessToken(username: string, password: string, credentials?: 
     grant_type: "password",
   });
 
-  return (await fetch(`${TTLOCK_BASE}/oauth2/token`, {
+  const res = await fetch(`${TTLOCK_BASE}/oauth2/token`, {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: body.toString(),
-  })).json();
+  });
+  const text = await res.text();
+  console.log("[ttlock/getToken] clientId:", clientId?.slice(0, 8) + "...");
+  console.log("[ttlock/getToken] response:", text);
+  return JSON.parse(text);
 }
 
 export async function POST(req: NextRequest) {
