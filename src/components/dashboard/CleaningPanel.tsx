@@ -298,6 +298,69 @@ export default function CleaningPanel() {
       localStorage.setItem("stayhost_tasks", JSON.stringify(tasks));
     } catch(e) {}
   }, [tasks]);
+
+  // Fetch real bookings from Supabase and generate cleaning tasks
+  useEffect(() => {
+    try {
+      const session = localStorage.getItem("stayhost_session");
+      const email = (session ? JSON.parse(session).email : null)
+        || localStorage.getItem("stayhost_owner_email");
+      if (!email) return;
+
+      fetch(`/api/bookings?email=${encodeURIComponent(email)}`)
+        .then(r => r.json())
+        .then(data => {
+          if (!data.properties?.length) return;
+          const bookingTasks: CleaningTask[] = [];
+          for (const prop of data.properties) {
+            const propBookings: { id: string; guest: string; start: string; end: string; status: string }[] = prop.bookings ?? [];
+            for (const b of propBookings) {
+              // Skip check-outs more than 7 days in the past
+              const diff = (new Date(b.end).getTime() - Date.now()) / 86400000;
+              if (diff < -7) continue;
+              const isBackToBack = propBookings.some(o => o.id !== b.id && o.start === b.end);
+              bookingTasks.push({
+                id: `booking-${b.id}`,
+                propertyId: prop.id,
+                propertyName: prop.name,
+                address: prop.address || "",
+                dueDate: b.end,
+                dueTime: "11:00",
+                status: "pending",
+                priority: isBackToBack ? "critical" : "medium",
+                isBackToBack,
+                guestName: b.guest || "Huésped",
+                acceptanceStatus: "pending",
+                checklist: [
+                  { id: 1, task: "Cambiar sábanas y toallas", done: false },
+                  { id: 2, task: "Limpieza general", done: false },
+                  { id: 3, task: "Verificar inventario", done: false },
+                ],
+                checklistItems: [
+                  { id: "c1", label: "Control Remoto TV", done: false, type: "appliance" },
+                  { id: "c2", label: "Control Abanico", done: false, type: "appliance" },
+                  { id: "c3", label: "Aire Acondicionado", done: false, type: "appliance" },
+                  { id: "c4", label: "Limpieza de pisos", done: false, type: "general" },
+                  { id: "c5", label: "Baño desinfectado", done: false, type: "general" },
+                ],
+              });
+            }
+          }
+          if (bookingTasks.length > 0) {
+            setTasks(prev => {
+              // Keep only manually created tasks (not demo t1-t7, not booking-generated)
+              const manual = prev.filter(t =>
+                !t.id.startsWith("booking-") &&
+                !["t1","t2","t3","t4","t5","t6","t7"].includes(t.id)
+              );
+              return [...manual, ...bookingTasks];
+            });
+          }
+        })
+        .catch(() => {});
+    } catch {}
+  }, []);
+
   const [selectedStaff, setSelectedStaff] = useState<string>("all");
   const [team, setTeam] = useState<TeamMember[]>(MOCK_TEAM);
   const [rawTeam, setRawTeam] = useState<RawTeamMember[]>([]);
