@@ -122,9 +122,9 @@ export default function KeysPanel() {
           const all: KeyEntry[] = [];
           for (const prop of data.properties) {
             for (const b of prop.bookings ?? []) {
-              // Only show bookings with check-in within next 60 days or check-out in future
-              const daysToCheckIn = daysUntil(b.start);
-              if (daysToCheckIn < -1 || daysToCheckIn > 60) continue;
+              // Show all future bookings (up to 365 days), skip past check-outs
+              const daysToCheckOut = daysUntil(b.end);
+              if (daysToCheckOut < 0) continue;
 
               const savedEntry = saved[b.id];
               const suggestedCode = b.phone4 || b.start.replace(/-/g, "").slice(-4);

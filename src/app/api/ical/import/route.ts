@@ -127,25 +127,35 @@ export async function POST(req: NextRequest) {
           continue;
         }
 
-        const { error } = await supabaseAdmin.from("bookings").upsert(
-          {
-            property_id: propertyId,
-            tenant_id: tenantId,
-            source_uid: ev.uid,
-            source: channel,
-            guest_name: extractGuestName(ev.summary),
-            guest_email: null,
-            guest_phone: ev.phone,
-            check_in: ev.dtstart,
-            check_out: ev.dtend,
-            status: "confirmed",
-            booking_url: ev.bookingUrl,
-          } as any,
-          { onConflict: "property_id,source_uid", ignoreDuplicates: false }
+        const baseRow: Record<string, unknown> = {
+          property_id: propertyId,
+          tenant_id: tenantId,
+          source_uid: ev.uid,
+          source: channel,
+          guest_name: extractGuestName(ev.summary),
+          guest_email: null,
+          guest_phone: ev.phone,
+          check_in: ev.dtstart,
+          check_out: ev.dtend,
+          status: "confirmed",
+          booking_url: ev.bookingUrl,
+        };
+
+        let { error } = await supabaseAdmin.from("bookings").upsert(
+          baseRow as any, { onConflict: "property_id,source_uid", ignoreDuplicates: false }
         );
 
+        // Fallback: if booking_url column missing, retry without it
+        if (error?.message?.includes("booking_url")) {
+          const { booking_url: _drop, ...rowWithout } = baseRow;
+          const res2 = await supabaseAdmin.from("bookings").upsert(
+            rowWithout as any, { onConflict: "property_id,source_uid", ignoreDuplicates: false }
+          );
+          error = res2.error;
+        }
+
         if (!error) imported++;
-        else console.error("[ical/import] upsert error:", error);
+        else console.error("[ical/import] upsert error:", error.message);
       }
     }
 
