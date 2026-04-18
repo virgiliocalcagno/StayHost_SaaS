@@ -1,11 +1,4 @@
-/**
- * apiServices.ts
- *
- * Capa de acceso a datos asíncrona. Actualmente lee desde localStorage para
- * mantener compatibilidad con el flujo existente. Cuando exista un backend,
- * reemplaza el cuerpo de cada función con la llamada HTTP correspondiente
- * (fetch / axios) sin tocar ningún componente.
- */
+import { getActiveTenantEmail } from "@/lib/session";
 
 // ─── Tipos exportados ────────────────────────────────────────────────────────
 
@@ -33,34 +26,45 @@ export interface RawProperty {
   [key: string]: unknown;
 }
 
-// ─── Claves de almacenamiento ────────────────────────────────────────────────
+// ─── Team: reads from localStorage (configured via Team panel) ───────────────
 
-const STORAGE_KEYS = {
-  team:       "stayhost_team",
-  properties: "stayhost_properties",
-  tasks:      "stayhost_tasks",
-} as const;
-
-// ─── Helper interno ──────────────────────────────────────────────────────────
-
-function readStorage<T>(key: string): T[] {
+export async function getTeam(): Promise<RawTeamMember[]> {
   if (typeof window === "undefined") return [];
   try {
-    const raw = localStorage.getItem(key);
-    return raw ? (JSON.parse(raw) as T[]) : [];
+    const raw = localStorage.getItem("stayhost_team");
+    return raw ? (JSON.parse(raw) as RawTeamMember[]) : [];
   } catch {
     return [];
   }
 }
 
-// ─── API pública ─────────────────────────────────────────────────────────────
+// ─── Properties: reads from Supabase via API ─────────────────────────────────
 
-/** Devuelve el equipo tal como está almacenado. */
-export async function getTeam(): Promise<RawTeamMember[]> {
-  return readStorage<RawTeamMember>(STORAGE_KEYS.team);
-}
-
-/** Devuelve las propiedades tal como están almacenadas. */
 export async function getProperties(): Promise<RawProperty[]> {
-  return readStorage<RawProperty>(STORAGE_KEYS.properties);
+  if (typeof window === "undefined") return [];
+  try {
+    const email = getActiveTenantEmail();
+    if (!email) return [];
+    const res = await fetch(`/api/properties?email=${encodeURIComponent(email)}`);
+    const data = await res.json();
+    return ((data.properties ?? []) as any[]).map((p: any) => ({
+      id: p.id,
+      name: p.name,
+      address: p.address ?? "",
+      image: p.cover_image ?? "",
+      autoAssignCleaner: p.auto_assign_cleaner ?? false,
+      cleanerPriorities: p.cleaner_priorities ?? [],
+      bedConfiguration: p.bed_configuration ?? "",
+      standardInstructions: p.standard_instructions ?? "",
+      evidenceCriteria: p.evidence_criteria ?? [],
+    }));
+  } catch {
+    // Fallback to localStorage
+    try {
+      const raw = localStorage.getItem("stayhost_properties");
+      return raw ? (JSON.parse(raw) as RawProperty[]) : [];
+    } catch {
+      return [];
+    }
+  }
 }

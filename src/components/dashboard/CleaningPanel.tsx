@@ -58,6 +58,7 @@ import {
 } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
 import { getTeam, getProperties, type RawTeamMember } from "@/services/apiServices";
+import { getActiveTenantEmail } from "@/lib/session";
 
 // Nuevos componentes universales de Staff
 import { StaffWizard } from "@/components/staff-ui/StaffWizard";
@@ -124,242 +125,29 @@ const MOCK_TEAM: TeamMember[] = [
   { id: "3", name: "Carmen Ruiz", role: "Limpieza", avatar: "https://images.unsplash.com/photo-1544005313-94ddf0286df2?w=100&h=100&fit=crop", tasksToday: 4, completedTasks: 210, phone: "+5212345680" },
 ];
 
-const INITIAL_TASKS: CleaningTask[] = [
-  {
-    id: "t1",
-    propertyId: "1",
-    propertyName: "Villa Mar Azul",
-    address: "Cancún, Zona Hotelera",
-    propertyImage: "https://images.unsplash.com/photo-1512917774080-9991f1c4c750?w=300&h=200&fit=crop",
-    assigneeId: "1",
-    assigneeName: "Laura Sánchez",
-    assigneeAvatar: "https://images.unsplash.com/photo-1580489944761-15a19d654956?w=50&h=50&fit=crop",
-    dueDate: getDateStr(0),
-    dueTime: "11:00",
-    status: "pending",
-    priority: "critical",
-    isBackToBack: true,
-    guestName: "Maria Lopez",
-    acceptanceStatus: "pending",
-    checklist: [
-      { id: 1, task: "Cambiar sábanas y toallas", done: false },
-      { id: 2, task: "Limpieza profunda de cocina", done: false },
-    ],
-  },
-  {
-    id: "t2",
-    propertyId: "2",
-    propertyName: "Apartamento Centro",
-    address: "CDMX, Polanco",
-    propertyImage: "https://images.unsplash.com/photo-1493809842364-78817add7ffb?w=300&h=200&fit=crop",
-    assigneeId: "1", 
-    assigneeName: "Laura Sánchez",
-    assigneeAvatar: "https://images.unsplash.com/photo-1580489944761-15a19d654956?w=50&h=50&fit=crop",
-    dueDate: getDateStr(0),
-    dueTime: "14:00",
-    status: "pending",
-    priority: "medium",
-    isBackToBack: false,
-    guestName: "Carlos Mendez",
-    acceptanceStatus: "pending",
-    checklist: [
-      { id: 1, task: "Limpieza general", done: false },
-    ],
-  },
-  {
-    id: "t3",
-    propertyId: "3",
-    propertyName: "Penthouse Vista al Mar",
-    address: "Playa del Carmen",
-    propertyImage: "https://images.unsplash.com/photo-1502672260266-1c1ef2d93688?w=300&h=200&fit=crop",
-    assigneeId: "1",
-    assigneeName: "Laura Sánchez",
-    dueDate: getDateStr(1),
-    dueTime: "10:00",
-    status: "pending",
-    priority: "high",
-    isBackToBack: true,
-    guestName: "Ana Rodriguez",
-    acceptanceStatus: "pending",
-    checklist: [],
-  },
-  {
-    id: "t4",
-    propertyId: "1",
-    propertyName: "Villa Mar Azul",
-    address: "Cancún, Zona Hotelera",
-    propertyImage: "https://images.unsplash.com/photo-1512917774080-9991f1c4c750?w=300&h=200&fit=crop",
-    assigneeId: "2",
-    assigneeName: "Miguel Torres",
-    assigneeAvatar: "https://images.unsplash.com/photo-1500648767791-00dcc994a43e?w=50&h=50&fit=crop",
-    dueDate: getDateStr(0),
-    dueTime: "10:30",
-    status: "pending",
-    priority: "high",
-    isBackToBack: false,
-    guestName: "Mantenimiento Preventivo",
-    acceptanceStatus: "pending",
-    checklist: [
-      { id: 1, task: "Revisar AC Sala", done: false },
-      { id: 2, task: "Cambiar focos terraza", done: false },
-    ],
-  },
-  {
-    id: "t5",
-    propertyId: "4",
-    propertyName: "Loft Moderno",
-    address: "Condesa, CDMX",
-    propertyImage: "https://images.unsplash.com/photo-1502672260266-1c1ef2d93688?w=300&h=200&fit=crop",
-    assigneeId: "1",
-    assigneeName: "Laura Sánchez",
-    dueDate: getDateStr(0),
-    dueTime: "08:30",
-    status: "pending",
-    priority: "critical",
-    isBackToBack: true,
-    guestName: "Jimena Soto",
-    acceptanceStatus: "pending",
-    checklist: [],
-  },
-  {
-    id: "t6",
-    propertyId: "2",
-    propertyName: "Apartamento Centro",
-    address: "Polanco, CDMX",
-    propertyImage: "https://images.unsplash.com/photo-1493809842364-78817add7ffb?w=300&h=200&fit=crop",
-    assigneeId: "1",
-    assigneeName: "Laura Sánchez",
-    dueDate: getDateStr(1),
-    dueTime: "15:00",
-    status: "pending",
-    priority: "medium",
-    isBackToBack: false,
-    guestName: "Roberto Gomez",
-    acceptanceStatus: "pending",
-    checklist: [],
-  },
-  {
-    id: "t7",
-    propertyId: "3",
-    propertyName: "Villa Mar Esmeralda",
-    address: "Cancún, México",
-    propertyImage: "https://images.unsplash.com/photo-1512917774080-9991f1c4c750?w=300&h=200&fit=crop",
-    assigneeId: "1",
-    assigneeName: "Laura Sánchez",
-    dueDate: getDateStr(3),
-    dueTime: "11:00",
-    status: "pending",
-    priority: "low",
-    isBackToBack: false,
-    guestName: "Elena Sanchez",
-    acceptanceStatus: "pending",
-    checklist: [],
-  },
-];
-
-// Helper to calculate stay duration (mock logic)
-const getStayDuration = (taskId: string) => {
-  if (taskId === "t1") return 3;
-  if (taskId === "t2") return 5;
-  return 2;
-};
 
 export default function CleaningPanel() {
   const [view, setView] = useState<"day" | "week">("day");
-  const [tasks, setTasks] = useState<CleaningTask[]>(() => {
-    // Si ya existen tareas en localStorage, devolvemos esas para no sobreescribir la interacción de /staff
-    try {
-      const raw = localStorage.getItem("stayhost_tasks");
-      if (raw) return JSON.parse(raw);
-    } catch (e) {}
+  const [tasks, setTasks] = useState<CleaningTask[]>([]);
 
-    // Enhance initial tasks with new fields
-    const defaultTasks = INITIAL_TASKS.map(t => ({
-      ...t,
-      stayDuration: getStayDuration(t.id),
-      checklistItems: [
-        { id: "c1", label: "Control Remoto TV", done: false, type: "appliance" },
-        { id: "c2", label: "Control Abanico", done: false, type: "appliance" },
-        { id: "c3", label: "Aire Acondicionado", done: false, type: "appliance" },
-        { id: "c4", label: "Limpieza de pisos", done: false, type: "general" },
-        { id: "c5", label: "Baño desinfectado", done: false, type: "general" },
-      ]
-    })) as CleaningTask[];
+  const loadTasks = () => {
+    const email = getActiveTenantEmail();
+    if (!email) return;
+    fetch(`/api/cleaning-tasks?email=${encodeURIComponent(email)}`)
+      .then(r => r.json())
+      .then(data => { if (data.tasks?.length) setTasks(data.tasks); })
+      .catch(() => {});
+  };
 
-    try {
-      localStorage.setItem("stayhost_tasks", JSON.stringify(defaultTasks));
-    } catch (e) {}
+  useEffect(() => { loadTasks(); }, []);
 
-    return defaultTasks;
-  });
-
-  useEffect(() => {
-    try {
-      localStorage.setItem("stayhost_tasks", JSON.stringify(tasks));
-    } catch(e) {}
-  }, [tasks]);
-
-  // Fetch real bookings from Supabase and generate cleaning tasks
-  useEffect(() => {
-    try {
-      const session = localStorage.getItem("stayhost_session");
-      const email = (session ? JSON.parse(session).email : null)
-        || localStorage.getItem("stayhost_owner_email");
-      if (!email) return;
-
-      fetch(`/api/bookings?email=${encodeURIComponent(email)}`)
-        .then(r => r.json())
-        .then(data => {
-          if (!data.properties?.length) return;
-          const bookingTasks: CleaningTask[] = [];
-          for (const prop of data.properties) {
-            const propBookings: { id: string; guest: string; start: string; end: string; status: string }[] = prop.bookings ?? [];
-            for (const b of propBookings) {
-              // Skip check-outs more than 7 days in the past
-              const diff = (new Date(b.end).getTime() - Date.now()) / 86400000;
-              if (diff < -7) continue;
-              const isBackToBack = propBookings.some(o => o.id !== b.id && o.start === b.end);
-              bookingTasks.push({
-                id: `booking-${b.id}`,
-                propertyId: prop.id,
-                propertyName: prop.name,
-                address: prop.address || "",
-                dueDate: b.end,
-                dueTime: "11:00",
-                status: "pending",
-                priority: isBackToBack ? "critical" : "medium",
-                isBackToBack,
-                guestName: b.guest || "Huésped",
-                acceptanceStatus: "pending",
-                checklist: [
-                  { id: 1, task: "Cambiar sábanas y toallas", done: false },
-                  { id: 2, task: "Limpieza general", done: false },
-                  { id: 3, task: "Verificar inventario", done: false },
-                ],
-                checklistItems: [
-                  { id: "c1", label: "Control Remoto TV", done: false, type: "appliance" },
-                  { id: "c2", label: "Control Abanico", done: false, type: "appliance" },
-                  { id: "c3", label: "Aire Acondicionado", done: false, type: "appliance" },
-                  { id: "c4", label: "Limpieza de pisos", done: false, type: "general" },
-                  { id: "c5", label: "Baño desinfectado", done: false, type: "general" },
-                ],
-              });
-            }
-          }
-          if (bookingTasks.length > 0) {
-            setTasks(prev => {
-              // Keep only manually created tasks (not demo t1-t7, not booking-generated)
-              const manual = prev.filter(t =>
-                !t.id.startsWith("booking-") &&
-                !["t1","t2","t3","t4","t5","t6","t7"].includes(t.id)
-              );
-              return [...manual, ...bookingTasks];
-            });
-          }
-        })
-        .catch(() => {});
-    } catch {}
-  }, []);
+  const patchTask = (id: string, changes: Record<string, unknown>) => {
+    fetch(`/api/cleaning-tasks?id=${encodeURIComponent(id)}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(changes),
+    }).catch(() => {});
+  };
 
   const [selectedStaff, setSelectedStaff] = useState<string>("all");
   const [team, setTeam] = useState<TeamMember[]>(MOCK_TEAM);
@@ -662,6 +450,29 @@ export default function CleaningPanel() {
     setTasks(prev => [...prev, newTask]);
     setShowAddTask(false);
     setNewTaskForm({ propertyId: "", dueDate: getDateStr(0), dueTime: "11:00", guestName: "", priority: "medium", isBackToBack: false, isVacant: false, guestCount: "" });
+
+    // Persist to Supabase
+    const email = getActiveTenantEmail();
+    if (email) {
+      fetch("/api/cleaning-tasks", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          tenantEmail: email,
+          propertyId: newTaskForm.propertyId,
+          dueDate: newTaskForm.dueDate,
+          dueTime: newTaskForm.dueTime,
+          guestName: newTaskForm.guestName || "Nuevo huésped",
+          priority: newTaskForm.priority,
+          isBackToBack: newTaskForm.isBackToBack,
+          isVacant: newTaskForm.isVacant,
+          guestCount: newTaskForm.guestCount ? Number(newTaskForm.guestCount) : null,
+          assigneeId: assignee?.id ?? null,
+          assigneeName: assignee?.name ?? null,
+          assigneeAvatar: assignee?.avatar ?? null,
+        }),
+      }).catch(() => {});
+    }
   };
 
   const currentActiveTask = tasks.find(t => t.id === activeTaskId);
@@ -676,15 +487,15 @@ export default function CleaningPanel() {
   const handlePrevStep = () => setWizardStep(prev => prev - 1);
 
   const toggleChecklistItem = (taskId: string, itemId: string) => {
-    setTasks(prev => prev.map(t => {
-      if (t.id === taskId) {
-        return {
-          ...t,
-          checklistItems: t.checklistItems?.map(i => i.id === itemId ? { ...i, done: !i.done } : i)
-        };
-      }
-      return t;
-    }));
+    setTasks(prev => {
+      const next = prev.map(t => {
+        if (t.id !== taskId) return t;
+        return { ...t, checklistItems: t.checklistItems?.map(i => i.id === itemId ? { ...i, done: !i.done } : i) };
+      });
+      const updated = next.find(t => t.id === taskId);
+      if (updated) patchTask(taskId, { checklistItems: updated.checklistItems });
+      return next;
+    });
   };
 
   const handleUploadPhoto = (category: string) => {
@@ -698,11 +509,10 @@ export default function CleaningPanel() {
 
   const handleSubmitTask = () => {
     if (!activeTaskId) return;
-    setTasks(prev => prev.map(t => 
-      t.id === activeTaskId 
-        ? { ...t, status: "completed", isWaitingValidation: true, closurePhotos: tempPhotos } 
-        : t
+    setTasks(prev => prev.map(t =>
+      t.id === activeTaskId ? { ...t, status: "completed", isWaitingValidation: true, closurePhotos: tempPhotos } : t
     ));
+    patchTask(activeTaskId, { status: "completed", isWaitingValidation: true, closurePhotos: tempPhotos });
     setViewMode("admin");
     setActiveTaskId(null);
     setWizardStep(1);
@@ -713,6 +523,7 @@ export default function CleaningPanel() {
     setTasks(prev => prev.map(t =>
       t.id === taskId ? { ...t, acceptanceStatus: "accepted", status: "accepted" } : t
     ));
+    patchTask(taskId, { status: "accepted" });
   };
 
   const handleDeclineTask = (taskId: string, reason?: string) => {
@@ -725,47 +536,31 @@ export default function CleaningPanel() {
     setTasks(prev => prev.map(t => {
       if (t.id !== taskId) return t;
       if (nextAssignee) {
-        // Re-asignar al siguiente disponible en la lista de prioridad
-        return {
-          ...t,
-          declinedByIds: newDeclinedIds,
-          rejectionReason: reason || t.rejectionReason,
-          assigneeId: nextAssignee.id,
-          assigneeName: nextAssignee.name,
-          assigneeAvatar: nextAssignee.avatar,
-          acceptanceStatus: "pending",
-          status: "assigned",
-        };
+        patchTask(taskId, { status: "assigned", assigneeId: nextAssignee.id, assigneeName: nextAssignee.name, assigneeAvatar: nextAssignee.avatar, declinedByIds: newDeclinedIds, rejectionReason: reason ?? null });
+        return { ...t, declinedByIds: newDeclinedIds, rejectionReason: reason || t.rejectionReason, assigneeId: nextAssignee.id, assigneeName: nextAssignee.name, assigneeAvatar: nextAssignee.avatar, acceptanceStatus: "pending", status: "assigned" };
       }
-      // Sin más candidatos → estado final "rejected"
-      return {
-        ...t,
-        declinedByIds: newDeclinedIds,
-        rejectionReason: reason || t.rejectionReason,
-        acceptanceStatus: "declined",
-        status: "rejected",
-      };
+      patchTask(taskId, { status: "rejected", declinedByIds: newDeclinedIds, rejectionReason: reason ?? null });
+      return { ...t, declinedByIds: newDeclinedIds, rejectionReason: reason || t.rejectionReason, acceptanceStatus: "declined", status: "rejected" };
     }));
   };
 
   const handleStartCleaning = (taskId: string) => {
     const now = new Date().toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' });
-    setTasks(prev => prev.map(t => 
+    setTasks(prev => prev.map(t =>
       t.id === taskId ? { ...t, status: "in_progress", startTime: now } : t
     ));
+    patchTask(taskId, { status: "in_progress", startTime: now });
     setWizardStep(1);
   };
 
   const handleValidateTask = (taskId: string) => {
-    setTasks(prev => prev.map(t => 
-      t.id === taskId 
-        ? { ...t, isWaitingValidation: false, status: "completed" } 
-        : t
+    setTasks(prev => prev.map(t =>
+      t.id === taskId ? { ...t, isWaitingValidation: false, status: "completed" } : t
     ));
-    // Actualizar equipo
+    patchTask(taskId, { status: "completed", isWaitingValidation: false });
     const task = tasks.find(t => t.id === taskId);
     if (task?.assigneeId) {
-      setTeam(prev => prev.map(m => 
+      setTeam(prev => prev.map(m =>
         m.id === task.assigneeId ? { ...m, completedTasks: m.completedTasks + 1, tasksToday: Math.max(0, m.tasksToday - 1) } : m
       ));
     }
