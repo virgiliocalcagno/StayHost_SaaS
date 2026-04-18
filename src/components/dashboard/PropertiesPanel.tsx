@@ -4,6 +4,7 @@ import { useState, useMemo, useEffect, useCallback } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { getActiveTenantEmail } from "@/lib/session";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Progress } from "@/components/ui/progress";
@@ -448,9 +449,7 @@ export default function PropertiesPanel() {
     if (!editingProperty) return;
     setSyncingChannel(channelName);
     try {
-      const session = localStorage.getItem("stayhost_session");
-      const email = (session ? JSON.parse(session).email : null)
-        || localStorage.getItem("stayhost_owner_email");
+      const email = getActiveTenantEmail();
       if (email) {
         // Ensure property exists in Supabase first
         const syncRes = await fetch("/api/properties/sync", {
@@ -612,9 +611,7 @@ export default function PropertiesPanel() {
 
   const syncToSupabase = (prop: Property) => {
     try {
-      const session = localStorage.getItem("stayhost_session");
-      const email = (session ? JSON.parse(session).email : null)
-        || localStorage.getItem("stayhost_owner_email");
+      const email = getActiveTenantEmail();
       if (!email) return;
       fetch("/api/properties/sync", {
         method: "POST",
@@ -1747,6 +1744,35 @@ export default function PropertiesPanel() {
                         </div>
                         <SyncBar channelName="VRBO" icalUrl={formData.vrboIcal} />
                       </div>
+
+                      {/* iCal Propio — para pegar en Airbnb/VRBO/Booking */}
+                      {editingProperty?.id && (
+                        <div className="p-4 rounded-xl border-2 border-emerald-300 bg-emerald-50/60 space-y-2">
+                          <div className="flex items-center gap-2">
+                            <span className="w-7 h-7 rounded-lg bg-emerald-600 flex items-center justify-center text-xs font-bold text-white">↑</span>
+                            <span className="font-semibold text-sm">Tu iCal Propio (para Airbnb / VRBO)</span>
+                          </div>
+                          <p className="text-xs text-muted-foreground">Pega esta URL en los calendarios de Airbnb y VRBO para que bloqueen automáticamente las fechas ocupadas.</p>
+                          <div className="flex gap-2">
+                            <input
+                              readOnly
+                              aria-label="URL iCal propio"
+                              value={`${typeof window !== "undefined" ? window.location.origin : "https://stay-host-saa-s.vercel.app"}/api/ical/export?id=${editingProperty.id}`}
+                              className="flex-1 text-xs bg-white border border-emerald-200 rounded-lg px-3 py-2 font-mono select-all cursor-pointer"
+                              onClick={e => (e.target as HTMLInputElement).select()}
+                            />
+                            <button
+                              type="button"
+                              aria-label="Copiar URL iCal"
+                              className="px-3 py-2 text-xs font-bold bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 transition-colors"
+                              onClick={() => navigator.clipboard.writeText(`${window.location.origin}/api/ical/export?id=${editingProperty!.id}`)}
+                            >
+                              Copiar
+                            </button>
+                          </div>
+                        </div>
+                      )}
+
                       <div className={`p-4 rounded-xl border-2 space-y-3 transition-all ${formData.directaEnabled ? 'border-emerald-400 dark:border-emerald-600 bg-emerald-50/80 dark:bg-emerald-900/20' : 'border-gray-200 dark:border-gray-700 bg-gray-50/50 dark:bg-gray-900/10'}`}>
                         <div className="flex items-center justify-between">
                           <div className="flex items-center gap-2">

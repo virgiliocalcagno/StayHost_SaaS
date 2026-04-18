@@ -1,6 +1,51 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabase/server";
 
+// POST /api/bookings — create a manual booking or block
+export async function POST(req: NextRequest) {
+  try {
+    const body = await req.json();
+    const { propertyId, tenantEmail, checkIn, checkOut, guestName, source, note } = body;
+    if (!propertyId || !tenantEmail || !checkIn || !checkOut) {
+      return NextResponse.json({ error: "propertyId, tenantEmail, checkIn, checkOut required" }, { status: 400 });
+    }
+
+    const { data: tenant } = await supabaseAdmin
+      .from("tenants")
+      .select("id")
+      .eq("email", tenantEmail)
+      .single();
+
+    if (!tenant) return NextResponse.json({ error: "Tenant not found" }, { status: 404 });
+
+    const { data, error } = await supabaseAdmin.from("bookings").insert({
+      property_id: propertyId,
+      tenant_id: (tenant as any).id,
+      source_uid: `manual-${Date.now()}`,
+      source: source ?? "manual",
+      guest_name: guestName ?? (source === "block" ? "Bloqueado" : "Huésped"),
+      check_in: checkIn,
+      check_out: checkOut,
+      status: source === "block" ? "blocked" : "confirmed",
+      booking_url: note ?? null,
+    } as any).select("id").single();
+
+    if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+    return NextResponse.json({ ok: true, id: (data as any).id });
+  } catch (err: any) {
+    return NextResponse.json({ error: err?.message }, { status: 500 });
+  }
+}
+
+// DELETE /api/bookings?bookingId=xxx — delete a booking or block
+export async function DELETE(req: NextRequest) {
+  const bookingId = req.nextUrl.searchParams.get("bookingId");
+  if (!bookingId) return NextResponse.json({ error: "bookingId required" }, { status: 400 });
+  const { error } = await supabaseAdmin.from("bookings").delete().eq("id", bookingId);
+  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+  return NextResponse.json({ ok: true });
+}
+
 // GET /api/bookings?email=tenant@example.com
 export async function GET(req: NextRequest) {
   const email = req.nextUrl.searchParams.get("email");

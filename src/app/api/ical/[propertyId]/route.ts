@@ -27,12 +27,14 @@ export async function GET(
     return new NextResponse("Unauthorized", { status: 401 });
   }
 
-  // Fetch all confirmed bookings
+  const prop = property as any;
+
+  // Fetch all confirmed bookings + manual blocks
   const { data: bookings, error: bookErr } = await supabaseAdmin
     .from("bookings")
-    .select("id, guest_name, check_in, check_out, source, created_at")
+    .select("id, guest_name, check_in, check_out, source, status")
     .eq("property_id", propertyId)
-    .eq("status", "confirmed");
+    .neq("status", "cancelled");
 
   if (bookErr) {
     return new NextResponse("Internal error", { status: 500 });
@@ -41,9 +43,9 @@ export async function GET(
   const now = new Date().toISOString().replace(/[-:T.]/g, "").slice(0, 15) + "Z";
   const toIcalDate = (d: string) => d.replace(/-/g, "");
 
-  const events = (bookings ?? []).map((b) => {
+  const events = ((bookings ?? []) as any[]).map((b) => {
     const uid = `stayhost-${b.id}@stayhost.app`;
-    const summary = b.source === "manual" ? "Reserva Manual - StayHost" : `Reservado - StayHost`;
+    const summary = b.source === "block" ? "Not available" : "Reserved";
     return [
       "BEGIN:VEVENT",
       `UID:${uid}`,
@@ -60,7 +62,7 @@ export async function GET(
     "BEGIN:VCALENDAR",
     "VERSION:2.0",
     "PRODID:-//StayHost//Calendar//ES",
-    `X-WR-CALNAME:${property.name}`,
+    `X-WR-CALNAME:${prop.name}`,
     "CALSCALE:GREGORIAN",
     "METHOD:PUBLISH",
     ...events,

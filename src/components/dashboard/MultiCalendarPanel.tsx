@@ -31,6 +31,8 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import ChargeServiceDrawer from "./ChargeServiceDrawer";
 
+import { getActiveTenantEmail } from "@/lib/session";
+
 // Mock Data with Channel Info and Real Dates (Relative to current month for demo)
 const generateMockBookings = () => {
   const getDateStr = (offsetDays: number) => {
@@ -88,6 +90,9 @@ export default function MultiCalendarPanel() {
   const [currentDate, setCurrentDate] = useState(new Date()); 
   const [viewMode, setViewMode] = useState<"calendar" | "price">("calendar");
   const [isNewBookingOpen, setIsNewBookingOpen] = useState(false);
+  const [isBlockOpen, setIsBlockOpen] = useState(false);
+  const [blockForm, setBlockForm] = useState({ propertyId: "", start: "", end: "", note: "" });
+  const [savingBlock, setSavingBlock] = useState(false);
   const [newBooking, setNewBooking] = useState({
     propertyId: "1",
     guest: "",
@@ -104,9 +109,7 @@ export default function MultiCalendarPanel() {
 
   useEffect(() => {
     try {
-      const session = localStorage.getItem("stayhost_session");
-      const email = (session ? JSON.parse(session).email : null)
-        || localStorage.getItem("stayhost_owner_email");
+      const email = getActiveTenantEmail();
       if (!email) return;
       fetch(`/api/bookings?email=${encodeURIComponent(email)}`)
         .then((r) => r.json())
@@ -126,6 +129,38 @@ export default function MultiCalendarPanel() {
       property: propertyName
     });
     setIsChargeOpen(true);
+  };
+
+  const handleSaveBlock = async () => {
+    if (!blockForm.propertyId || !blockForm.start || !blockForm.end) return;
+    setSavingBlock(true);
+    try {
+      const email = getActiveTenantEmail();
+      const res = await fetch("/api/bookings", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          propertyId: blockForm.propertyId,
+          tenantEmail: email,
+          checkIn: blockForm.start,
+          checkOut: blockForm.end,
+          source: "block",
+          note: blockForm.note || null,
+        }),
+      });
+      const data = await res.json();
+      if (data.ok) {
+        // Optimistically add block to local state
+        setProperties(prev => prev.map(p =>
+          p.id.toString() === blockForm.propertyId
+            ? { ...p, bookings: [...p.bookings, { id: data.id, guest: "Bloqueado", start: blockForm.start, end: blockForm.end, status: "blocked", channel: "block" }] }
+            : p
+        ));
+        setIsBlockOpen(false);
+        setBlockForm({ propertyId: "", start: "", end: "", note: "" });
+      }
+    } catch {}
+    setSavingBlock(false);
   };
 
   const handleCreateBooking = () => {
@@ -261,10 +296,53 @@ export default function MultiCalendarPanel() {
               <DollarSign className="h-4 w-4" />
             </Button>
           </div>
-          <Button variant="outline" size="sm" className="gap-2 border-primary/30 text-foreground font-semibold h-9 rounded-xl">
-            <Plus className="h-4 w-4" />
-            <span>Agregar Bloqueo</span>
-          </Button>
+          <Sheet open={isBlockOpen} onOpenChange={setIsBlockOpen}>
+            <SheetTrigger asChild>
+              <Button variant="outline" size="sm" className="gap-2 border-primary/30 text-foreground font-semibold h-9 rounded-xl">
+                <Plus className="h-4 w-4" />
+                <span>Agregar Bloqueo</span>
+              </Button>
+            </SheetTrigger>
+            <SheetContent className="sm:max-w-md w-full border-l-0 shadow-2xl flex flex-col p-0">
+              <SheetHeader className="px-6 py-6 pb-2 border-b">
+                <SheetTitle className="text-2xl font-black text-foreground">Bloquear Fechas</SheetTitle>
+                <SheetDescription>Las fechas bloqueadas se sincronizan automáticamente a Airbnb y VRBO vía tu iCal propio.</SheetDescription>
+              </SheetHeader>
+              <div className="flex-1 overflow-y-auto px-6 py-4 space-y-4">
+                <div className="space-y-2">
+                  <Label className="text-[11px] font-bold text-muted-foreground uppercase tracking-[0.05em]">Propiedad</Label>
+                  <Select value={blockForm.propertyId} onValueChange={v => setBlockForm(f => ({ ...f, propertyId: v }))}>
+                    <SelectTrigger className="h-11 bg-muted/30 border-border/50 rounded-xl">
+                      <SelectValue placeholder="Selecciona propiedad..." />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {properties.map(p => <SelectItem key={p.id} value={p.id.toString()}>{p.name}</SelectItem>)}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="space-y-2">
+                    <Label className="text-[11px] font-bold text-muted-foreground uppercase tracking-[0.05em]">Desde</Label>
+                    <Input type="date" className="h-11 bg-muted/30 border-border/50 rounded-xl" value={blockForm.start} onChange={e => setBlockForm(f => ({ ...f, start: e.target.value }))} />
+                  </div>
+                  <div className="space-y-2">
+                    <Label className="text-[11px] font-bold text-muted-foreground uppercase tracking-[0.05em]">Hasta</Label>
+                    <Input type="date" className="h-11 bg-muted/30 border-border/50 rounded-xl" value={blockForm.end} onChange={e => setBlockForm(f => ({ ...f, end: e.target.value }))} />
+                  </div>
+                </div>
+                <div className="space-y-2">
+                  <Label className="text-[11px] font-bold text-muted-foreground uppercase tracking-[0.05em]">Motivo (opcional)</Label>
+                  <Input placeholder="Mantenimiento, uso personal..." className="h-11 bg-muted/30 border-border/50 rounded-xl" value={blockForm.note} onChange={e => setBlockForm(f => ({ ...f, note: e.target.value }))} />
+                </div>
+              </div>
+              <div className="px-6 py-4 bg-muted/10 border-t flex gap-3 mt-auto">
+                <Button variant="outline" className="flex-1 h-12 rounded-xl" onClick={() => setIsBlockOpen(false)}>Cancelar</Button>
+                <Button className="flex-[1.5] h-12 rounded-xl bg-slate-900 text-white hover:bg-slate-800" disabled={savingBlock || !blockForm.propertyId || !blockForm.start || !blockForm.end} onClick={handleSaveBlock}>
+                  {savingBlock ? "Guardando..." : "Bloquear Fechas"}
+                </Button>
+              </div>
+            </SheetContent>
+          </Sheet>
           <Sheet open={isNewBookingOpen} onOpenChange={setIsNewBookingOpen}>
             <SheetTrigger asChild>
               <Button className="gradient-primary text-white font-black h-9 rounded-xl shadow-elevated">
@@ -517,26 +595,26 @@ export default function MultiCalendarPanel() {
                     const isOutLeft = startD.getTime() < viewStartMs;
                     const isOutRight = endD.getTime() > viewEndMs;
 
+                    const isBlock = booking.channel === "block" || booking.status === "blocked";
+
                     return (
                       <Popover key={booking.id}>
                         <PopoverTrigger asChild>
                           <div
                             className={cn(
-                              "absolute top-1/2 -translate-y-1/2 h-8 flex items-center px-2 rounded-lg text-[10px] font-black text-white shadow-soft cursor-pointer hover:brightness-110 transition-all border border-white/20 select-none",
-                              booking.status === "confirmed" ? 
-                                (booking.channel === "airbnb" ? "bg-rose-500" : (booking.channel === "booking" ? "bg-blue-600" : booking.channel === "vrbo" ? "bg-indigo-500" : "bg-emerald-500")) 
-                                : "bg-amber-500 text-amber-950 border-amber-400",
+                              "absolute top-1/2 -translate-y-1/2 h-8 flex items-center px-2 rounded-lg text-[10px] font-black shadow-soft cursor-pointer hover:brightness-110 transition-all border select-none",
+                              isBlock
+                                ? "bg-slate-400 text-white border-slate-300 bg-[repeating-linear-gradient(45deg,#64748b,#64748b_6px,#94a3b8_6px,#94a3b8_12px)]"
+                                : booking.status === "confirmed"
+                                  ? (booking.channel === "airbnb" ? "bg-rose-500 text-white border-white/20" : booking.channel === "booking" ? "bg-blue-600 text-white border-white/20" : booking.channel === "vrbo" ? "bg-indigo-500 text-white border-white/20" : "bg-emerald-500 text-white border-white/20")
+                                  : "bg-amber-500 text-amber-950 border-amber-400",
                               isOutLeft && "rounded-l-none border-l-0",
                               isOutRight && "rounded-r-none border-r-0"
                             )}
-                            style={{
-                              left: `calc(${leftPct}%)`,
-                              width: `calc(${widthPct}%)`,
-                              zIndex: 5
-                            }}
+                            style={{ left: `calc(${leftPct}%)`, width: `calc(${widthPct}%)`, zIndex: 5 }}
                           >
-                            <ChannelIcon channel={booking.channel || "direct"} className="mr-1.5 w-3.5 h-3.5 bg-white/30 border-none shadow-none text-[7px]" />
-                            <span className="truncate">{booking.guest}</span>
+                            {!isBlock && <ChannelIcon channel={booking.channel || "direct"} className="mr-1.5 w-3.5 h-3.5 bg-white/30 border-none shadow-none text-[7px]" />}
+                            <span className="truncate">{isBlock ? "🔒 Bloqueado" : booking.guest}</span>
                           </div>
                         </PopoverTrigger>
                         <PopoverPrimitive.Portal>
