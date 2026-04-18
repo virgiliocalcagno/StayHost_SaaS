@@ -61,7 +61,10 @@ import {
   ImagePlus,
   Globe,
   GripVertical,
-  Crown
+  Crown,
+  CalendarRange,
+  Copy,
+  Info
 } from "lucide-react";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -1807,30 +1810,88 @@ export default function PropertiesPanel() {
                         <SyncBar channelName="VRBO" icalUrl={formData.vrboIcal} />
                       </div>
 
-                      {/* iCal Propio — para pegar en Airbnb/VRBO/Booking */}
+                      {/* ── Sincronización Externa (Estándar iGMS) ──────────────── */}
                       {editingProperty?.id && (
-                        <div className="p-4 rounded-xl border-2 border-emerald-300 bg-emerald-50/60 space-y-2">
+                        <div className="p-5 rounded-2xl border-2 border-emerald-200 dark:border-emerald-800/50 bg-emerald-50/30 dark:bg-emerald-900/10 space-y-4">
                           <div className="flex items-center gap-2">
-                            <span className="w-7 h-7 rounded-lg bg-emerald-600 flex items-center justify-center text-xs font-bold text-white">↑</span>
-                            <span className="font-semibold text-sm">Tu iCal Propio (para Airbnb / VRBO)</span>
+                            <CalendarRange className="h-5 w-5 text-emerald-600" />
+                            <h4 className="font-bold text-sm text-emerald-900 dark:text-emerald-100">Exportación iCal (Estándar iGMS)</h4>
                           </div>
-                          <p className="text-xs text-muted-foreground">Pega esta URL en los calendarios de Airbnb y VRBO para que bloqueen automáticamente las fechas ocupadas.</p>
-                          <div className="flex gap-2">
-                            <input
-                              readOnly
-                              aria-label="URL iCal propio"
-                              value={`${typeof window !== "undefined" ? window.location.origin : "https://stay-host-saa-s.vercel.app"}/api/ical/export?id=${editingProperty.id}`}
-                              className="flex-1 text-xs bg-white border border-emerald-200 rounded-lg px-3 py-2 font-mono select-all cursor-pointer"
-                              onClick={e => (e.target as HTMLInputElement).select()}
-                            />
-                            <button
-                              type="button"
-                              aria-label="Copiar URL iCal"
-                              className="px-3 py-2 text-xs font-bold bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 transition-colors"
-                              onClick={() => navigator.clipboard.writeText(`${window.location.origin}/api/ical/export?id=${editingProperty!.id}`)}
-                            >
-                              Copiar
-                            </button>
+                          <p className="text-xs text-muted-foreground leading-relaxed">
+                            Usa estos enlaces para sincronizar StayHost con Google Calendar, Airbnb o VRBO. Los eventos están optimizados con toda la información necesaria.
+                          </p>
+                          
+                          <div className="space-y-4">
+                            {/* Reservas [B] */}
+                            <div className="space-y-2">
+                              <div className="flex items-center justify-between">
+                                <Label className="text-[10px] uppercase font-bold text-emerald-700 dark:text-emerald-400 flex items-center gap-1.5">
+                                  <span className="w-4 h-4 rounded bg-emerald-600 text-white flex items-center justify-center text-[8px]">B</span>
+                                  Calendario de Reservas
+                                </Label>
+                                <Badge variant="outline" className="text-[9px] border-emerald-200 text-emerald-600 font-medium">Recomendado</Badge>
+                              </div>
+                              <div className="flex gap-2">
+                                <Input 
+                                  readOnly 
+                                  value={`${typeof window !== "undefined" ? window.location.origin : ""}/api/ical/export?id=${editingProperty.id}&type=bookings`}
+                                  className="text-xs bg-white dark:bg-background border-emerald-200 font-mono h-9"
+                                  onClick={(e) => (e.target as HTMLInputElement).select()}
+                                />
+                                <Button 
+                                  type="button" 
+                                  size="sm"
+                                  className="gradient-gold text-primary-foreground h-9 px-3 gap-1.5 shrink-0"
+                                  onClick={() => {
+                                    const url = `${window.location.origin}/api/ical/export?id=${editingProperty.id}&type=bookings`;
+                                    navigator.clipboard.writeText(url);
+                                    toast.success("Enlace de Reservas copiado");
+                                  }}
+                                >
+                                  <Copy className="h-3.5 w-3.5" />
+                                  <span className="text-xs">Copiar</span>
+                                </Button>
+                              </div>
+                            </div>
+
+                            {/* Limpiezas [C] */}
+                            <div className="space-y-2 pt-2 border-t border-emerald-100 dark:border-emerald-800">
+                              <div className="flex items-center justify-between">
+                                <Label className="text-[10px] uppercase font-bold text-emerald-700 dark:text-emerald-400 flex items-center gap-1.5">
+                                  <span className="w-4 h-4 rounded bg-amber-500 text-white flex items-center justify-center text-[8px]">C</span>
+                                  Calendario de Limpiezas
+                                </Label>
+                              </div>
+                              <div className="flex gap-2">
+                                <Input 
+                                  readOnly 
+                                  value={`${typeof window !== "undefined" ? window.location.origin : ""}/api/ical/export?id=${editingProperty.id}&type=tasks`}
+                                  className="text-xs bg-white dark:bg-background border-emerald-200 font-mono h-9"
+                                  onClick={(e) => (e.target as HTMLInputElement).select()}
+                                />
+                                <Button 
+                                  type="button" 
+                                  size="sm"
+                                  variant="outline"
+                                  className="h-9 px-3 gap-1.5 shrink-0 border-emerald-200 hover:bg-emerald-50 text-emerald-700"
+                                  onClick={() => {
+                                    const url = `${window.location.origin}/api/ical/export?id=${editingProperty.id}&type=tasks`;
+                                    navigator.clipboard.writeText(url);
+                                    toast.success("Enlace de Limpiezas copiado");
+                                  }}
+                                >
+                                  <Copy className="h-3.5 w-3.5" />
+                                  <span className="text-xs">Copiar</span>
+                                </Button>
+                              </div>
+                            </div>
+                          </div>
+
+                          <div className="p-3 rounded-xl bg-amber-50/50 dark:bg-amber-900/10 border border-amber-100 dark:border-amber-800/50 flex gap-2.5">
+                            <Info className="h-3.5 w-3.5 text-amber-600 shrink-0 mt-0.5" />
+                            <p className="text-[10px] text-amber-800 dark:text-amber-300 leading-tight">
+                              <strong>Tip:</strong> Agrega estos calendarios en tu Google Calendar para ver toda la operativa desde tu móvil sin entrar al dashboard.
+                            </p>
                           </div>
                         </div>
                       )}
@@ -1851,39 +1912,18 @@ export default function PropertiesPanel() {
                         {!formData.directaEnabled && (
                           <p className="text-xs text-muted-foreground">Activa este canal si aceptas reservas directas (WhatsApp, teléfono, tu propia web, etc.)</p>
                         )}
-                        {formData.directaEnabled && <Badge className="bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300 text-[10px]">Exportar iCal</Badge>}
                         {formData.directaEnabled && (
-                          <>
-                            <div className="p-3 rounded-lg bg-emerald-100/60 dark:bg-emerald-900/30 border border-emerald-200/60 dark:border-emerald-800/40">
-                              <div className="flex items-start gap-2">
-                                <span className="text-emerald-600 mt-0.5">📤</span>
-                                <div className="space-y-1.5">
-                                  <p className="text-xs font-medium text-emerald-800 dark:text-emerald-200">iCal de exportación</p>
-                                  <p className="text-[11px] text-emerald-700/80 dark:text-emerald-300/80 leading-relaxed">
-                                    StayHost generará un enlace iCal con tus reservas directas. Copia este enlace en Airbnb, Booking y VRBO para <strong>bloquear las fechas</strong> y evitar solapamiento.
-                                  </p>
-                                </div>
+                          <div className="p-3 rounded-lg bg-emerald-100/60 dark:bg-emerald-900/30 border border-emerald-200/60 dark:border-emerald-800/40">
+                            <div className="flex items-start gap-2">
+                              <span className="text-emerald-600 mt-0.5">📤</span>
+                              <div className="space-y-1.5">
+                                <p className="text-xs font-medium text-emerald-800 dark:text-emerald-200">Canal Directo Activo</p>
+                                <p className="text-[11px] text-emerald-700/80 dark:text-emerald-300/80 leading-relaxed">
+                                  StayHost gestionará tus reservas manuales y las incluirá en el feed iCal de exportación configurado arriba.
+                                </p>
                               </div>
                             </div>
-                            {editingProperty ? (
-                              <div className="space-y-2">
-                                <Label className="text-xs">Tu iCal de exportación (copia en las otras plataformas)</Label>
-                                <div className="flex gap-2">
-                                  <Input readOnly value={`${baseUrl}/ical/export/${editingProperty.id}.ics`} className="text-xs bg-muted/50 font-mono cursor-pointer"
-                                    onClick={(e) => { navigator.clipboard.writeText((e.target as HTMLInputElement).value); }} />
-                                  <Button type="button" variant="outline" size="sm" className="shrink-0 text-xs" title="Copiar enlace iCal"
-                                    onClick={() => { navigator.clipboard.writeText(`${baseUrl}/ical/export/${editingProperty.id}.ics`); }}>
-                                    📋 Copiar
-                                  </Button>
-                                </div>
-                              </div>
-                            ) : (
-                              <div className="flex items-center gap-2 p-2.5 rounded-lg bg-muted/30 border border-dashed border-emerald-300 dark:border-emerald-700">
-                                <span className="text-base">🔗</span>
-                                <p className="text-[11px] text-muted-foreground">El enlace iCal se generará automáticamente al crear la propiedad.</p>
-                              </div>
-                            )}
-                          </>
+                          </div>
                         )}
                       </div>
                     </div>
