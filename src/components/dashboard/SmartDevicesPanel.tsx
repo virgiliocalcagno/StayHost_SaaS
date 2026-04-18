@@ -1575,20 +1575,39 @@ export default function SmartDevicesPanel() {
                 {selectedProvider === 'ttlock' ? (
                   <div className="space-y-3">
                     <div className="space-y-1.5">
-                      <Label className="text-xs font-bold">Email / Usuario</Label>
-                      <Input 
-                        placeholder="usuario@ejemplo.com" 
-                        className="rounded-xl h-11" 
+                      <Label className="text-xs font-bold">Client ID <span className="text-muted-foreground font-normal">(Open Platform)</span></Label>
+                      <Input
+                        placeholder="14cd5571cd874538afe52406a89da19c"
+                        className="rounded-xl h-11 font-mono text-sm"
+                        value={integrations.ttlock.clientId}
+                        onChange={e => setIntegrations(prev => ({ ...prev, ttlock: { ...prev.ttlock, clientId: e.target.value } }))}
+                      />
+                    </div>
+                    <div className="space-y-1.5">
+                      <Label className="text-xs font-bold">Client Secret</Label>
+                      <Input
+                        type="password"
+                        placeholder="••••••••••••••••"
+                        className="rounded-xl h-11 font-mono text-sm"
+                        value={integrations.ttlock.clientSecret}
+                        onChange={e => setIntegrations(prev => ({ ...prev, ttlock: { ...prev.ttlock, clientSecret: e.target.value } }))}
+                      />
+                    </div>
+                    <div className="space-y-1.5">
+                      <Label className="text-xs font-bold">Email / Usuario <span className="text-muted-foreground font-normal">(App TTLock)</span></Label>
+                      <Input
+                        placeholder="+119417992044"
+                        className="rounded-xl h-11"
                         value={integrations.ttlock.username}
                         onChange={e => setIntegrations(prev => ({ ...prev, ttlock: { ...prev.ttlock, username: e.target.value } }))}
                       />
                     </div>
                     <div className="space-y-1.5">
-                      <Label className="text-xs font-bold">Contraseña</Label>
-                      <Input 
-                        type="password" 
-                        placeholder="••••••••" 
-                        className="rounded-xl h-11" 
+                      <Label className="text-xs font-bold">Contraseña <span className="text-muted-foreground font-normal">(App TTLock)</span></Label>
+                      <Input
+                        type="password"
+                        placeholder="••••••••"
+                        className="rounded-xl h-11"
                         value={integrations.ttlock.password}
                         onChange={e => setIntegrations(prev => ({ ...prev, ttlock: { ...prev.ttlock, password: e.target.value } }))}
                       />
