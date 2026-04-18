@@ -355,40 +355,39 @@ export default function PropertiesPanel() {
     localStorage.setItem("stayhost_properties", JSON.stringify(properties));
   }, [properties]);
 
-  // Load from Supabase when localStorage is empty (run once on mount)
+  // Always load from Supabase on mount — source of truth
   useEffect(() => {
-    if (properties.length > 0) return;
-    try {
-      const session = localStorage.getItem("stayhost_session");
-      const email = (session ? JSON.parse(session).email : null)
-        || localStorage.getItem("stayhost_owner_email");
-      if (!email) return;
-      fetch(`/api/properties?email=${encodeURIComponent(email)}`)
-        .then(r => r.json())
-        .then(data => {
-          if (!data.properties?.length) return;
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          const restored: Property[] = data.properties.map((p: any) => ({
+    const email = getActiveTenantEmail();
+    if (!email) return;
+    fetch(`/api/properties?email=${encodeURIComponent(email)}`)
+      .then(r => r.json())
+      .then(data => {
+        if (!data.properties?.length) return;
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const fromDb: Property[] = data.properties.map((p: any) => {
+          // Preserve any local-only fields (beds, baths, etc.) if already saved
+          const local = properties.find(lp => lp.id === p.id);
+          return {
             id: p.id,
             name: p.name,
             address: p.address ?? "",
-            city: "",
-            image: p.cover_image ?? "",
-            type: "apartment" as const,
-            price: 0,
-            currency: "USD",
-            rating: 0,
-            reviews: 0,
-            beds: 1,
-            baths: 1,
-            maxGuests: 2,
-            status: "active" as const,
-            bookingStatus: "available" as const,
-            occupancy: 0,
-            monthlyRevenue: 0,
-            ownerPayout: 0,
-            staffPay: 0,
-            amenities: [],
+            city: local?.city ?? "",
+            image: p.cover_image ?? local?.image ?? "",
+            type: local?.type ?? ("apartment" as const),
+            price: local?.price ?? 0,
+            currency: local?.currency ?? "USD",
+            rating: local?.rating ?? 0,
+            reviews: local?.reviews ?? 0,
+            beds: local?.beds ?? 1,
+            baths: local?.baths ?? 1,
+            maxGuests: local?.maxGuests ?? 2,
+            status: local?.status ?? ("active" as const),
+            bookingStatus: local?.bookingStatus ?? ("available" as const),
+            occupancy: local?.occupancy ?? 0,
+            monthlyRevenue: local?.monthlyRevenue ?? 0,
+            ownerPayout: local?.ownerPayout ?? 0,
+            staffPay: local?.staffPay ?? 0,
+            amenities: local?.amenities ?? [],
             channels: [
               { name: "Airbnb", connected: !!p.ical_airbnb, color: "bg-rose-500", icon: "A", icalUrl: p.ical_airbnb ?? undefined },
               { name: "Booking", connected: false, color: "bg-blue-600", icon: "B" },
@@ -400,11 +399,12 @@ export default function PropertiesPanel() {
             electricityEnabled: p.electricity_enabled ?? false,
             electricityRate: p.electricity_rate ?? 0,
             ttlockLockId: p.ttlock_lock_id ?? undefined,
-          }));
-          setProperties(restored);
-        })
-        .catch(() => {});
-    } catch {}
+          };
+        });
+        setProperties(fromDb);
+      })
+      .catch(() => {});
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   const [selectedProperty, setSelectedProperty] = useState<Property | null>(null);
 
