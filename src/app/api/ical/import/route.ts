@@ -87,12 +87,18 @@ export async function POST(req: NextRequest) {
       let icalText: string;
       try {
         const res = await fetch(feed.url, {
-          headers: { "User-Agent": "StayHost/1.0 iCal Sync" },
-          signal: AbortSignal.timeout(10_000),
+          headers: { "User-Agent": "Mozilla/5.0 (compatible; StayHost/1.0; +https://stayhost.app)" },
+          signal: AbortSignal.timeout(15_000),
         });
-        if (!res.ok) continue;
+        console.log(`[ical/import] fetch ${feed.url} → status ${res.status}`);
+        if (!res.ok) {
+          console.error(`[ical/import] non-ok status ${res.status} for ${feed.url}`);
+          continue;
+        }
         icalText = await res.text();
-      } catch {
+        console.log(`[ical/import] got ${icalText.length} bytes`);
+      } catch (fetchErr) {
+        console.error(`[ical/import] fetch failed for ${feed.url}:`, fetchErr);
         continue;
       }
 
@@ -106,7 +112,7 @@ export async function POST(req: NextRequest) {
           continue;
         }
 
-        const { first, last } = extractGuestName(ev.summary);
+        const { first } = extractGuestName(ev.summary);
 
         // Upsert by (property_id, source_uid) — safe to re-run
         const { error } = await supabaseAdmin.from("bookings").upsert(
