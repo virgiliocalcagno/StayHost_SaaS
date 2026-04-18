@@ -364,47 +364,57 @@ export default function PropertiesPanel() {
       .then(data => {
         if (!data.properties?.length) return;
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const fromDb: Property[] = data.properties.map((p: any) => {
-          // Preserve any local-only fields (beds, baths, etc.) if already saved
-          const local = properties.find(lp => lp.id === p.id);
-          return {
-            id: p.id,
-            name: p.name,
-            address: p.address ?? local?.address ?? "",
-            city: p.city ?? local?.city ?? "",
-            image: p.cover_image ?? local?.image ?? "",
-            type: local?.type ?? ("apartment" as const),
-            price: local?.price ?? 0,
-            currency: local?.currency ?? "USD",
-            rating: local?.rating ?? 0,
-            reviews: local?.reviews ?? 0,
-            beds: local?.beds ?? 1,
-            baths: local?.baths ?? 1,
-            maxGuests: local?.maxGuests ?? 2,
-            status: local?.status ?? ("active" as const),
-            bookingStatus: local?.bookingStatus ?? ("available" as const),
-            occupancy: local?.occupancy ?? 0,
-            monthlyRevenue: local?.monthlyRevenue ?? 0,
-            ownerPayout: local?.ownerPayout ?? 0,
-            staffPay: local?.staffPay ?? 0,
-            amenities: local?.amenities ?? [],
-            channels: [
-              { name: "Airbnb", connected: !!p.ical_airbnb, color: "bg-rose-500", icon: "A", icalUrl: p.ical_airbnb ?? undefined },
-              { name: "Booking", connected: false, color: "bg-blue-600", icon: "B" },
-              { name: "VRBO", connected: !!p.ical_vrbo, color: "bg-indigo-500", icon: "V", icalUrl: p.ical_vrbo ?? undefined },
-              { name: "Directa", connected: false, color: "bg-emerald-500", icon: "D" },
-            ],
-            wifiSsid: p.wifi_name ?? undefined,
-            wifiPassword: p.wifi_password ?? undefined,
-            electricityEnabled: p.electricity_enabled ?? false,
-            electricityRate: p.electricity_rate ?? 0,
-            ttlockLockId: p.ttlock_lock_id ?? undefined,
-          };
-        });
+        const fromDb: Property[] = data.properties.map((p: any) => ({
+          id: p.id,
+          name: p.name,
+          address: p.address ?? "",
+          city: p.city ?? "",
+          image: p.cover_image ?? "",
+          type: (p.property_type ?? "apartment") as Property["type"],
+          price: p.price ?? 0,
+          currency: p.currency ?? "USD",
+          rating: 0,
+          reviews: 0,
+          beds: p.beds ?? 1,
+          baths: p.baths ?? 1,
+          maxGuests: p.max_guests ?? 2,
+          status: (p.prop_status ?? "active") as Property["status"],
+          bookingStatus: "available" as Property["bookingStatus"],
+          occupancy: 0,
+          monthlyRevenue: 0,
+          ownerPayout: p.owner_payout ?? 0,
+          staffPay: p.staff_pay ?? 0,
+          amenities: p.amenities ?? [],
+          cleaningFeeOneDay: p.cleaning_fee_one_day ?? 0,
+          cleaningFeeMoreDays: p.cleaning_fee_more_days ?? 0,
+          weeklyDiscountPercent: p.weekly_discount_percent ?? 0,
+          energyFeePerDay: p.energy_fee_per_day ?? 0,
+          additionalServicesFee: p.additional_services_fee ?? 0,
+          recurringSupplies: p.recurring_supplies ?? [],
+          autoAssignCleaner: p.auto_assign_cleaner ?? false,
+          cleanerPriorities: p.cleaner_priorities ?? [],
+          bedConfiguration: p.bed_configuration ?? undefined,
+          standardInstructions: p.standard_instructions ?? undefined,
+          evidenceCriteria: p.evidence_criteria ?? [],
+          descriptionES: p.description_es ?? undefined,
+          descriptionEN: p.description_en ?? undefined,
+          photoTour: p.photo_tour ?? [],
+          amenitiesConfig: p.amenities_config ?? undefined,
+          channels: [
+            { name: "Airbnb", connected: !!p.ical_airbnb, color: "bg-rose-500", icon: "A", icalUrl: p.ical_airbnb ?? undefined },
+            { name: "Booking", connected: false, color: "bg-blue-600", icon: "B" },
+            { name: "VRBO", connected: !!p.ical_vrbo, color: "bg-indigo-500", icon: "V", icalUrl: p.ical_vrbo ?? undefined },
+            { name: "Directa", connected: false, color: "bg-emerald-500", icon: "D" },
+          ],
+          wifiSsid: p.wifi_name ?? undefined,
+          wifiPassword: p.wifi_password ?? undefined,
+          electricityEnabled: p.electricity_enabled ?? false,
+          electricityRate: p.electricity_rate ?? 0,
+          ttlockLockId: p.ttlock_lock_id ?? undefined,
+        }));
         setProperties(fromDb);
       })
       .catch(() => {});
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   const [selectedProperty, setSelectedProperty] = useState<Property | null>(null);
 
