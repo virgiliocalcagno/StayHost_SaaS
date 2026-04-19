@@ -104,7 +104,15 @@ type AccountRow = {
 // Uses supabaseAdmin to read the stored refresh_token because we need
 // service-role access to decrypted columns regardless of RLS (we still
 // validate that accountId belongs to tenantId first).
-async function getAccessToken(accountId: string, tenantId: string): Promise<string | null> {
+//
+// Devuelve un resultado discriminado para que la UI pueda mostrar el error
+// real al usuario: antes decía "TOKEN_EXPIRED" para TODO (cuenta no encontrada,
+// refresh rechazado, etc.) y eso hacía imposible diagnosticar.
+type AccessTokenResult =
+  | { ok: true; accessToken: string }
+  | { ok: false; code: "ACCOUNT_NOT_FOUND" | "NO_REFRESH_TOKEN" | "REFRESH_FAILED"; detail?: string };
+
+async function getAccessToken(accountId: string, tenantId: string): Promise<AccessTokenResult> {
   const { data: row } = await supabaseAdmin
     .from("ttlock_accounts")
     .select("id, tenant_id, access_token, refresh_token, token_expires_at")
@@ -112,17 +120,36 @@ async function getAccessToken(accountId: string, tenantId: string): Promise<stri
     .eq("tenant_id", tenantId)
     .maybeSingle<AccountRow>();
 
-  if (!row) return null;
+  if (!row) {
+    return {
+      ok: false,
+      code: "ACCOUNT_NOT_FOUND",
+      detail: `No hay cuenta TTLock con id ${accountId} para este tenant. La propiedad probablemente apunta a una cuenta que ya no existe — reasígnala en Configuración.`,
+    };
+  }
 
   // Reuse current token if it's still valid (5 min buffer).
   if (row.access_token && row.token_expires_at) {
     const expiresAt = new Date(row.token_expires_at).getTime();
-    if (Date.now() < expiresAt - 5 * 60 * 1000) return row.access_token;
+    if (Date.now() < expiresAt - 5 * 60 * 1000) return { ok: true, accessToken: row.access_token };
   }
 
-  if (!row.refresh_token) return null;
+  if (!row.refresh_token) {
+    return {
+      ok: false,
+      code: "NO_REFRESH_TOKEN",
+      detail: "La cuenta no tiene refresh_token guardado. Reconéctala con tu contraseña TTLock.",
+    };
+  }
+
   const refreshed = await oauthRefresh(row.refresh_token);
-  if (!refreshed?.access_token) return null;
+  if (!refreshed?.access_token) {
+    return {
+      ok: false,
+      code: "REFRESH_FAILED",
+      detail: "TTLock rechazó el refresh_token. Reconéctala con tu contraseña TTLock.",
+    };
+  }
 
   await supabaseAdmin
     .from("ttlock_accounts")
@@ -135,7 +162,7 @@ async function getAccessToken(accountId: string, tenantId: string): Promise<stri
     } as never)
     .eq("id", accountId);
 
-  return refreshed.access_token;
+  return { ok: true, accessToken: refreshed.access_token };
 }
 
 // GET — list tenant's accounts without exposing any tokens.
@@ -301,13 +328,14 @@ export async function POST(req: NextRequest) {
       if (!accountId) {
         return NextResponse.json({ error: "accountId requerido" }, { status: 400 });
       }
-      const accessToken = await getAccessToken(accountId, tenantId);
-      if (!accessToken) {
+      const tokenResult = await getAccessToken(accountId, tenantId);
+      if (!tokenResult.ok) {
         return NextResponse.json(
-          { error: "TOKEN_EXPIRED", message: "Reconecta esta cuenta con tu contraseña" },
+          { error: tokenResult.code, message: tokenResult.detail ?? "Reconecta esta cuenta con tu contraseña" },
           { status: 401 }
         );
       }
+      const accessToken = tokenResult.accessToken;
       const clientId = process.env.TTLOCK_CLIENT_ID;
       const url = new URL(`${TTLOCK_API}/v3/lock/list`);
       url.searchParams.set("clientId", clientId!);
@@ -355,13 +383,14 @@ export async function POST(req: NextRequest) {
           { status: 400 }
         );
       }
-      const accessToken = await getAccessToken(accountId, tenantId);
-      if (!accessToken) {
+      const tokenResult = await getAccessToken(accountId, tenantId);
+      if (!tokenResult.ok) {
         return NextResponse.json(
-          { error: "TOKEN_EXPIRED", message: "Reconecta esta cuenta con tu contraseña" },
+          { error: tokenResult.code, message: tokenResult.detail ?? "Reconecta esta cuenta con tu contraseña" },
           { status: 401 }
         );
       }
+      const accessToken = tokenResult.accessToken;
       const clientId = process.env.TTLOCK_CLIENT_ID;
       if (!clientId) {
         return NextResponse.json(

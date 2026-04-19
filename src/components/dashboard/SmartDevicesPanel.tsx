@@ -97,8 +97,14 @@ async function api<T>(path: string, init?: RequestInit & { json?: unknown }): Pr
     },
     body: json ? JSON.stringify(json) : rest.body,
   });
-  const data = (await res.json().catch(() => ({}))) as T & { error?: string };
-  if (!res.ok) throw new Error((data as { error?: string }).error ?? `HTTP ${res.status}`);
+  const data = (await res.json().catch(() => ({}))) as T & { error?: string; message?: string };
+  if (!res.ok) {
+    // Preferimos el `message` humano sobre el `error` tipo código, cuando
+    // ambos están — así el usuario ve "La propiedad apunta a una cuenta
+    // que ya no existe" en vez de "ACCOUNT_NOT_FOUND".
+    const d = data as { error?: string; message?: string };
+    throw new Error(d.message ?? d.error ?? `HTTP ${res.status}`);
+  }
   return data;
 }
 
