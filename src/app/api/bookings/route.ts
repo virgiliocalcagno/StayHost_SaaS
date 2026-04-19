@@ -165,7 +165,7 @@ export async function GET() {
 
   const { data: props } = await supabase
     .from("properties")
-    .select("id, name, address, price, ical_airbnb, ical_vrbo")
+    .select("id, name, address, price, ical_airbnb, ical_vrbo, ttlock_account_id, ttlock_lock_id")
     .eq("tenant_id", tenantId);
 
   if (!props?.length) return NextResponse.json({ properties: [] });
@@ -183,6 +183,8 @@ export async function GET() {
     price: number | null;
     ical_airbnb: string | null;
     ical_vrbo: string | null;
+    ttlock_account_id: string | null;
+    ttlock_lock_id: string | number | null;
   }[]).map((prop) => {
     const channel = prop.ical_airbnb ? "airbnb" : prop.ical_vrbo ? "vrbo" : "direct";
     return {
@@ -191,6 +193,10 @@ export async function GET() {
       address: prop.address ?? "",
       price: prop.price ?? 0,
       channel,
+      // TTLock info para que KeysPanel sepa si puede programar el PIN en la
+      // cerradura directamente al mandar el código al huésped.
+      ttlockAccountId: prop.ttlock_account_id ?? null,
+      ttlockLockId: prop.ttlock_lock_id != null ? String(prop.ttlock_lock_id) : null,
       bookings: ((bookings ?? []) as Array<Record<string, unknown>>)
         .filter((b) => b.property_id === prop.id)
         .map((b) => ({

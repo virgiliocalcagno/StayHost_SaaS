@@ -21,7 +21,7 @@ export async function GET() {
       id, property_id, booking_id,
       ttlock_lock_id, ttlock_pwd_id,
       guest_name, guest_phone, pin,
-      source, status,
+      source, status, delivery_status,
       valid_from, valid_to,
       created_at,
       properties:property_id ( name )
@@ -78,6 +78,16 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "source inválido" }, { status: 400 });
   }
 
+  // Estado de entrega al huésped. Se usa desde KeysPanel para saber si ya
+  // se avisó al huésped del código. Default = pending (apenas lo creamos).
+  const deliveryStatus = body.deliveryStatus
+    ? String(body.deliveryStatus)
+    : "pending";
+  const allowedDelivery = new Set(["pending", "sent", "confirmed"]);
+  if (!allowedDelivery.has(deliveryStatus)) {
+    return NextResponse.json({ error: "deliveryStatus inválido" }, { status: 400 });
+  }
+
   const row = {
     tenant_id: tenantId,
     property_id: propertyId,
@@ -89,6 +99,7 @@ export async function POST(req: NextRequest) {
     pin,
     source,
     status: "active" as const,
+    delivery_status: deliveryStatus,
     valid_from: validFrom,
     valid_to: validTo,
   };
@@ -122,7 +133,12 @@ export async function PATCH(req: NextRequest) {
   const id = String(body.id ?? "");
   if (!id) return NextResponse.json({ error: "id required" }, { status: 400 });
 
-  const allowed = new Set(["status", "valid_from", "valid_to", "ttlock_pwd_id", "pin", "guest_name", "guest_phone"]);
+  const allowed = new Set([
+    "status", "delivery_status",
+    "valid_from", "valid_to",
+    "ttlock_pwd_id", "pin",
+    "guest_name", "guest_phone",
+  ]);
   const patch: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(body)) {
     if (k === "id") continue;

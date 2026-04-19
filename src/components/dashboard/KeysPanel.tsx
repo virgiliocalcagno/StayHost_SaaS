@@ -1,5 +1,23 @@
 "use client";
 
+/**
+ * KeysPanel — vista orientada a reservas de los códigos de acceso.
+ *
+ * Lee en paralelo:
+ *   - /api/bookings  → reservas futuras + info TTLock de cada propiedad
+ *   - /api/access-pins → PINs ya guardados en DB
+ *
+ * Cruza por `booking_id` y muestra:
+ *   - Si la reserva YA tiene un PIN guardado → ese código + delivery_status.
+ *   - Si no tiene → un código sugerido (últimos 4 del teléfono o de la fecha)
+ *     hasta que el usuario lo marque como enviado o edite, momento en que
+ *     se hace upsert en access_pins y — si la propiedad tiene TTLock — se
+ *     programa en la cerradura.
+ *
+ * Ya NO usa localStorage. Todo vive en Supabase via /api/access-pins y es
+ * la misma fuente de datos que ve el tab "Llaves & PINs" en Dispositivos.
+ */
+
 import { useEffect, useState, useMemo } from "react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -17,53 +35,94 @@ import {
   Clock,
   AlertTriangle,
   RefreshCw,
+  Lock,
+  Loader2,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
-type AccessStatus = "pending" | "sent" | "confirmed";
+type DeliveryStatus = "pending" | "sent" | "confirmed";
 
-interface KeyEntry {
-  bookingId: string;
+interface BookingLite {
+  id: string;
   propertyId: string;
   propertyName: string;
   propertyAddress: string;
+  ttlockAccountId: string | null;
+  ttlockLockId: string | null;
   guest: string;
   phone: string | null;
   phone4: string | null;
-  checkIn: string;
-  checkOut: string;
+  checkIn: string; // YYYY-MM-DD
+  checkOut: string; // YYYY-MM-DD
   channel: string;
   bookingUrl: string | null;
+}
+
+interface PinRow {
+  id: string;
+  booking_id: string | null;
+  property_id: string;
+  pin: string;
+  delivery_status: DeliveryStatus;
+  status: "active" | "expired" | "revoked";
+  ttlock_pwd_id: string | null;
+  valid_from: string;
+  valid_to: string;
+}
+
+interface Entry extends BookingLite {
+  pinId: string | null; // null si todavía no se persistió
   accessCode: string;
-  status: AccessStatus;
+  deliveryStatus: DeliveryStatus;
+  hasTtlock: boolean;
 }
 
-const STORAGE_KEY = "stayhost_key_statuses";
-
-function loadStatuses(): Record<string, { status: AccessStatus; code: string }> {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    return raw ? JSON.parse(raw) : {};
-  } catch {
-    return {};
-  }
-}
-
-function saveStatuses(data: Record<string, { status: AccessStatus; code: string }>) {
-  try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
-  } catch {}
-}
+// ─── Helpers ────────────────────────────────────────────────────────────────
 
 function formatDate(iso: string) {
+  // YYYY-MM-DD: agregamos hora fija al mediodía para que `new Date()` no
+  // aplique un offset de timezone y nos corra al día anterior en AST.
   const d = new Date(iso + "T12:00:00");
-  return d.toLocaleDateString("es", { day: "2-digit", month: "short", year: "numeric" });
+  return d.toLocaleDateString("es", {
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+  });
 }
 
 function daysUntil(iso: string) {
-  const diff = Math.ceil((new Date(iso + "T12:00:00").getTime() - Date.now()) / 86400000);
-  return diff;
+  return Math.ceil(
+    (new Date(iso + "T12:00:00").getTime() - Date.now()) / 86400000
+  );
 }
+
+/**
+ * Construye el instante (ISO UTC) en que empieza la ventana de validez.
+ * Convención: check-in a las 15:00 hora local del navegador (Santo Domingo
+ * AST) el día `checkIn`.
+ */
+function checkInStartIso(checkIn: string): string {
+  const [y, m, d] = checkIn.split("-").map(Number);
+  // Date constructor con year/month/day/hour/minute usa hora local.
+  const local = new Date(y, (m ?? 1) - 1, d ?? 1, 15, 0, 0, 0);
+  return local.toISOString();
+}
+
+/**
+ * Instante de fin de la ventana. Convención: check-out a las 11:00 local.
+ */
+function checkOutEndIso(checkOut: string): string {
+  const [y, m, d] = checkOut.split("-").map(Number);
+  const local = new Date(y, (m ?? 1) - 1, d ?? 1, 11, 0, 0, 0);
+  return local.toISOString();
+}
+
+function suggestCode(b: { phone4: string | null; checkIn: string }): string {
+  if (b.phone4 && b.phone4.length === 4) return b.phone4;
+  return b.checkIn.replace(/-/g, "").slice(-4);
+}
+
+// ─── Badges ─────────────────────────────────────────────────────────────────
 
 const ChannelBadge = ({ channel }: { channel: string }) => {
   const map: Record<string, { label: string; color: string }> = {
@@ -71,6 +130,7 @@ const ChannelBadge = ({ channel }: { channel: string }) => {
     vrbo: { label: "VRBO", color: "bg-indigo-100 text-indigo-700" },
     booking: { label: "Booking", color: "bg-blue-100 text-blue-700" },
     manual: { label: "Directa", color: "bg-emerald-100 text-emerald-700" },
+    direct: { label: "Directa", color: "bg-emerald-100 text-emerald-700" },
   };
   const info = map[channel] ?? { label: channel, color: "bg-gray-100 text-gray-700" };
   return (
@@ -80,8 +140,8 @@ const ChannelBadge = ({ channel }: { channel: string }) => {
   );
 };
 
-const StatusBadge = ({ status }: { status: AccessStatus }) => {
-  const map: Record<AccessStatus, { label: string; color: string }> = {
+const StatusBadge = ({ status }: { status: DeliveryStatus }) => {
+  const map: Record<DeliveryStatus, { label: string; color: string }> = {
     pending: { label: "Pendiente", color: "bg-amber-100 text-amber-700" },
     sent: { label: "Enviado", color: "bg-blue-100 text-blue-700" },
     confirmed: { label: "Confirmado", color: "bg-emerald-100 text-emerald-700" },
@@ -94,73 +154,205 @@ const StatusBadge = ({ status }: { status: AccessStatus }) => {
   );
 };
 
+// ─── Component ──────────────────────────────────────────────────────────────
+
 export default function KeysPanel() {
-  const [entries, setEntries] = useState<KeyEntry[]>([]);
-  const [statuses, setStatuses] = useState<Record<string, { status: AccessStatus; code: string }>>({});
+  const [entries, setEntries] = useState<Entry[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
-  const [filter, setFilter] = useState<"all" | AccessStatus>("all");
+  const [filter, setFilter] = useState<"all" | DeliveryStatus>("all");
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingCode, setEditingCode] = useState("");
+  const [savingId, setSavingId] = useState<string | null>(null);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
-  const fetchBookings = () => {
+  const fetchData = async () => {
     setLoading(true);
+    setErrorMsg(null);
     try {
-      // Tenant is resolved server-side from the auth cookie — no need to
-      // pass email. If the cookie is missing the endpoint returns 403.
-      const saved = loadStatuses();
-      setStatuses(saved);
+      const [bookingsRes, pinsRes] = await Promise.all([
+        fetch("/api/bookings", { credentials: "include", cache: "no-store" }),
+        fetch("/api/access-pins", { credentials: "include", cache: "no-store" }),
+      ]);
+      if (!bookingsRes.ok) {
+        setEntries([]);
+        setLoading(false);
+        return;
+      }
+      const bookingsData = await bookingsRes.json();
+      const pinsData = pinsRes.ok
+        ? ((await pinsRes.json()) as { pins: PinRow[] })
+        : { pins: [] };
 
-      fetch(`/api/bookings`, { credentials: "include" })
-        .then(r => r.json())
-        .then(data => {
-          if (!data.properties?.length) { setLoading(false); return; }
-          const all: KeyEntry[] = [];
-          for (const prop of data.properties) {
-            for (const b of prop.bookings ?? []) {
-              // Show all future bookings (up to 365 days), skip past check-outs
-              const daysToCheckOut = daysUntil(b.end);
-              if (daysToCheckOut < 0) continue;
+      // Index: bookingId → PIN más reciente (GET ya viene ordenado por created_at desc).
+      const pinsByBooking = new Map<string, PinRow>();
+      for (const p of pinsData.pins ?? []) {
+        if (p.booking_id && !pinsByBooking.has(p.booking_id)) {
+          pinsByBooking.set(p.booking_id, p);
+        }
+      }
 
-              const savedEntry = saved[b.id];
-              const suggestedCode = b.phone4 || b.start.replace(/-/g, "").slice(-4);
+      const all: Entry[] = [];
+      for (const prop of bookingsData.properties ?? []) {
+        for (const b of prop.bookings ?? []) {
+          // Saltar check-outs pasados.
+          if (daysUntil(b.end) < 0) continue;
 
-              all.push({
-                bookingId: b.id,
-                propertyId: prop.id,
-                propertyName: prop.name,
-                propertyAddress: prop.address || "",
-                guest: b.guest,
-                phone: b.phone,
-                phone4: b.phone4,
-                checkIn: b.start,
-                checkOut: b.end,
-                channel: b.channel,
-                bookingUrl: b.bookingUrl,
-                accessCode: savedEntry?.code ?? suggestedCode,
-                status: savedEntry?.status ?? "pending",
-              });
-            }
-          }
-          all.sort((a, b) => a.checkIn.localeCompare(b.checkIn));
-          setEntries(all);
-          setLoading(false);
-        })
-        .catch(() => setLoading(false));
-    } catch {
+          const pin = pinsByBooking.get(b.id);
+          const hasTtlock = Boolean(prop.ttlockAccountId && prop.ttlockLockId);
+
+          all.push({
+            id: b.id,
+            propertyId: prop.id,
+            propertyName: prop.name,
+            propertyAddress: prop.address || "",
+            ttlockAccountId: prop.ttlockAccountId ?? null,
+            ttlockLockId: prop.ttlockLockId ?? null,
+            guest: b.guest,
+            phone: b.phone,
+            phone4: b.phone4,
+            checkIn: b.start,
+            checkOut: b.end,
+            channel: b.channel,
+            bookingUrl: b.bookingUrl,
+            pinId: pin?.id ?? null,
+            accessCode: pin?.pin ?? suggestCode({ phone4: b.phone4, checkIn: b.start }),
+            deliveryStatus: pin?.delivery_status ?? "pending",
+            hasTtlock,
+          });
+        }
+      }
+      all.sort((a, b) => a.checkIn.localeCompare(b.checkIn));
+      setEntries(all);
+    } catch (err) {
+      setErrorMsg(err instanceof Error ? err.message : String(err));
+    } finally {
       setLoading(false);
     }
   };
 
-  useEffect(() => { fetchBookings(); }, []);
+  useEffect(() => {
+    fetchData();
+  }, []);
 
-  const updateEntry = (id: string, status: AccessStatus, code: string) => {
-    const updated = { ...statuses, [id]: { status, code } };
-    setStatuses(updated);
-    saveStatuses(updated);
-    setEntries(prev =>
-      prev.map(e => e.bookingId === id ? { ...e, status, accessCode: code } : e)
+  // Programa el PIN en la cerradura TTLock. Silencioso — solo devuelve el
+  // keyboardPwdId si todo salió bien, o null si falló. Los errores no
+  // bloquean el guardado del PIN en DB, solo quedan como warning en UI.
+  const programOnLock = async (entry: Entry, code: string): Promise<string | null> => {
+    if (!entry.hasTtlock) return null;
+    try {
+      const res = await fetch("/api/ttlock/accounts", {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "createPin",
+          accountId: entry.ttlockAccountId,
+          lockId: entry.ttlockLockId,
+          pin: code,
+          name: entry.guest,
+          startDate: new Date(checkInStartIso(entry.checkIn)).getTime(),
+          endDate: new Date(checkOutEndIso(entry.checkOut)).getTime(),
+        }),
+      });
+      if (!res.ok) return null;
+      const data = (await res.json()) as { keyboardPwdId?: string | number };
+      return data.keyboardPwdId != null ? String(data.keyboardPwdId) : null;
+    } catch {
+      return null;
+    }
+  };
+
+  // Upsert el PIN en DB: POST si todavía no existe, PATCH si ya existe.
+  // Si `programLock` es true y la propiedad tiene TTLock, también graba el
+  // código en la cerradura (y guarda el keyboardPwdId resultante).
+  const upsertPin = async (
+    entry: Entry,
+    code: string,
+    deliveryStatus: DeliveryStatus,
+    programLock: boolean
+  ): Promise<{ pinId: string; ttlockPwdId: string | null } | null> => {
+    const ttlockPwdId = programLock ? await programOnLock(entry, code) : null;
+
+    if (entry.pinId) {
+      // PATCH existente.
+      const patchBody: Record<string, unknown> = {
+        id: entry.pinId,
+        pin: code,
+        delivery_status: deliveryStatus,
+      };
+      if (programLock && ttlockPwdId) patchBody.ttlock_pwd_id = ttlockPwdId;
+
+      const res = await fetch("/api/access-pins", {
+        method: "PATCH",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(patchBody),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        setErrorMsg(err.error || "No se pudo actualizar el PIN");
+        return null;
+      }
+      return { pinId: entry.pinId, ttlockPwdId };
+    } else {
+      // POST nuevo.
+      const sourceByChannel: Record<string, string> = {
+        airbnb: "airbnb_ical",
+        vrbo: "vrbo_ical",
+        direct: "direct_booking",
+        manual: "manual",
+      };
+      const source = sourceByChannel[entry.channel] ?? "manual";
+
+      const res = await fetch("/api/access-pins", {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          propertyId: entry.propertyId,
+          bookingId: entry.id,
+          guestName: entry.guest,
+          guestPhone: entry.phone || undefined,
+          pin: code,
+          source,
+          validFrom: checkInStartIso(entry.checkIn),
+          validTo: checkOutEndIso(entry.checkOut),
+          deliveryStatus,
+          ttlockLockId: entry.ttlockLockId || undefined,
+          ttlockPwdId: ttlockPwdId || undefined,
+        }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        setErrorMsg(err.error || "No se pudo crear el PIN");
+        return null;
+      }
+      const data = (await res.json()) as { id: string };
+      return { pinId: data.id, ttlockPwdId };
+    }
+  };
+
+  // Handler principal: edita código y/o cambia estado.
+  const saveEntry = async (
+    entry: Entry,
+    code: string,
+    deliveryStatus: DeliveryStatus,
+    programLock: boolean
+  ) => {
+    setSavingId(entry.id);
+    setErrorMsg(null);
+    const result = await upsertPin(entry, code, deliveryStatus, programLock);
+    setSavingId(null);
+    if (!result) return;
+
+    setEntries((prev) =>
+      prev.map((e) =>
+        e.id === entry.id
+          ? { ...e, accessCode: code, deliveryStatus, pinId: result.pinId }
+          : e
+      )
     );
   };
 
@@ -170,31 +362,41 @@ export default function KeysPanel() {
     setTimeout(() => setCopiedId(null), 2000);
   };
 
-  const openWhatsApp = (phone: string | null, guest: string, code: string, property: string, checkIn: string) => {
-    const msg = `Hola ${guest}! Tu código de acceso para *${property}* es: *${code}*. Check-in: ${formatDate(checkIn)}. Cualquier duda estoy a tu disposición.`;
-    const num = phone?.replace(/\D/g, "") ?? "";
+  const openWhatsApp = (entry: Entry) => {
+    const msg = `Hola ${entry.guest}! Tu código de acceso para *${entry.propertyName}* es: *${entry.accessCode}*. Check-in: ${formatDate(entry.checkIn)}. Cualquier duda estoy a tu disposición.`;
+    const num = entry.phone?.replace(/\D/g, "") ?? "";
     const url = num
       ? `https://wa.me/${num}?text=${encodeURIComponent(msg)}`
       : `https://wa.me/?text=${encodeURIComponent(msg)}`;
     window.open(url, "_blank");
+
+    // Al enviar por WhatsApp, marcamos como "enviado" y — si tiene TTLock —
+    // programamos el PIN en la cerradura para que el código funcione.
+    if (entry.deliveryStatus === "pending") {
+      void saveEntry(entry, entry.accessCode, "sent", entry.hasTtlock);
+    }
   };
 
   const filtered = useMemo(() => {
-    return entries.filter(e => {
-      const matchFilter = filter === "all" || e.status === filter;
-      const matchSearch = !search ||
+    return entries.filter((e) => {
+      const matchFilter = filter === "all" || e.deliveryStatus === filter;
+      const matchSearch =
+        !search ||
         e.guest.toLowerCase().includes(search.toLowerCase()) ||
         e.propertyName.toLowerCase().includes(search.toLowerCase());
       return matchFilter && matchSearch;
     });
   }, [entries, filter, search]);
 
-  const stats = useMemo(() => ({
-    pending: entries.filter(e => e.status === "pending").length,
-    sent: entries.filter(e => e.status === "sent").length,
-    confirmed: entries.filter(e => e.status === "confirmed").length,
-    total: entries.length,
-  }), [entries]);
+  const stats = useMemo(
+    () => ({
+      pending: entries.filter((e) => e.deliveryStatus === "pending").length,
+      sent: entries.filter((e) => e.deliveryStatus === "sent").length,
+      confirmed: entries.filter((e) => e.deliveryStatus === "confirmed").length,
+      total: entries.length,
+    }),
+    [entries]
+  );
 
   return (
     <div className="space-y-6">
@@ -202,13 +404,29 @@ export default function KeysPanel() {
       <div className="flex items-center justify-between">
         <div>
           <h2 className="text-2xl font-black text-slate-900">Gestión de Llaves</h2>
-          <p className="text-sm text-muted-foreground mt-0.5">Códigos de acceso generados automáticamente desde reservas</p>
+          <p className="text-sm text-muted-foreground mt-0.5">
+            Códigos de acceso por reserva — sincronizados con las cerraduras
+          </p>
         </div>
-        <Button variant="outline" size="sm" className="gap-2 rounded-xl" onClick={fetchBookings}>
+        <Button
+          variant="outline"
+          size="sm"
+          className="gap-2 rounded-xl"
+          onClick={fetchData}
+        >
           <RefreshCw className="h-4 w-4" />
           Actualizar
         </Button>
       </div>
+
+      {errorMsg && (
+        <Card className="border-red-200 bg-red-50">
+          <CardContent className="p-3 text-sm text-red-700 flex items-start gap-2">
+            <AlertTriangle className="h-4 w-4 mt-0.5 shrink-0" />
+            <span>{errorMsg}</span>
+          </CardContent>
+        </Card>
+      )}
 
       {/* Stats */}
       <div className="grid grid-cols-3 gap-4">
@@ -216,7 +434,7 @@ export default function KeysPanel() {
           { label: "Pendientes", value: stats.pending, color: "text-amber-600", bg: "bg-amber-50 border-amber-100" },
           { label: "Enviados", value: stats.sent, color: "text-blue-600", bg: "bg-blue-50 border-blue-100" },
           { label: "Confirmados", value: stats.confirmed, color: "text-emerald-600", bg: "bg-emerald-50 border-emerald-100" },
-        ].map(s => (
+        ].map((s) => (
           <Card key={s.label} className={cn("border", s.bg)}>
             <CardContent className="p-4 flex items-center gap-3">
               <Key className={cn("h-8 w-8", s.color)} />
@@ -237,11 +455,11 @@ export default function KeysPanel() {
             placeholder="Buscar huésped o propiedad..."
             className="pl-9 rounded-xl"
             value={search}
-            onChange={e => setSearch(e.target.value)}
+            onChange={(e) => setSearch(e.target.value)}
           />
         </div>
         <div className="flex gap-2">
-          {(["all", "pending", "sent", "confirmed"] as const).map(f => (
+          {(["all", "pending", "sent", "confirmed"] as const).map((f) => (
             <Button
               key={f}
               size="sm"
@@ -249,7 +467,13 @@ export default function KeysPanel() {
               className="rounded-xl text-xs"
               onClick={() => setFilter(f)}
             >
-              {f === "all" ? "Todos" : f === "pending" ? "Pendientes" : f === "sent" ? "Enviados" : "Confirmados"}
+              {f === "all"
+                ? "Todos"
+                : f === "pending"
+                  ? "Pendientes"
+                  : f === "sent"
+                    ? "Enviados"
+                    : "Confirmados"}
             </Button>
           ))}
         </div>
@@ -266,61 +490,106 @@ export default function KeysPanel() {
           <CardContent className="flex flex-col items-center justify-center py-16 text-center gap-3">
             <Key className="h-12 w-12 text-muted-foreground/40" />
             <p className="font-semibold text-slate-600">No hay reservas próximas</p>
-            <p className="text-sm text-muted-foreground">Los códigos aparecen automáticamente cuando sincronizas un iCal</p>
+            <p className="text-sm text-muted-foreground">
+              Los códigos aparecen automáticamente cuando sincronizas un iCal
+            </p>
           </CardContent>
         </Card>
       ) : (
         <div className="space-y-3">
-          {filtered.map(entry => {
+          {filtered.map((entry) => {
             const days = daysUntil(entry.checkIn);
             const isUrgent = days >= 0 && days <= 2;
+            const saving = savingId === entry.id;
 
             return (
-              <Card key={entry.bookingId} className={cn(
-                "border transition-all",
-                isUrgent && entry.status === "pending" && "border-amber-300 bg-amber-50/30"
-              )}>
+              <Card
+                key={entry.id}
+                className={cn(
+                  "border transition-all",
+                  isUrgent && entry.deliveryStatus === "pending" && "border-amber-300 bg-amber-50/30"
+                )}
+              >
                 <CardContent className="p-4">
                   <div className="flex items-start gap-4">
                     {/* Left: Code — click to edit */}
                     <div className="flex-shrink-0 text-center">
-                      {editingId === entry.bookingId ? (
+                      {editingId === entry.id ? (
                         <div className="w-16 flex flex-col items-center gap-1">
                           <input
                             autoFocus
                             aria-label="Código de acceso"
-                            maxLength={6}
+                            maxLength={8}
                             value={editingCode}
-                            onChange={e => setEditingCode(e.target.value.replace(/\D/g, ""))}
-                            onKeyDown={e => {
-                              if (e.key === "Enter") { updateEntry(entry.bookingId, entry.status, editingCode); setEditingId(null); }
+                            onChange={(e) =>
+                              setEditingCode(e.target.value.replace(/\D/g, ""))
+                            }
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter") {
+                                if (editingCode.length >= 4) {
+                                  void saveEntry(entry, editingCode, entry.deliveryStatus, entry.hasTtlock);
+                                }
+                                setEditingId(null);
+                              }
                               if (e.key === "Escape") setEditingId(null);
                             }}
-                            onBlur={() => { updateEntry(entry.bookingId, entry.status, editingCode); setEditingId(null); }}
+                            onBlur={() => {
+                              if (
+                                editingCode.length >= 4 &&
+                                editingCode !== entry.accessCode
+                              ) {
+                                void saveEntry(entry, editingCode, entry.deliveryStatus, entry.hasTtlock);
+                              }
+                              setEditingId(null);
+                            }}
                             className="w-16 h-16 rounded-2xl bg-slate-900 text-white text-center text-xl font-black tracking-widest border-2 border-amber-400 outline-none"
                           />
                           <p className="text-[9px] text-amber-600 font-bold">ENTER</p>
                         </div>
                       ) : (
                         <div
-                          className="w-16 h-16 rounded-2xl bg-slate-900 flex flex-col items-center justify-center shadow-lg cursor-pointer hover:bg-slate-700 transition-colors group"
-                          title="Click para editar el código"
-                          onClick={() => { setEditingId(entry.bookingId); setEditingCode(entry.accessCode); }}
+                          className="w-16 h-16 rounded-2xl bg-slate-900 flex flex-col items-center justify-center shadow-lg cursor-pointer hover:bg-slate-700 transition-colors group relative"
+                          title={
+                            entry.pinId
+                              ? "Código guardado. Click para editar."
+                              : "Código sugerido. Click para editar y guardar."
+                          }
+                          onClick={() => {
+                            setEditingId(entry.id);
+                            setEditingCode(entry.accessCode);
+                          }}
                         >
                           <Key className="h-3 w-3 text-white/40 mb-0.5 group-hover:text-amber-400 transition-colors" />
-                          <span className="text-xl font-black text-white tracking-widest">{entry.accessCode}</span>
+                          <span className="text-xl font-black text-white tracking-widest">
+                            {entry.accessCode}
+                          </span>
+                          {saving && (
+                            <div className="absolute inset-0 rounded-2xl bg-slate-900/70 flex items-center justify-center">
+                              <Loader2 className="h-5 w-5 animate-spin text-amber-400" />
+                            </div>
+                          )}
                         </div>
                       )}
-                      <p className="text-[9px] text-muted-foreground mt-1 font-medium">CÓDIGO</p>
+                      <p className="text-[9px] text-muted-foreground mt-1 font-medium">
+                        {entry.pinId ? "GUARDADO" : "SUGERIDO"}
+                      </p>
                     </div>
 
                     {/* Center: Info */}
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-2 flex-wrap mb-1">
-                        <span className="font-bold text-slate-900 truncate">{entry.guest}</span>
+                        <span className="font-bold text-slate-900 truncate">
+                          {entry.guest}
+                        </span>
                         <ChannelBadge channel={entry.channel} />
-                        <StatusBadge status={entry.status} />
-                        {isUrgent && entry.status === "pending" && (
+                        <StatusBadge status={entry.deliveryStatus} />
+                        {entry.hasTtlock && (
+                          <span className="flex items-center gap-1 text-[10px] font-bold text-slate-700 bg-slate-100 px-2 py-0.5 rounded-full">
+                            <Lock className="h-3 w-3" />
+                            TTLock
+                          </span>
+                        )}
+                        {isUrgent && entry.deliveryStatus === "pending" && (
                           <span className="flex items-center gap-1 text-[10px] font-bold text-amber-700 bg-amber-100 px-2 py-0.5 rounded-full">
                             <AlertTriangle className="h-3 w-3" />
                             {days === 0 ? "Hoy" : days === 1 ? "Mañana" : `${days}d`}
@@ -330,20 +599,30 @@ export default function KeysPanel() {
 
                       <div className="flex items-center gap-1 text-sm text-muted-foreground mb-1">
                         <Home className="h-3.5 w-3.5" />
-                        <span className="font-medium truncate">{entry.propertyName}</span>
+                        <span className="font-medium truncate">
+                          {entry.propertyName}
+                        </span>
                         {entry.propertyAddress && (
-                          <span className="text-xs truncate">· {entry.propertyAddress}</span>
+                          <span className="text-xs truncate">
+                            · {entry.propertyAddress}
+                          </span>
                         )}
                       </div>
 
                       <div className="flex items-center gap-4 text-xs text-muted-foreground">
                         <span className="flex items-center gap-1">
                           <Calendar className="h-3 w-3" />
-                          Check-in: <strong className="text-slate-700">{formatDate(entry.checkIn)}</strong>
+                          Check-in:{" "}
+                          <strong className="text-slate-700">
+                            {formatDate(entry.checkIn)}
+                          </strong>
                         </span>
                         <span className="flex items-center gap-1">
                           <Clock className="h-3 w-3" />
-                          Check-out: <strong className="text-slate-700">{formatDate(entry.checkOut)}</strong>
+                          Check-out:{" "}
+                          <strong className="text-slate-700">
+                            {formatDate(entry.checkOut)}
+                          </strong>
                         </span>
                         {entry.phone && (
                           <span className="flex items-center gap-1">
@@ -361,19 +640,24 @@ export default function KeysPanel() {
                           size="sm"
                           variant="outline"
                           className="h-8 px-2.5 rounded-lg gap-1 text-xs"
-                          onClick={() => copyCode(entry.bookingId, entry.accessCode)}
+                          onClick={() => copyCode(entry.id, entry.accessCode)}
                         >
-                          {copiedId === entry.bookingId
-                            ? <><Check className="h-3.5 w-3.5 text-emerald-600" /> Copiado</>
-                            : <><Copy className="h-3.5 w-3.5" /> Copiar</>
-                          }
+                          {copiedId === entry.id ? (
+                            <>
+                              <Check className="h-3.5 w-3.5 text-emerald-600" /> Copiado
+                            </>
+                          ) : (
+                            <>
+                              <Copy className="h-3.5 w-3.5" /> Copiar
+                            </>
+                          )}
                         </Button>
 
                         <Button
                           size="sm"
                           variant="outline"
                           className="h-8 px-2.5 rounded-lg gap-1 text-xs text-emerald-700 border-emerald-200 hover:bg-emerald-50"
-                          onClick={() => openWhatsApp(entry.phone, entry.guest, entry.accessCode, entry.propertyName, entry.checkIn)}
+                          onClick={() => openWhatsApp(entry)}
                         >
                           <MessageCircle className="h-3.5 w-3.5" />
                           WhatsApp
@@ -384,7 +668,9 @@ export default function KeysPanel() {
                             size="sm"
                             variant="ghost"
                             className="h-8 px-2.5 rounded-lg gap-1 text-xs"
-                            onClick={() => window.open(entry.bookingUrl!, "_blank")}
+                            onClick={() =>
+                              window.open(entry.bookingUrl!, "_blank")
+                            }
                           >
                             <ExternalLink className="h-3.5 w-3.5" />
                             Ver reserva
@@ -394,32 +680,41 @@ export default function KeysPanel() {
 
                       {/* Status actions */}
                       <div className="flex gap-1.5 justify-end">
-                        {entry.status !== "sent" && (
+                        {entry.deliveryStatus !== "sent" && (
                           <Button
                             size="sm"
                             variant="outline"
+                            disabled={saving}
                             className="h-7 px-2 rounded-lg text-[11px] text-blue-700 border-blue-200 hover:bg-blue-50"
-                            onClick={() => updateEntry(entry.bookingId, "sent", entry.accessCode)}
+                            onClick={() =>
+                              saveEntry(entry, entry.accessCode, "sent", entry.hasTtlock)
+                            }
                           >
                             Marcar enviado
                           </Button>
                         )}
-                        {entry.status !== "confirmed" && (
+                        {entry.deliveryStatus !== "confirmed" && (
                           <Button
                             size="sm"
+                            disabled={saving}
                             className="h-7 px-2 rounded-lg text-[11px] bg-emerald-600 hover:bg-emerald-700"
-                            onClick={() => updateEntry(entry.bookingId, "confirmed", entry.accessCode)}
+                            onClick={() =>
+                              saveEntry(entry, entry.accessCode, "confirmed", entry.hasTtlock)
+                            }
                           >
                             <Check className="h-3 w-3 mr-1" />
                             Confirmar
                           </Button>
                         )}
-                        {entry.status !== "pending" && (
+                        {entry.deliveryStatus !== "pending" && entry.pinId && (
                           <Button
                             size="sm"
                             variant="ghost"
+                            disabled={saving}
                             className="h-7 px-2 rounded-lg text-[11px] text-muted-foreground"
-                            onClick={() => updateEntry(entry.bookingId, "pending", entry.accessCode)}
+                            onClick={() =>
+                              saveEntry(entry, entry.accessCode, "pending", false)
+                            }
                           >
                             Resetear
                           </Button>
