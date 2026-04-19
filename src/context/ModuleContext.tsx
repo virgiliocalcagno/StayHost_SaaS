@@ -113,7 +113,21 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
       const session = localStorage.getItem("stayhost_session");
       if (session) {
         const parsed = JSON.parse(session);
-        setUserRole(parsed.email === "virgiliocalcagno@gmail.com" ? "OWNER" : parsed.role);
+        // Owner master: normalizamos el email para que whitespace/mayúsculas
+        // no degraden al rol guardado (antes quedaba en Staff por ese motivo).
+        const normalizedEmail = String(parsed.email ?? "").trim().toLowerCase();
+        if (normalizedEmail === "virgiliocalcagno@gmail.com") {
+          setUserRole("OWNER");
+          // Persistimos el rol canónico para que otros componentes que lean
+          // session.role directo también lo vean como OWNER.
+          if (parsed.role !== "OWNER") {
+            parsed.role = "OWNER";
+            parsed.email = normalizedEmail;
+            localStorage.setItem("stayhost_session", JSON.stringify(parsed));
+          }
+        } else {
+          setUserRole(parsed.role);
+        }
       } else {
         setUserRole(null);
       }
