@@ -39,6 +39,8 @@ import {
   batteryColor,
   isExpiredPin,
   formatDateTime,
+  localInputToIso,
+  isoToLocalInput,
 } from "./smart-devices/utils";
 
 // ─── Local DB-shaped types ──────────────────────────────────────────────────
@@ -468,6 +470,11 @@ export default function SmartDevicesPanel() {
 
     setPinSaving(true);
     let lockWarning: string | null = null;
+    // Convertimos la hora local del navegador a ISO UTC antes de mandar al
+    // backend. Sin esto, Postgres interpreta el string sin TZ como UTC y el
+    // PIN queda desfasado 4 horas (en AST, sale "expirado" en el acto).
+    const validFromIso = localInputToIso(pinForm.validFrom);
+    const validToIso = localInputToIso(pinForm.validTo);
     try {
       if (editingPinId) {
         // Update existing: revoke old TTLock pin and create new one if needed
@@ -488,8 +495,8 @@ export default function SmartDevicesPanel() {
             pin: pinForm.pin,
             guest_name: pinForm.guestName,
             guest_phone: pinForm.guestPhone || null,
-            valid_from: pinForm.validFrom,
-            valid_to: pinForm.validTo,
+            valid_from: validFromIso,
+            valid_to: validToIso,
             ttlock_pwd_id: result.id ?? null,
             status: "active",
           },
@@ -509,8 +516,8 @@ export default function SmartDevicesPanel() {
             guestName: pinForm.guestName,
             guestPhone: pinForm.guestPhone || undefined,
             pin: pinForm.pin,
-            validFrom: pinForm.validFrom,
-            validTo: pinForm.validTo,
+            validFrom: validFromIso,
+            validTo: validToIso,
             source: "manual",
             ttlockLockId: prop.ttlock_lock_id ? String(prop.ttlock_lock_id) : undefined,
             ttlockPwdId: result.id,
@@ -1091,8 +1098,11 @@ export default function SmartDevicesPanel() {
                               guestName: pin.guestName,
                               guestPhone: pin.guestPhone ?? "",
                               pin: pin.pin,
-                              validFrom: pin.validFrom.slice(0, 16),
-                              validTo: pin.validTo.slice(0, 16),
+                              // Convertir ISO (UTC) → "YYYY-MM-DDTHH:MM" en la
+                              // zona local del navegador. Antes se cortaba a
+                              // 16 chars, metiendo la hora UTC al input.
+                              validFrom: isoToLocalInput(pin.validFrom),
+                              validTo: isoToLocalInput(pin.validTo),
                             });
                             setShowPinForm(true);
                           }}

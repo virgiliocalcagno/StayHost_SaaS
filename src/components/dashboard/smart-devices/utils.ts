@@ -79,3 +79,38 @@ export function formatDateTime(iso: string) {
     minute: "2-digit",
   });
 }
+
+/**
+ * Convierte un valor de <input type="datetime-local" /> — que no lleva zona
+ * horaria pero representa la hora local del navegador — a un ISO UTC completo
+ * listo para guardarse en una columna `timestamptz`.
+ *
+ * Ejemplo: en Santo Domingo (UTC-4), "2026-04-19T14:20" → "2026-04-19T18:20:00.000Z".
+ *
+ * Sin este helper, Postgres interpreta el string sin zona como UTC directo y
+ * guarda 14:20 UTC (= 10:20 AM AST), lo que hace que el PIN se vea "Expirado"
+ * apenas lo creas.
+ */
+export function localInputToIso(local: string): string {
+  if (!local) return "";
+  const d = new Date(local); // el constructor interpreta strings sin TZ como local
+  if (isNaN(d.getTime())) return "";
+  return d.toISOString();
+}
+
+/**
+ * Inverso de localInputToIso: toma un timestamp ISO del DB (en UTC) y lo
+ * devuelve como "YYYY-MM-DDTHH:MM" en la zona local del navegador, listo para
+ * pre-llenar un <input type="datetime-local" />.
+ */
+export function isoToLocalInput(iso: string): string {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return "";
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  const h = String(d.getHours()).padStart(2, "0");
+  const min = String(d.getMinutes()).padStart(2, "0");
+  return `${y}-${m}-${day}T${h}:${min}`;
+}
