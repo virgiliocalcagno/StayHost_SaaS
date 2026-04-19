@@ -47,7 +47,15 @@ type LockSummary = {
   battery: number | null;
 };
 
-type PropertyOption = { id: string; name: string };
+type PropertyOption = {
+  id: string;
+  name: string;
+  // DB column type may be bigint or text depending on schema vintage — we
+  // always keep it as a string in the client so comparisons with lockId
+  // (always string from /v3/lock/list) don't silently miss.
+  ttlock_lock_id: string | null;
+  ttlock_account_id: string | null;
+};
 
 async function api<T>(
   path: string,
@@ -101,8 +109,25 @@ export default function TTLockAccountsSection() {
     try {
       const res = await fetch("/api/properties", { credentials: "same-origin" });
       if (!res.ok) return;
-      const data = (await res.json()) as { properties?: Array<{ id: string; name: string }> };
-      setProperties((data.properties ?? []).map((p) => ({ id: p.id, name: p.name })));
+      const data = (await res.json()) as {
+        properties?: Array<{
+          id: string;
+          name: string;
+          // Supabase returns bigint as string OR number depending on client
+          // config — coerce defensively.
+          ttlock_lock_id: string | number | null;
+          ttlock_account_id: string | null;
+        }>;
+      };
+      setProperties(
+        (data.properties ?? []).map((p) => ({
+          id: p.id,
+          name: p.name,
+          ttlock_lock_id:
+            p.ttlock_lock_id == null ? null : String(p.ttlock_lock_id),
+          ttlock_account_id: p.ttlock_account_id ?? null,
+        }))
+      );
     } catch {
       /* noop */
     }
@@ -157,9 +182,6 @@ export default function TTLockAccountsSection() {
     async (accountId: string, lockId: string, propertyId: string) => {
       setAssigning(lockId);
       try {
-        // Simple PATCH via the properties endpoint would be cleaner — for
-        // now piggy-back on /api/properties/sync with an action flag. We'll
-        // create a dedicated PATCH later if this grows.
         const res = await fetch("/api/properties", {
           method: "PATCH",
           credentials: "same-origin",
@@ -174,14 +196,32 @@ export default function TTLockAccountsSection() {
           const msg = (await res.json().catch(() => ({}))) as { error?: string };
           throw new Error(msg.error ?? `HTTP ${res.status}`);
         }
-        alert("Cerradura asignada a la propiedad");
+        // Optimistic local update: mark this property as owner of the lock
+        // and clear the lock from any other property that had it.
+        setProperties((list) =>
+          list.map((p) => {
+            if (p.id === propertyId) {
+              return {
+                ...p,
+                ttlock_lock_id: String(lockId),
+                ttlock_account_id: accountId,
+              };
+            }
+            if (p.ttlock_lock_id != null && String(p.ttlock_lock_id) === String(lockId)) {
+              return { ...p, ttlock_lock_id: null, ttlock_account_id: null };
+            }
+            return p;
+          })
+        );
+        // Refetch to sync with server truth (covers any column type quirks).
+        refreshProperties();
       } catch (err) {
         alert(`No se pudo asignar: ${err instanceof Error ? err.message : err}`);
       } finally {
         setAssigning(null);
       }
     },
-    []
+    [refreshProperties]
   );
 
   return (
@@ -346,14 +386,46 @@ function LockRow({
   assigning: boolean;
   onAssign: (propertyId: string) => void;
 }) {
-  const [selected, setSelected] = useState<string>("");
+  // Which property (if any) currently owns this lock. Derived from the
+  // parent's `properties` state so it updates live after a successful
+  // assignment. String-coerce both sides — the DB column may be bigint and
+  // come back as a number depending on Supabase client version.
+  const lockIdStr = String(lock.lockId);
+  const currentProperty = useMemo(
+    () =>
+      properties.find(
+        (p) => p.ttlock_lock_id != null && String(p.ttlock_lock_id) === lockIdStr
+      ) ?? null,
+    [properties, lockIdStr]
+  );
+
+  const [selected, setSelected] = useState<string>(currentProperty?.id ?? "");
+
+  // Keep the Select synced with the current assignment after re-renders.
+  useEffect(() => {
+    setSelected(currentProperty?.id ?? "");
+  }, [currentProperty?.id]);
+
+  const hasChange = selected && selected !== (currentProperty?.id ?? "");
+
   return (
     <div className="flex items-center gap-3 rounded-md border bg-background p-2">
       <div className="h-8 w-8 rounded-md bg-primary/10 text-primary flex items-center justify-center">
         <Lock className="h-4 w-4" />
       </div>
       <div className="min-w-0 flex-1">
-        <div className="font-medium text-sm truncate">{lock.name}</div>
+        <div className="flex items-center gap-2 flex-wrap">
+          <span className="font-medium text-sm truncate">{lock.name}</span>
+          {currentProperty && (
+            <Badge
+              variant="outline"
+              className="text-emerald-700 border-emerald-300 bg-emerald-50 text-[10px] font-semibold"
+            >
+              <Link2 className="h-3 w-3 mr-1" />
+              {currentProperty.name}
+            </Badge>
+          )}
+        </div>
         <div className="text-xs text-muted-foreground flex items-center gap-2">
           <span>ID: {lock.lockId}</span>
           {lock.battery !== null && (
@@ -373,15 +445,17 @@ function LockRow({
             {properties.map((p) => (
               <SelectItem key={p.id} value={p.id}>
                 {p.name}
+                {p.ttlock_lock_id && p.ttlock_lock_id !== lock.lockId ? " (tiene otra)" : ""}
               </SelectItem>
             ))}
           </SelectContent>
         </Select>
         <Button
           size="sm"
-          variant="outline"
-          disabled={!selected || assigning}
+          variant={hasChange ? "default" : "outline"}
+          disabled={!hasChange || assigning}
           onClick={() => selected && onAssign(selected)}
+          title={currentProperty ? "Reasignar a otra propiedad" : "Asignar a propiedad"}
         >
           {assigning ? <Loader2 className="h-3 w-3 animate-spin" /> : <Link2 className="h-3 w-3" />}
         </Button>
