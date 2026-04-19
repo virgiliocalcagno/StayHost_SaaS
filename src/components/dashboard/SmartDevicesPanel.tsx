@@ -365,15 +365,27 @@ export default function SmartDevicesPanel() {
   );
 
   // ── Sync all (refresh locks live state) ────────────────────────────────────
+  // Also refresca `properties` para traer cualquier asignación lock↔property
+  // que haya pasado en la pestaña Configuración (TTLockAccountsSection tiene
+  // su propio estado y no lo comparte con el padre).
   const handleSyncAll = useCallback(async () => {
     setSyncing(true);
     try {
+      await Promise.all([refreshProperties(), refreshPins()]);
       await refreshLocks(accounts);
-      await refreshPins();
     } finally {
       setSyncing(false);
     }
-  }, [refreshLocks, refreshPins, accounts]);
+  }, [refreshProperties, refreshLocks, refreshPins, accounts]);
+
+  // Cuando el usuario vuelve a la pestaña "Dispositivos", re-leer properties.
+  // Esto cubre el caso común: asignar una cerradura en Config y volver a
+  // Dispositivos — antes de este effect la pestaña mostraba la foto vieja.
+  useEffect(() => {
+    if (activeTab === "devices") {
+      void refreshProperties();
+    }
+  }, [activeTab, refreshProperties]);
 
   // ── PIN create / update ────────────────────────────────────────────────────
   const resetPinForm = () => {
