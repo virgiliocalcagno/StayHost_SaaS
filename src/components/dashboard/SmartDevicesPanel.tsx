@@ -102,11 +102,6 @@ export default function SmartDevicesPanel() {
   const [icalForm, setIcalForm] = useState({ propertyId: "", propertyName: "", channel: "airbnb" as ICalConfig["channel"], url: "", autoGeneratePins: true, targetDeviceId: "" });
 
   // Config show/hide secrets
-  const [showTuyaSecret, setShowTuyaSecret] = useState(false);
-  const [showTtlockSecret, setShowTtlockSecret] = useState(false);
-  const [showTtlockPwd, setShowTtlockPwd] = useState(false);
-  const [savingConfig, setSavingConfig] = useState(false);
-  const [configSaved, setConfigSaved] = useState(false);
 
   // Persist
   useEffect(() => { localStorage.setItem("stayhost_smart_devices", JSON.stringify(devices)); }, [devices]);
@@ -461,17 +456,6 @@ export default function SmartDevicesPanel() {
     setSyncing(false);
   };
 
-  // ── Save integrations config ───────────────────────────────────────────────
-  const handleSaveConfig = async () => {
-    setSavingConfig(true);
-    localStorage.setItem("stayhost_integrations", JSON.stringify(integrations));
-    await new Promise(r => setTimeout(r, 600));
-    setSavingConfig(false);
-    setConfigSaved(true);
-    setTimeout(() => setConfigSaved(false), 2500);
-  };
-
-
   // ── Add iCal config ────────────────────────────────────────────────────────
   const handleAddIcal = async () => {
     const prop = properties.find(p => p.id === icalForm.propertyId);
@@ -576,8 +560,6 @@ export default function SmartDevicesPanel() {
       {activeTab === "devices" && (
         <div className="grid lg:grid-cols-3 gap-6">
           <div className="lg:col-span-2 space-y-4">
-
-            <TTLockAccountsSection />
 
             {Array.from(new Set(devices.map(d => d.propertyId))).map(propId => {
               const propDevices = devices.filter(d => d.propertyId === propId);
@@ -1161,209 +1143,60 @@ export default function SmartDevicesPanel() {
       {/* TAB: CONFIGURACIÓN                                                 */}
       {/* ═══════════════════════════════════════════════════════════════════ */}
       {activeTab === "config" && (
-        <div className="grid lg:grid-cols-2 gap-6">
+        <div className="space-y-6">
+          {/* Cuentas TTLock + asignación de cerraduras a propiedades */}
+          <TTLockAccountsSection />
 
-          {/* TTLock */}
-          <Card className="rounded-2xl border-gray-100 shadow-sm overflow-hidden">
-            <CardHeader className="bg-slate-900 text-white pb-4">
-              <div className="flex items-center gap-3">
-                <div className="w-10 h-10 rounded-xl bg-white/10 flex items-center justify-center">
-                  <Lock className="h-5 w-5 text-white" />
-                </div>
-                <div>
-                  <CardTitle className="text-sm text-white">TTLock API</CardTitle>
-                  <CardDescription className="text-zinc-400 text-[11px]">euopen.ttlock.com · Cerraduras inteligentes</CardDescription>
-                </div>
-              </div>
-            </CardHeader>
-            <CardContent className="p-5 space-y-4">
-              <div className="space-y-1.5">
-                <Label className="text-xs font-black uppercase tracking-wider text-slate-500">Client ID</Label>
-                <Input
-                  placeholder="TTLock Client ID"
-                  value={integrations.ttlock.clientId}
-                  onChange={e => setIntegrations(i => ({ ...i, ttlock: { ...i.ttlock, clientId: e.target.value } }))}
-                  className="rounded-xl font-mono text-sm"
-                />
-              </div>
-              <div className="space-y-1.5">
-                <Label className="text-xs font-black uppercase tracking-wider text-slate-500">Client Secret</Label>
-                <div className="relative">
-                  <Input
-                    type={showTtlockSecret ? "text" : "password"}
-                    placeholder="••••••••••••"
-                    value={integrations.ttlock.clientSecret}
-                    onChange={e => setIntegrations(i => ({ ...i, ttlock: { ...i.ttlock, clientSecret: e.target.value } }))}
-                    className="rounded-xl pr-10 font-mono text-sm"
-                  />
-                  <button type="button" onClick={() => setShowTtlockSecret(s => !s)} className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-primary" aria-label="Mostrar/ocultar secret">
-                    {showTtlockSecret ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-                  </button>
-                </div>
-              </div>
-              <div className="grid grid-cols-2 gap-3">
-                <div className="space-y-1.5">
-                  <Label className="text-xs font-black uppercase tracking-wider text-slate-500">Username</Label>
-                  <Input
-                    placeholder="tu@email.com"
-                    value={integrations.ttlock.username}
-                    onChange={e => setIntegrations(i => ({ ...i, ttlock: { ...i.ttlock, username: e.target.value } }))}
-                    className="rounded-xl text-sm"
-                  />
-                </div>
-                <div className="space-y-1.5">
-                  <Label className="text-xs font-black uppercase tracking-wider text-slate-500">Contraseña TTLock</Label>
-                  <div className="relative">
-                    <Input
-                      type={showTtlockPwd ? "text" : "password"}
-                      placeholder="••••••••"
-                      value={integrations.ttlock.password}
-                      onChange={e => setIntegrations(i => ({ ...i, ttlock: { ...i.ttlock, password: e.target.value } }))}
-                      className="rounded-xl pr-10 text-sm"
-                    />
-                    <button type="button" onClick={() => setShowTtlockPwd(s => !s)} className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-primary" aria-label="Mostrar/ocultar contraseña">
-                      {showTtlockPwd ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-                    </button>
-                  </div>
-                </div>
-              </div>
-              <div className="p-3 rounded-xl bg-blue-50 border border-blue-100 text-[11px] text-blue-700 flex items-start gap-2">
-                <ExternalLink className="h-3.5 w-3.5 shrink-0 mt-0.5" />
-                <span>Obtén tus credenciales en <strong>euopen.ttlock.com</strong> → Applications → Create App</span>
-              </div>
-            </CardContent>
-          </Card>
-
-          {/* Tuya */}
-          <Card className="rounded-2xl border-gray-100 shadow-sm overflow-hidden">
-            <CardHeader className="bg-orange-500 text-white pb-4">
-              <div className="flex items-center gap-3">
-                <div className="w-10 h-10 rounded-xl bg-white/20 flex items-center justify-center">
-                  <PlugZap className="h-5 w-5 text-white" />
-                </div>
-                <div>
-                  <CardTitle className="text-sm text-white">Tuya Cloud API</CardTitle>
-                  <CardDescription className="text-orange-100 text-[11px]">developer.tuya.com · IoT Platform</CardDescription>
-                </div>
-              </div>
-            </CardHeader>
-            <CardContent className="p-5 space-y-4">
-              <div className="space-y-1.5">
-                <Label className="text-xs font-black uppercase tracking-wider text-slate-500">Client ID (Access ID)</Label>
-                <Input
-                  placeholder="Tuya Access ID"
-                  value={integrations.tuya.clientId}
-                  onChange={e => setIntegrations(i => ({ ...i, tuya: { ...i.tuya, clientId: e.target.value } }))}
-                  className="rounded-xl font-mono text-sm"
-                />
-              </div>
-              <div className="space-y-1.5">
-                <Label className="text-xs font-black uppercase tracking-wider text-slate-500">Client Secret (Access Secret)</Label>
-                <div className="relative">
-                  <Input
-                    type={showTuyaSecret ? "text" : "password"}
-                    placeholder="••••••••••••••••••••"
-                    value={integrations.tuya.clientSecret}
-                    onChange={e => setIntegrations(i => ({ ...i, tuya: { ...i.tuya, clientSecret: e.target.value } }))}
-                    className="rounded-xl pr-10 font-mono text-sm"
-                  />
-                  <button type="button" onClick={() => setShowTuyaSecret(s => !s)} className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-primary" aria-label="Mostrar/ocultar secret">
-                    {showTuyaSecret ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-                  </button>
-                </div>
-              </div>
-              <div className="grid grid-cols-2 gap-3">
-                <div className="space-y-1.5">
-                  <Label className="text-xs font-black uppercase tracking-wider text-slate-500">Región</Label>
-                  <Select value={integrations.tuya.region} onValueChange={v => setIntegrations(i => ({ ...i, tuya: { ...i.tuya, region: v } }))}>
-                    <SelectTrigger className="rounded-xl"><SelectValue /></SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="eu">🇪🇺 Europa (EU)</SelectItem>
-                      <SelectItem value="us">🇺🇸 América (US)</SelectItem>
-                      <SelectItem value="cn">🇨🇳 China (CN)</SelectItem>
-                      <SelectItem value="in">🇮🇳 India (IN)</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-                <div className="space-y-1.5">
-                  <Label className="text-xs font-black uppercase tracking-wider text-slate-500">UID de usuario</Label>
-                  <Input
-                    placeholder="ay1234..."
-                    value={integrations.tuya.uid}
-                    onChange={e => setIntegrations(i => ({ ...i, tuya: { ...i.tuya, uid: e.target.value } }))}
-                    className="rounded-xl font-mono text-sm"
-                  />
-                </div>
-              </div>
-              <div className="p-3 rounded-xl bg-orange-50 border border-orange-100 text-[11px] text-orange-700 flex items-start gap-2">
-                <ExternalLink className="h-3.5 w-3.5 shrink-0 mt-0.5" />
-                <span>Crea tu app en <strong>developer.tuya.com</strong> → Cloud Development → Create Cloud Project → Link devices with the Tuya app</span>
-              </div>
-            </CardContent>
-          </Card>
-
-          {/* Save + env vars info */}
-          <div className="lg:col-span-2 space-y-4">
-            <Button
-              className="gradient-gold text-primary-foreground rounded-2xl font-bold px-10 py-6 h-auto text-base shadow-xl border-none"
-              onClick={handleSaveConfig}
-              disabled={savingConfig}
-            >
-              {savingConfig ? <Loader2 className="h-5 w-5 animate-spin mr-2" /> : configSaved ? <CheckCircle2 className="h-5 w-5 mr-2 text-green-200" /> : <ShieldCheck className="h-5 w-5 mr-2" />}
-              {savingConfig ? "Guardando..." : configSaved ? "¡Guardado exitosamente!" : "Guardar Credenciales"}
-            </Button>
-
-            <Card className="rounded-2xl border-gray-100 bg-zinc-950 text-zinc-300">
-              <CardContent className="p-5 space-y-3">
-                <h4 className="font-bold text-white text-sm flex items-center gap-2"><Settings className="h-4 w-4 text-primary" /> Variables de entorno (Producción)</h4>
-                <p className="text-[11px] text-zinc-400">Para producción, usa variables de entorno en tu <code className="bg-zinc-800 px-1 rounded">.env.local</code> en lugar de guardar en localStorage:</p>
-                <div className="bg-zinc-900 rounded-xl p-4 font-mono text-[10px] text-green-400 space-y-1">
-                  <p># TTLock</p>
-                  <p>TTLOCK_CLIENT_ID=tu_client_id</p>
-                  <p>TTLOCK_CLIENT_SECRET=tu_client_secret</p>
-                  <p className="mt-2"># Tuya</p>
-                  <p>TUYA_CLIENT_ID=tu_access_id</p>
-                  <p>TUYA_CLIENT_SECRET=tu_access_secret</p>
-                  <p>TUYA_REGION=eu</p>
-                  <p>TUYA_UID=tu_uid</p>
-                </div>
-                <p className="text-[10px] text-zinc-500">Las API routes <code className="bg-zinc-800 px-1 rounded">/api/ttlock</code> y <code className="bg-zinc-800 px-1 rounded">/api/tuya</code> ya leen estas variables automáticamente.</p>
-              </CardContent>
-            </Card>
-
-            <div className="pt-6 mt-6 border-t border-red-100">
-              <h4 className="text-sm font-black text-red-600 uppercase tracking-widest mb-3 flex items-center gap-2">
-                <AlertTriangle className="h-4 w-4" /> Zona de Peligro
+          {/* Variables de entorno / servidor */}
+          <Card className="rounded-2xl border-gray-100 bg-zinc-950 text-zinc-300">
+            <CardContent className="p-5 space-y-3">
+              <h4 className="font-bold text-white text-sm flex items-center gap-2">
+                <Settings className="h-4 w-4 text-primary" /> Credenciales de servidor
               </h4>
-              <p className="text-xs text-slate-500 mb-4">Usa estas opciones solo si quieres reiniciar la configuración de dispositivos desde cero.</p>
-              <div className="flex flex-wrap gap-2">
-                <Button 
-                  variant="destructive" 
-                  className="rounded-xl font-bold bg-red-50 text-red-600 border-red-100 hover:bg-red-600 hover:text-white transition-all shadow-none h-11 px-6"
-                  onClick={() => {
-                    if (confirm("¿Estás seguro de que quieres eliminar TODOS los dispositivos? Esta acción no se puede deshacer.")) {
-                      setDevices([]);
-                      localStorage.removeItem("stayhost_smart_devices");
-                      alert("Dispositivos eliminados. La página se actualizará.");
-                    }
-                  }}
-                >
-                  <Trash2 className="h-4 w-4 mr-2" /> Eliminar todos los dispositivos
-                </Button>
-                <Button 
-                  variant="outline" 
-                  className="rounded-xl font-bold border-slate-200 text-slate-500 hover:bg-slate-50 h-11 px-6"
-                  onClick={() => {
-                    if (confirm("Esto borrará TODA la configuración local (LLaves, iCals, integraciones, etc). ¿Continuar?")) {
-                      localStorage.clear();
-                      window.location.reload();
-                    }
-                  }}
-                >
-                  <RefreshCw className="h-4 w-4 mr-2" /> Reiniciar toda la APP
-                </Button>
+              <p className="text-[11px] text-zinc-400">
+                Las API keys maestras se leen de variables de entorno en Vercel/Netlify.
+                No se guardan en el navegador ni en la base de datos del cliente.
+              </p>
+              <div className="bg-zinc-900 rounded-xl p-4 font-mono text-[10px] text-green-400 space-y-1">
+                <p># TTLock (app master credentials)</p>
+                <p>TTLOCK_CLIENT_ID=tu_client_id</p>
+                <p>TTLOCK_CLIENT_SECRET=tu_client_secret</p>
+                <p className="mt-2"># Tuya</p>
+                <p>TUYA_CLIENT_ID=tu_access_id</p>
+                <p>TUYA_CLIENT_SECRET=tu_access_secret</p>
+                <p>TUYA_REGION=eu</p>
+                <p>TUYA_UID=tu_uid</p>
               </div>
-            </div>
+              <p className="text-[10px] text-zinc-500">
+                Las cuentas TTLock individuales (usuario/contraseña) se guardan por tenant
+                en la tabla <code className="bg-zinc-800 px-1 rounded">ttlock_accounts</code> (arriba).
+              </p>
+            </CardContent>
+          </Card>
+
+          {/* Zona de peligro */}
+          <div className="pt-6 border-t border-red-100">
+            <h4 className="text-sm font-black text-red-600 uppercase tracking-widest mb-3 flex items-center gap-2">
+              <AlertTriangle className="h-4 w-4" /> Zona de Peligro
+            </h4>
+            <p className="text-xs text-slate-500 mb-4">
+              Borra el caché local (PINs/iCals/dispositivos cacheados). No toca cuentas TTLock ni propiedades.
+            </p>
+            <Button
+              variant="outline"
+              className="rounded-xl font-bold border-slate-200 text-slate-500 hover:bg-slate-50 h-11 px-6"
+              onClick={() => {
+                if (confirm("¿Limpiar caché local de dispositivos, PINs e iCals?")) {
+                  localStorage.removeItem("stayhost_smart_devices");
+                  localStorage.removeItem("stayhost_pins");
+                  localStorage.removeItem("stayhost_ical_configs");
+                  localStorage.removeItem("stayhost_integrations");
+                  window.location.reload();
+                }
+              }}
+            >
+              <RefreshCw className="h-4 w-4 mr-2" /> Limpiar caché local
+            </Button>
           </div>
         </div>
       )}
