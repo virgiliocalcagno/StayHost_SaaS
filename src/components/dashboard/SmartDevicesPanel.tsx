@@ -28,6 +28,7 @@ import {
 import { cn } from "@/lib/utils";
 import { parseICalFeed, type ParsedICalBooking } from "@/utils/icalParser";
 import { useModules } from "@/context/ModuleContext";
+import TTLockAccountsSection from "./TTLockAccountsSection";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -711,6 +712,8 @@ export default function SmartDevicesPanel() {
       {activeTab === "devices" && (
         <div className="grid lg:grid-cols-3 gap-6">
           <div className="lg:col-span-2 space-y-4">
+
+            <TTLockAccountsSection />
 
             {Array.from(new Set(devices.map(d => d.propertyId))).map(propId => {
               const propDevices = devices.filter(d => d.propertyId === propId);
