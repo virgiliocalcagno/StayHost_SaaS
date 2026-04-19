@@ -59,31 +59,14 @@ export default function DashboardPage() {
 }
 
 function DashboardContent() {
-  const { isModuleEnabled, userRole, setUserRole } = useModules();
+  const { isModuleEnabled, userRole } = useModules();
   const searchParams = useSearchParams();
   const [activePanel, setActivePanel] = useState<PanelType>("overview");
   const [sidebarOpen, setSidebarOpen] = useState(true);
 
-  // AUTO-PROMOTION: Si el usuario ya está logueado pero no es OWNER, lo
-  // promovemos si es el email master. Normalizamos el email porque antes
-  // bastaba un espacio o una mayúscula para que quedaras en Staff.
-  useEffect(() => {
-    const sessionStr = localStorage.getItem("stayhost_session");
-    if (sessionStr) {
-      const session = JSON.parse(sessionStr);
-      const normalizedEmail = String(session.email ?? "").trim().toLowerCase();
-      if (normalizedEmail === "virgiliocalcagno@gmail.com") {
-        session.email = normalizedEmail;
-        localStorage.setItem("stayhost_owner_email", normalizedEmail);
-        if (session.role !== "OWNER") {
-          console.log("SaaS Master activado por auto-promoción");
-          session.role = "OWNER";
-          localStorage.setItem("stayhost_session", JSON.stringify(session));
-          setUserRole("OWNER");
-        }
-      }
-    }
-  }, [setUserRole]);
+  // La detección del rol OWNER ahora vive en ModuleContext, leyendo el email
+  // autenticado desde Supabase (cookie httpOnly) en vez de localStorage. Así
+  // sobrevive a "borrar caché" y no necesita duplicarse aquí.
 
   useEffect(() => {
     const view = searchParams.get("view");

@@ -1,6 +1,13 @@
 "use client";
 
 import React, { createContext, useContext, useState, useEffect } from "react";
+import { supabase } from "@/lib/supabase/client";
+
+// Email del SaaS Master — quien esté autenticado con este email entra como
+// OWNER aun cuando localStorage esté vacío (por ejemplo después de borrar
+// caché). Lo leemos del auth de Supabase, que sí sobrevive al clear-cache
+// del navegador (cookie httpOnly).
+const MASTER_EMAIL = "virgiliocalcagno@gmail.com";
 
 // ─── Core module IDs (built-in) ───────────────────────────────────────────────
 export type ModuleId =
@@ -108,36 +115,67 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
   const [plugins, setPlugins] = useState<PluginManifest[]>([]);
   const [previewPlan, setPreviewPlan] = useState<"starter" | "growth" | "master" | null>(null);
 
-  const syncSession = () => {
+  // Fuente de verdad del rol: Supabase auth. Si el email autenticado es el
+  // master, somos OWNER; si hay otro usuario autenticado, tratamos el rol
+  // legacy de localStorage como fallback (ADMIN/STAFF); si no hay sesión,
+  // userRole es null.
+  const applyRoleFromAuthEmail = (email: string | null | undefined) => {
+    const normalizedEmail = String(email ?? "").trim().toLowerCase();
+    if (normalizedEmail === MASTER_EMAIL) {
+      setUserRole("OWNER");
+      // Sincronizamos localStorage para que componentes legacy que siguen
+      // leyendo `stayhost_session` directo también vean OWNER.
+      try {
+        const existing = localStorage.getItem("stayhost_session");
+        const parsed = existing ? JSON.parse(existing) : {};
+        if (parsed.role !== "OWNER" || parsed.email !== normalizedEmail) {
+          localStorage.setItem(
+            "stayhost_session",
+            JSON.stringify({ ...parsed, email: normalizedEmail, role: "OWNER" })
+          );
+        }
+        localStorage.setItem("stayhost_owner_email", normalizedEmail);
+      } catch {}
+      return;
+    }
+    // Usuario autenticado pero no master — usamos el rol guardado (si existe).
     try {
       const session = localStorage.getItem("stayhost_session");
       if (session) {
         const parsed = JSON.parse(session);
-        // Owner master: normalizamos el email para que whitespace/mayúsculas
-        // no degraden al rol guardado (antes quedaba en Staff por ese motivo).
-        const normalizedEmail = String(parsed.email ?? "").trim().toLowerCase();
-        if (normalizedEmail === "virgiliocalcagno@gmail.com") {
-          setUserRole("OWNER");
-          // Persistimos el rol canónico para que otros componentes que lean
-          // session.role directo también lo vean como OWNER.
-          if (parsed.role !== "OWNER") {
-            parsed.role = "OWNER";
-            parsed.email = normalizedEmail;
-            localStorage.setItem("stayhost_session", JSON.stringify(parsed));
-          }
-        } else {
-          setUserRole(parsed.role);
-        }
+        setUserRole(parsed.role ?? null);
       } else {
         setUserRole(null);
       }
-    } catch {}
+    } catch {
+      setUserRole(null);
+    }
+  };
 
+  const syncSession = async () => {
+    // 1) Rol real desde Supabase auth.
+    try {
+      const { data } = await supabase.auth.getUser();
+      applyRoleFromAuthEmail(data.user?.email);
+    } catch {
+      // Si falla la llamada, caemos al fallback de localStorage.
+      try {
+        const session = localStorage.getItem("stayhost_session");
+        if (session) {
+          const parsed = JSON.parse(session);
+          const normalized = String(parsed.email ?? "").trim().toLowerCase();
+          setUserRole(normalized === MASTER_EMAIL ? "OWNER" : (parsed.role ?? null));
+        } else {
+          setUserRole(null);
+        }
+      } catch {}
+    }
+
+    // 2) Config de módulos y plugins — se mantienen en localStorage.
     try {
       const saved = localStorage.getItem("stayhost_modules_config");
       if (saved) setModules(JSON.parse(saved));
     } catch {}
-
     try {
       const saved = localStorage.getItem("stayhost_plugin_registry");
       if (saved) setPlugins(JSON.parse(saved));
@@ -146,14 +184,21 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     syncSession();
-    window.addEventListener("storage", syncSession);
-    const interval = setInterval(syncSession, 1000);
-    const timeout = setTimeout(() => clearInterval(interval), 10000);
+
+    // Re-evaluar cuando Supabase emita eventos de auth (login, logout, refresh).
+    const { data: authListener } = supabase.auth.onAuthStateChange((_event, session) => {
+      applyRoleFromAuthEmail(session?.user?.email);
+    });
+
+    // También re-evaluamos si otra pestaña cambia el localStorage.
+    const onStorage = () => { void syncSession(); };
+    window.addEventListener("storage", onStorage);
+
     return () => {
-      window.removeEventListener("storage", syncSession);
-      clearInterval(interval);
-      clearTimeout(timeout);
+      authListener.subscription.unsubscribe();
+      window.removeEventListener("storage", onStorage);
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const toggleModule = (id: ModuleId) => {
