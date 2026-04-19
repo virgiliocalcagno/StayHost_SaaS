@@ -209,6 +209,8 @@ export default function SmartDevicesPanel() {
   const [directBookings, setDirectBookings] = useState<DirectBooking[]>([]);
   const [syncing, setSyncing] = useState(false);
   const [syncingIcalId, setSyncingIcalId] = useState<string | null>(null);
+  const [unlockingId, setUnlockingId] = useState<string | null>(null);
+  const [unlockMsg, setUnlockMsg] = useState<{ deviceId: string; text: string; ok: boolean } | null>(null);
 
   // Pin creation form
   const [showPinForm, setShowPinForm] = useState(false);
@@ -354,6 +356,50 @@ export default function SmartDevicesPanel() {
       }
     }
     return undefined;
+  };
+
+  // ── Remote unlock ────────────────────────────────────────────────────────
+  // Opens the lock via TTLock's /v3/lock/unlock. Only works if the lock has
+  // a gateway (G2/G3) or WiFi module — pure bluetooth locks return errcode
+  // -2012 ("no gateway"). We surface that back to the user.
+  const handleRemoteUnlock = async (device: SmartDevice) => {
+    if (device.provider !== "ttlock") {
+      setUnlockMsg({ deviceId: device.id, text: "Solo soportado en TTLock por ahora", ok: false });
+      return;
+    }
+    if (!integrations.ttlock.accessToken) {
+      setUnlockMsg({ deviceId: device.id, text: "Conecta una cuenta TTLock primero", ok: false });
+      return;
+    }
+    setUnlockingId(device.id);
+    setUnlockMsg(null);
+    try {
+      const res = await fetch("/api/ttlock", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "remoteUnlock",
+          accessToken: integrations.ttlock.accessToken,
+          lockId: device.remoteId,
+        }),
+      });
+      const data = (await res.json()) as { errcode?: number; errmsg?: string; error?: string };
+      if (data.errcode === 0) {
+        setUnlockMsg({ deviceId: device.id, text: "Abierta", ok: true });
+        setDevices(prev => prev.map(d => d.id === device.id ? { ...d, locked: false } : d));
+      } else {
+        setUnlockMsg({
+          deviceId: device.id,
+          text: data.errmsg ?? data.error ?? `Error ${data.errcode ?? ""}`.trim(),
+          ok: false,
+        });
+      }
+    } catch (e) {
+      setUnlockMsg({ deviceId: device.id, text: String(e), ok: false });
+    } finally {
+      setUnlockingId(null);
+      setTimeout(() => setUnlockMsg(m => m?.deviceId === device.id ? null : m), 4000);
+    }
   };
 
   // ── Sync iCal ─────────────────────────────────────────────────────────────
@@ -792,7 +838,30 @@ export default function SmartDevicesPanel() {
                                 {devicePins.length} PIN{devicePins.length > 1 ? "s" : ""}
                               </div>
                             )}
+                            {isLock && unlockMsg?.deviceId === device.id && (
+                              <span className={cn("text-[10px] font-bold px-2 py-0.5 rounded-md", unlockMsg.ok ? "bg-green-100 text-green-700" : "bg-red-100 text-red-700")}>
+                                {unlockMsg.text}
+                              </span>
+                            )}
                           </div>
+
+                          {isLock && device.provider === "ttlock" && (
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              disabled={!device.online || unlockingId === device.id}
+                              onClick={() => handleRemoteUnlock(device)}
+                              className="h-8 px-3 shrink-0 gap-1.5 border-amber-300 bg-amber-50 hover:bg-amber-100 text-amber-800 font-bold text-[11px]"
+                              title={device.online ? "Abrir remotamente" : "Requiere gateway/WiFi (Online)"}
+                            >
+                              {unlockingId === device.id ? (
+                                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                              ) : (
+                                <Key className="h-3.5 w-3.5" />
+                              )}
+                              Abrir
+                            </Button>
+                          )}
 
                           <Button variant="ghost" size="icon" className="h-8 w-8 shrink-0">
                             <Settings className="h-3.5 w-3.5" />
