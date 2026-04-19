@@ -1,6 +1,11 @@
 "use client";
 
 import { useState, useMemo, useEffect } from "react";
+import { supabase } from "@/lib/supabase/client";
+
+// Email master del SaaS. Debe coincidir con el de ModuleContext. Si llegas
+// a cambiarlo, cámbialo en ambos lados.
+const MASTER_EMAIL = "virgiliocalcagno@gmail.com";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -220,10 +225,12 @@ const roleConfig: Record<string, { label: string; icon: React.ReactNode; color: 
     bgColor: "bg-indigo-100 dark:bg-indigo-900/40 border-indigo-200 dark:border-indigo-800",
   },
   owner: {
-    label: "Propietario",
-    icon: <Star className="h-3.5 w-3.5" />,
-    color: "text-slate-700 dark:text-slate-300",
-    bgColor: "bg-slate-100 dark:bg-slate-900/40 border-slate-200 dark:border-slate-800",
+    // El SaaS Master (nivel Dios) — máximos permisos, visible con color dorado
+    // distinto del resto del equipo para que quede obvio quién manda.
+    label: "Dios · SaaS Master",
+    icon: <Shield className="h-3.5 w-3.5" />,
+    color: "text-amber-800 dark:text-amber-200",
+    bgColor: "bg-gradient-to-r from-amber-200 to-yellow-100 dark:from-amber-900/60 dark:to-yellow-900/40 border-amber-400 dark:border-amber-700",
   },
   accountant: {
     label: "Contador",
@@ -247,14 +254,75 @@ export default function TeamPanel() {
   useEffect(() => {
     setIsClient(true);
     const saved = localStorage.getItem("stayhost_team");
+    let initial: TeamMember[] = [];
     if (saved) {
-      try { 
+      try {
         const parsed = JSON.parse(saved);
         if (parsed && Array.isArray(parsed) && parsed.length > 0) {
-          setTeam(parsed);
+          initial = parsed;
         }
       } catch { /* fall through */ }
     }
+    setTeam(initial);
+
+    // Auto-seed del usuario master. Si el usuario autenticado en Supabase es
+    // el SaaS Master (virgilio), garantizamos que su tarjeta exista en el
+    // equipo con rol "owner". Si ya existe (aunque la haya editado), no la
+    // sobrescribimos — solo nos aseguramos de que el rol sea "owner" y el
+    // status "active" para que nunca "desaparezca" del portal.
+    (async () => {
+      try {
+        const { data } = await supabase.auth.getUser();
+        const email = String(data.user?.email ?? "").trim().toLowerCase();
+        if (email !== MASTER_EMAIL) return;
+
+        const existing = initial.find(
+          (m) => m.email.trim().toLowerCase() === MASTER_EMAIL
+        );
+        if (existing) {
+          // Ya está en el portal — solo garantizamos rol y estatus.
+          if (existing.role !== "owner" || existing.status !== "active") {
+            setTeam((prev) =>
+              prev.map((m) =>
+                m.email.trim().toLowerCase() === MASTER_EMAIL
+                  ? { ...m, role: "owner", status: "active", available: true }
+                  : m
+              )
+            );
+          }
+          return;
+        }
+
+        // No existía — la creamos al frente de la lista.
+        const today = new Date().toISOString().slice(0, 10);
+        const master: TeamMember = {
+          id: `master-${data.user?.id ?? "virgilio"}`,
+          name: "Virgilio Calcagno",
+          email: MASTER_EMAIL,
+          phone: "",
+          role: "owner",
+          status: "active",
+          available: true,
+          properties: 0,
+          tasksCompleted: 0,
+          tasksToday: 0,
+          rating: 5,
+          joinDate: today,
+          lastActive: "En línea",
+          permissions: {
+            canViewAnalytics: true,
+            canManageTasks: true,
+            canMessageGuests: true,
+            canEditProperties: true,
+          },
+          propertyAccess: "all",
+          notificationPrefs: { whatsapp: true, email: true },
+        };
+        setTeam((prev) => [master, ...prev]);
+      } catch {
+        // Si falla la llamada a auth, no rompemos el render del panel.
+      }
+    })();
   }, []);
 
   useEffect(() => {
