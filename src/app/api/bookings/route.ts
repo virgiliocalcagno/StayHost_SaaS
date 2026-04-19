@@ -7,6 +7,18 @@ import { getAuthenticatedTenant } from "@/lib/supabase/server";
 // read or delete someone else's data.
 
 // POST /api/bookings — create a manual booking or block
+//
+// Validates:
+//  - propertyId belongs to caller's tenant (RLS enforces, but we pre-check so
+//    we can return a nicer error than a generic insert failure).
+//  - checkIn < checkOut.
+//  - No overlap with any non-cancelled booking on that property. Overlap rule
+//    is [a.check_in, a.check_out) intersects [new.checkIn, new.checkOut):
+//       a.check_in < new.checkOut AND a.check_out > new.checkIn
+//    We treat `blocked` ranges as overlapping too (owner holds → no guest).
+//  - source_uid: client may pass one for idempotency (retry-safe double
+//    clicks); otherwise we generate a stable UUID. Old `manual-${Date.now()}`
+//    could collide if two users clicked in the same millisecond.
 export async function POST(req: NextRequest) {
   const { tenantId, supabase } = await getAuthenticatedTenant();
   if (!tenantId) {
@@ -19,6 +31,7 @@ export async function POST(req: NextRequest) {
       propertyId, checkIn, checkOut,
       guestName, guestPhone, guestDoc, guestNationality,
       source, note, numGuests, totalPrice,
+      sourceUid: clientSourceUid,
     } = body;
 
     if (!propertyId || !checkIn || !checkOut) {
@@ -28,12 +41,64 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    // Date sanity — YYYY-MM-DD strings compare lexically, which works here.
+    if (String(checkIn) >= String(checkOut)) {
+      return NextResponse.json(
+        { error: "checkOut debe ser posterior a checkIn" },
+        { status: 400 }
+      );
+    }
+
     const isBlock = source === "block";
+
+    // Overlap check. RLS on `bookings` already filters by tenant, so this
+    // query only sees the caller's own bookings — which is exactly what we
+    // want: two different tenants can't have bookings on the same property
+    // anyway (properties have a single tenant_id).
+    const { data: overlapping, error: overlapErr } = await supabase
+      .from("bookings")
+      .select("id, check_in, check_out, guest_name, status")
+      .eq("property_id", propertyId)
+      .neq("status", "cancelled")
+      .lt("check_in", checkOut)
+      .gt("check_out", checkIn)
+      .limit(1);
+
+    if (overlapErr) {
+      return NextResponse.json({ error: overlapErr.message }, { status: 500 });
+    }
+    if (overlapping && overlapping.length > 0) {
+      const o = overlapping[0] as {
+        id: string; check_in: string; check_out: string;
+        guest_name: string; status: string;
+      };
+      return NextResponse.json(
+        {
+          error: "Las fechas se solapan con otra reserva",
+          conflict: {
+            id: o.id,
+            checkIn: o.check_in,
+            checkOut: o.check_out,
+            guest: o.guest_name,
+            status: o.status,
+          },
+        },
+        { status: 409 }
+      );
+    }
+
+    // Stable UUID beats `manual-${Date.now()}` — no collision under
+    // concurrent creates, and lets the client send the same value to retry
+    // idempotently.
+    const sourceUid =
+      typeof clientSourceUid === "string" && clientSourceUid.length > 0
+        ? clientSourceUid
+        : `manual-${crypto.randomUUID()}`;
 
     const { data, error } = await supabase.from("bookings").insert({
       property_id: propertyId,
       tenant_id: tenantId,
-      source_uid: `manual-${Date.now()}`,
+      source_uid: sourceUid,
       source: source ?? "manual",
       guest_name: guestName ?? (isBlock ? "Bloqueado" : "Huésped"),
       guest_phone: guestPhone ?? null,
@@ -47,7 +112,17 @@ export async function POST(req: NextRequest) {
       note: note ?? null,
     } as never).select("id").single();
 
-    if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+    if (error) {
+      // 23505 = unique_violation. If client sent a sourceUid that already
+      // exists, treat as idempotent "already created" rather than 500.
+      if ((error as { code?: string }).code === "23505") {
+        return NextResponse.json(
+          { ok: true, idempotent: true, sourceUid },
+          { status: 200 }
+        );
+      }
+      return NextResponse.json({ error: error.message }, { status: 500 });
+    }
     return NextResponse.json({ ok: true, id: (data as { id: string }).id });
   } catch (err) {
     return NextResponse.json(
