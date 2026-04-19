@@ -13,147 +13,37 @@ import {
 import {
   Smartphone, Lock, Thermometer, Wifi, WifiOff, Key, Plus, RefreshCw,
   Settings, Battery, CheckCircle2, AlertCircle, BrainCircuit, Zap,
-  Trash2, Clock, Copy, ExternalLink, QrCode, Link2, ShieldCheck,
+  Trash2, Clock, Copy, ExternalLink, Link2, ShieldCheck,
   Droplets, Wind, Eye, EyeOff, Loader2, Calendar, Phone, Home,
   PlugZap, ChevronRight, X, ToggleLeft, ToggleRight, BookOpen,
-  Activity, AlertTriangle, Star, Shield, Info, Edit3,
+  Activity, AlertTriangle, Star, Shield, Edit3,
 } from "lucide-react";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
 import { parseICalFeed, type ParsedICalBooking } from "@/utils/icalParser";
 import { useModules } from "@/context/ModuleContext";
-import TTLockAccountsSection from "./TTLockAccountsSection";
-
-// ─── Types ────────────────────────────────────────────────────────────────────
-
-type DeviceType = "lock_ttlock" | "lock_tuya" | "thermostat" | "sensor_temp" | "sensor_pool" | "camera";
-type DeviceProvider = "ttlock" | "tuya" | "manual";
-type TabType = "devices" | "pins" | "ical" | "config";
-
-interface SmartDevice {
-  id: string;
-  remoteId: string;           // Tuya device_id or TTLock lockId
-  name: string;
-  type: DeviceType;
-  provider: DeviceProvider;
-  propertyId: string;
-  propertyName: string;
-  online: boolean;
-  battery?: number;
-  temperature?: number;       // Celsius × 10 (Tuya) or direct
-  humidity?: number;
-  locked?: boolean;
-  lastSync?: string;
-}
-
-interface AccessPin {
-  id: string;
-  deviceId: string;
-  deviceName: string;
-  propertyId: string;
-  propertyName: string;
-  guestName: string;
-  guestPhone?: string;
-  pin: string;
-  source: "airbnb_ical" | "vrbo_ical" | "direct_booking" | "manual";
-  bookingRef?: string;
-  validFrom: string;          // ISO
-  validTo: string;            // ISO
-  status: "active" | "expired" | "revoked";
-  ttlockPwdId?: string;
-  createdAt: string;
-}
-
-interface ICalConfig {
-  id: string;
-  propertyId: string;
-  propertyName: string;
-  channel: "airbnb" | "vrbo" | "booking" | "other";
-  url: string;
-  lastSync?: string;
-  autoGeneratePins: boolean;
-  targetDeviceId?: string;    // Lock device to assign PINs to
-  bookings?: ParsedICalBooking[];
-}
-
-interface Integrations {
-  tuya: { clientId: string; clientSecret: string; region: string; uid: string; accessToken?: string };
-  ttlock: { clientId: string; clientSecret: string; username: string; password: string; accessToken?: string };
-}
-
-interface DirectBooking {
-  id: string;
-  propertyId: string;
-  propertyName: string;
-  guestName: string;
-  guestPhone?: string;
-  checkin: string;
-  checkout: string;
-  status: string;
-}
-
-interface Property {
-  id: string;
-  name: string;
-  channels?: {
-    name: string;
-    connected: boolean;
-    icalUrl?: string;
-  }[];
-}
-
-const DEVICE_ICONS: Record<DeviceType, React.ElementType> = {
-  lock_ttlock: Lock, lock_tuya: Lock,
-  thermostat: Thermometer, sensor_temp: Activity,
-  sensor_pool: Droplets, camera: Eye,
-};
-
-const DEVICE_LABELS: Record<DeviceType, string> = {
-  lock_ttlock: "Cerradura TTLock", lock_tuya: "Cerradura Tuya",
-  thermostat: "Termostato", sensor_temp: "Sensor Temp/Humedad",
-  sensor_pool: "Sensor Piscina", camera: "Cámara IP",
-};
-
-const CHANNEL_LABELS: Record<string, string> = {
-  airbnb: "Airbnb", vrbo: "VRBO", booking: "Booking.com", other: "Otro",
-};
-
-const CHANNEL_COLORS: Record<string, string> = {
-  airbnb: "bg-rose-500", vrbo: "bg-blue-500",
-  booking: "bg-blue-700", other: "bg-slate-500",
-};
-
-function batteryColor(pct: number) {
-  if (pct <= 15) return "text-red-500";
-  if (pct <= 35) return "text-amber-500";
-  return "text-green-500";
-}
-
-function batteryBg(pct: number) {
-  if (pct <= 15) return "[&>div]:bg-red-500";
-  if (pct <= 35) return "[&>div]:bg-amber-500";
-  return "[&>div]:bg-green-500";
-}
-
-function isExpiredPin(validTo: string) {
-  return new Date(validTo) < new Date();
-}
-
-function formatDate(iso: string) {
-  if (!iso) return "—";
-  return new Date(iso).toLocaleDateString("es-MX", { day: "2-digit", month: "short", year: "numeric" });
-}
-
-function formatDateTime(iso: string) {
-  if (!iso) return "—";
-  return new Date(iso).toLocaleDateString("es-MX", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" });
-}
+import TTLockAccountsSection from "./smart-devices/TTLockAccountsSection";
+import ImportWizardDialog from "./smart-devices/ImportWizardDialog";
+import type {
+  DeviceType,
+  TabType,
+  SmartDevice,
+  AccessPin,
+  ICalConfig,
+  Integrations,
+  DirectBooking,
+  Property,
+} from "./smart-devices/types";
+import {
+  DEVICE_ICONS,
+  DEVICE_LABELS,
+  CHANNEL_LABELS,
+  CHANNEL_COLORS,
+  batteryColor,
+  batteryBg,
+  isExpiredPin,
+  formatDate,
+  formatDateTime,
+} from "./smart-devices/utils";
 
 // ——— Component ————————————————————————————————————————————————
 
@@ -162,19 +52,8 @@ export default function SmartDevicesPanel() {
   const [activeTab, setActiveTab] = useState<TabType>("devices");
   const isAdminMode = userRole === "OWNER";
 
-  // Import Wizard
+  // Import Wizard (el estado interno vive en ImportWizardDialog)
   const [showImportWizard, setShowImportWizard] = useState(false);
-  const [importStep, setImportStep] = useState<'terms' | 'provider' | 'auth' | 'discovery' | 'mapping'>('terms');
-  const [selectedProvider, setSelectedProvider] = useState<DeviceProvider | null>(null);
-
-  const [discoveredDevices, setDiscoveredDevices] = useState<any[]>([]);
-  const [tuyaQrData, setTuyaQrData] = useState<{ authUrl: string, qrUrl: string } | null>(null);
-  const [customTuyaQr, setCustomTuyaQr] = useState("");
-  const [showTechnical, setShowTechnical] = useState(false);
-  const [loadingQr, setLoadingQr] = useState(false);
-  const [deviceMappings, setDeviceMappings] = useState<Record<string, string>>({}); // remoteId -> propertyId
-  const [importing, setImporting] = useState(false);
-  const [importError, setImportError] = useState("");
 
   // ── State ──────────────────────────────────────────────────────────────────
   const [devices, setDevices] = useState<SmartDevice[]>(() => {
@@ -222,16 +101,6 @@ export default function SmartDevicesPanel() {
   const [showIcalForm, setShowIcalForm] = useState(false);
   const [icalForm, setIcalForm] = useState({ propertyId: "", propertyName: "", channel: "airbnb" as ICalConfig["channel"], url: "", autoGeneratePins: true, targetDeviceId: "" });
 
-  // Add Device form
-  const [showDeviceForm, setShowDeviceForm] = useState(false);
-  const [deviceForm, setDeviceForm] = useState({
-    provider: "ttlock" as DeviceProvider,
-    remoteId: "",
-    name: "",
-    type: "lock_ttlock" as DeviceType,
-    propertyId: ""
-  });
-
   // Config show/hide secrets
   const [showTuyaSecret, setShowTuyaSecret] = useState(false);
   const [showTtlockSecret, setShowTtlockSecret] = useState(false);
@@ -245,36 +114,6 @@ export default function SmartDevicesPanel() {
   useEffect(() => { localStorage.setItem("stayhost_ical_configs", JSON.stringify(icalConfigs)); }, [icalConfigs]);
   useEffect(() => { localStorage.setItem("stayhost_integrations", JSON.stringify(integrations)); }, [integrations]);
 
-  // Fetch real Tuya QR when selected in wizard
-  useEffect(() => {
-    if (showImportWizard && selectedProvider === 'tuya' && importStep === 'auth') {
-      const fetchQr = async () => {
-        setLoadingQr(true);
-        try {
-          const res = await fetch("/api/tuya", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ 
-              action: "getAuthData",
-              credentials: {
-                clientId: integrations.tuya.clientId,
-                region: integrations.tuya.region
-              }
-            })
-          });
-          const data = await res.json();
-          if (data.success) {
-            setTuyaQrData(data.result);
-          }
-        } catch (err) {
-          console.error("Error fetching Tuya QR:", err);
-        } finally {
-          setLoadingQr(false);
-        }
-      };
-      fetchQr();
-    }
-  }, [showImportWizard, selectedProvider, importStep, integrations.tuya.clientId, integrations.tuya.region]);
 
   useEffect(() => {
     try {
@@ -653,27 +492,6 @@ export default function SmartDevicesPanel() {
     await syncIcal(newConfig);
   };
 
-  const handleAddDevice = () => {
-    if (!deviceForm.remoteId || !deviceForm.name || !deviceForm.propertyId) return;
-    const prop = properties.find(p => p.id === deviceForm.propertyId);
-    const newDevice: SmartDevice = {
-      id: `dev-${Date.now()}`,
-      remoteId: deviceForm.remoteId,
-      name: deviceForm.name,
-      type: deviceForm.type,
-      provider: deviceForm.provider,
-      propertyId: deviceForm.propertyId,
-      propertyName: prop?.name ?? (deviceForm.propertyId === "custom-1" ? "Propiedad Principal" : "Propiedad"),
-      online: true,
-      battery: 100,
-      lastSync: new Date().toISOString(),
-      ...(deviceForm.type.includes("lock") ? { locked: true } : {})
-    };
-    setDevices(prev => [newDevice, ...prev]);
-    setShowDeviceForm(false);
-    setDeviceForm({ provider: "ttlock", remoteId: "", name: "", type: "lock_ttlock", propertyId: "" });
-  };
-
   const lockDevices = devices.filter(d => d.type === "lock_ttlock" || d.type === "lock_tuya");
 
   const tabs: { id: TabType; label: string; icon: React.ElementType }[] = [
@@ -700,7 +518,7 @@ export default function SmartDevicesPanel() {
           </Button>
           <Button 
             className="gradient-gold text-primary-foreground gap-2" 
-            onClick={() => { setImportStep('terms'); setShowImportWizard(true); }}
+            onClick={() => setShowImportWizard(true)}
           >
             <Zap className="h-4 w-4" /> Importar desde App
           </Button>
@@ -1551,386 +1369,16 @@ export default function SmartDevicesPanel() {
       )}
 
       {/* ═══════════════════════════════════════════════════════════════════ */}
-      {/* IMPORT WIZARD (MODAL)                                               */}
+      {/* IMPORT WIZARD (MODAL) — extraído a smart-devices/ImportWizardDialog */}
       {/* ═══════════════════════════════════════════════════════════════════ */}
-      <Dialog open={showImportWizard} onOpenChange={setShowImportWizard}>
-        <DialogContent className="sm:max-w-[480px] p-0 overflow-hidden border-none rounded-2xl shadow-2xl">
-          {/* Header Progress */}
-          <div className="bg-zinc-950 p-6 text-white">
-            <div className="flex items-center justify-between mb-4">
-              <Badge className="bg-amber-500 hover:bg-amber-600 text-white border-none font-bold">
-                Conectar Dispositivos
-              </Badge>
-              <div className="flex gap-1">
-                {['terms', 'provider', 'auth', 'discovery', 'mapping'].map((step, idx) => (
-                  <div 
-                    key={step} 
-                    className={cn(
-                      "h-1.5 w-8 rounded-full transition-all",
-                      importStep === step ? "bg-amber-500 w-12" : 
-                      idx < ['terms', 'provider', 'auth', 'discovery', 'mapping'].indexOf(importStep) ? "bg-amber-500/50" : "bg-zinc-800"
-                    )} 
-                  />
-                ))}
-              </div>
-            </div>
-            <DialogTitle className="text-xl font-black tracking-tight">
-              {importStep === 'terms' && "Términos y Suscripción"}
-              {importStep === 'provider' && "Seleccionar Marca"}
-              {importStep === 'auth' && `Conectar con ${selectedProvider === 'ttlock' ? 'TTLock' : 'Tuya'}`}
-              {importStep === 'discovery' && "Buscando Dispositivos..."}
-              {importStep === 'mapping' && "Vincular a Propiedades"}
-            </DialogTitle>
-            <DialogDescription className="text-zinc-400 mt-1">
-              Configura tu integración StayHost paso a paso.
-            </DialogDescription>
-          </div>
-
-          <div className="p-6 bg-white">
-            {/* Step 1: Terms */}
-            {importStep === 'terms' && (
-              <div className="space-y-4">
-                <div className="p-4 bg-amber-50 border border-amber-100 rounded-xl flex gap-3">
-                  <Info className="h-5 w-5 text-amber-600 shrink-0" />
-                  <div className="text-xs text-amber-900 leading-relaxed">
-                    <p className="font-bold mb-1">Aviso de Tarifa StayHost Intelligence</p>
-                    StayHost cobra una tarifa de mantenimiento de **$5.00 USD mensuales** por cada dispositivo conectado para garantizar la sincronización 24/7 con canales (Airbnb, etc.) y la generación automática de PINs.
-                  </div>
-                </div>
-                <div className="space-y-3 bg-slate-50 p-4 rounded-xl text-[11px] text-slate-600 max-h-[200px] overflow-y-auto">
-                  <p className="font-bold text-slate-900">Contrato de Servicio de Automatización</p>
-                  <p>1. Estás vinculando tus cuentas de terceros a StayHost Intelligence.</p>
-                  <p>2. StayHost gestionará la creación y eliminación de códigos temporales basados en tus reservas de iCal.</p>
-                  <p>3. Los datos de acceso se encriptan con estándares bancarios.</p>
-                  <p>4. Al continuar, aceptas el cargo recurrente de $5 por dispositivo.</p>
-                </div>
-                <Button className="w-full gradient-gold text-primary-foreground font-bold h-11" onClick={() => setImportStep('provider')}>
-                  Acepto los términos y continuar
-                </Button>
-              </div>
-            )}
-
-            {/* Step 2: Provider */}
-            {importStep === 'provider' && (
-              <div className="grid grid-cols-2 gap-4 pb-4">
-                <button 
-                  type="button"
-                  onClick={() => { setSelectedProvider('ttlock'); setImportStep('auth'); }}
-                  className="flex flex-col items-center justify-center p-6 border-2 border-slate-100 rounded-2xl hover:border-amber-400 hover:bg-amber-50/30 transition-all group"
-                >
-                  <div className="p-3 bg-blue-50 rounded-xl mb-3 group-hover:scale-110 transition-transform">
-                    <Lock className="h-8 w-8 text-blue-600" />
-                  </div>
-                  <span className="font-black text-sm">TTLock</span>
-                  <span className="text-[10px] text-muted-foreground mt-1">Global Locks</span>
-                </button>
-                <button 
-                  type="button"
-                  onClick={() => { setSelectedProvider('tuya'); setImportStep('auth'); }}
-                  className="flex flex-col items-center justify-center p-6 border-2 border-slate-100 rounded-2xl hover:border-orange-400 hover:bg-orange-50/30 transition-all group"
-                >
-                  <div className="p-3 bg-orange-50 rounded-xl mb-3 group-hover:scale-110 transition-transform">
-                    <Zap className="h-8 w-8 text-orange-600" />
-                  </div>
-                  <span className="font-black text-sm">Tuya Smart</span>
-                  <span className="text-[10px] text-muted-foreground mt-1">SmartLife Ecosystem</span>
-                </button>
-              </div>
-            )}
-
-            {/* Step 3: Auth */}
-            {importStep === 'auth' && (
-              <div className="space-y-4">
-                <p className="text-xs text-muted-foreground text-center">
-                  Introduce las credenciales que usas en la App {selectedProvider === 'ttlock' ? 'TTLock' : 'SmartLife'}
-                </p>
-                {selectedProvider === 'ttlock' ? (
-                  <div className="space-y-3">
-                    <div className="space-y-1.5">
-                      <Label className="text-xs font-bold">Email / Usuario</Label>
-                      <Input
-                        placeholder="+1 809 000 0000"
-                        className="rounded-xl h-11"
-                        value={integrations.ttlock.username}
-                        onChange={e => setIntegrations(prev => ({ ...prev, ttlock: { ...prev.ttlock, username: e.target.value } }))}
-                      />
-                    </div>
-                    <div className="space-y-1.5">
-                      <Label className="text-xs font-bold">Contraseña</Label>
-                      <Input
-                        type="password"
-                        placeholder="••••••••"
-                        className="rounded-xl h-11"
-                        value={integrations.ttlock.password}
-                        onChange={e => setIntegrations(prev => ({ ...prev, ttlock: { ...prev.ttlock, password: e.target.value } }))}
-                      />
-                    </div>
-                  </div>
-                ) : (
-                  <div className="space-y-5">
-                    <div className="flex flex-col items-center gap-4 py-4 px-6 bg-orange-50/50 border border-orange-100 rounded-3xl">
-                      <div className="p-4 bg-white rounded-2xl shadow-sm border border-orange-100 ring-4 ring-orange-50 min-h-[140px] flex items-center justify-center">
-                        {loadingQr ? (
-                          <Loader2 className="h-8 w-8 animate-spin text-orange-200" />
-                        ) : (tuyaQrData?.qrUrl || customTuyaQr) ? (
-                          <img 
-                            src={customTuyaQr ? `https://api.qrserver.com/v1/create-qr-code/?data=${encodeURIComponent(customTuyaQr)}&size=300x300` : tuyaQrData?.qrUrl} 
-                            alt="Tuya Auth QR" 
-                            className="h-32 w-32 object-contain"
-                          />
-                        ) : (
-                          <QrCode className="h-16 w-16 text-orange-200" />
-                        )}
-                      </div>
-                      <div className="text-center space-y-1">
-                        <p className="text-sm font-bold text-orange-900 uppercase tracking-tight">Sincronización REAL por QR</p>
-                        <p className="text-[11px] text-orange-700 leading-relaxed max-w-[200px] mx-auto">
-                          Escanea este código con tu App **SmartLife/Tuya** para autorizar el acceso y pulsa el botón de abajo.
-                        </p>
-                      </div>
-                    </div>
-                    
-                    <button 
-                      onClick={() => setShowTechnical(!showTechnical)}
-                      className="text-[10px] text-orange-600 font-bold uppercase tracking-wider flex items-center gap-1 mx-auto hover:underline"
-                    >
-                      {showTechnical ? 'Ocultar Ajustes' : 'Ajustes Técnicos (Opcional)'}
-                    </button>
-
-                    {showTechnical && (
-                      <div className="space-y-3 p-4 bg-zinc-50 rounded-2xl border border-zinc-100 animate-in fade-in slide-in-from-top-2 duration-300">
-                        <div className="space-y-1.5">
-                          <Label className="text-[10px] font-bold text-zinc-500 uppercase">Manual QR Link / Token</Label>
-                          <Input 
-                            placeholder="tuyaSmart--qrLogin?token=..." 
-                            className="text-[11px] rounded-xl h-9" 
-                            value={customTuyaQr}
-                            onChange={e => setCustomTuyaQr(e.target.value)}
-                          />
-                          <p className="text-[10px] text-zinc-400 italic">Pega aquí el enlace de tu consola si el QR automático falla.</p>
-                        </div>
-                      </div>
-                    )}
-                    
-                    <div className="flex items-center gap-2 px-3 py-2 bg-zinc-100 rounded-full">
-                      <span className="flex-h-2 w-2 rounded-full bg-green-500 animate-pulse ml-1" />
-                      <span className="text-[10px] font-medium text-zinc-500">Servidores de Tuya Cloud listos para vincular</span>
-                    </div>
-                  </div>
-                )}
-                <div className="flex gap-2 pt-2">
-                  <Button variant="outline" className="flex-1 rounded-xl" onClick={() => setImportStep('provider')}>Atrás</Button>
-                  <Button 
-                    className="flex-[2] gradient-gold text-primary-foreground font-bold rounded-xl" 
-                    disabled={importing}
-                    onClick={async () => {
-                      setImportError("");
-                      setImporting(true);
-                      try {
-                        if (selectedProvider === 'ttlock') {
-                          // Credentials come from server env vars — only send user/pass
-                          const res = await fetch("/api/ttlock", {
-                            method: "POST",
-                            headers: { "Content-Type": "application/json" },
-                            body: JSON.stringify({
-                              action: "getToken",
-                              username: integrations.ttlock.username,
-                              password: integrations.ttlock.password,
-                            })
-                          });
-                          const data = await res.json();
-                          if (data.errcode && data.errcode !== 0) throw new Error(data.errmsg || "Error de autenticación");
-                          if (data.error) throw new Error(data.error_description || data.error);
-
-                          const token = data.access_token;
-                          setIntegrations(prev => ({ ...prev, ttlock: { ...prev.ttlock, accessToken: token } }));
-
-                          setImportStep('discovery');
-
-                          const listRes = await fetch("/api/ttlock", {
-                            method: "POST",
-                            headers: { "Content-Type": "application/json" },
-                            body: JSON.stringify({
-                              action: "listLocks",
-                              accessToken: token,
-                            })
-                          });
-                          const listData = await listRes.json();
-                          const locks = listData.mock ? listData.data.list : listData.list;
-                          
-                          setDiscoveredDevices(locks.map((l: any) => ({
-                            id: l.lockId,
-                            name: l.lockAlias || l.lockName,
-                            type: "lock_ttlock",
-                            remoteId: l.lockId,
-                            battery: l.electricQuantity
-                          })));
-                          
-                          setImportStep('mapping');
-                        } else {
-                          // TUYA FLOW
-                          setImportStep('discovery');
-                          
-                          // 1. Get Token using Master Credentials
-                          const authRes = await fetch("/api/tuya", {
-                            method: "POST",
-                            headers: { "Content-Type": "application/json" },
-                            body: JSON.stringify({ 
-                              action: "getToken",
-                              credentials: {
-                                clientId: integrations.tuya.clientId,
-                                clientSecret: integrations.tuya.clientSecret,
-                                region: integrations.tuya.region
-                              }
-                            })
-                          });
-                          const authData = await authRes.json();
-                          
-                          if (authData.mock) {
-                            // Demo mode if no credentials
-                            setDiscoveredDevices(authData.data.map((d: any) => ({
-                              id: d.id,
-                              name: d.name,
-                              type: "tuya_device",
-                              remoteId: d.id,
-                              battery: 100
-                            })));
-                          } else {
-                            if (!authData.success) throw new Error(authData.msg || "Error al conectar con Tuya");
-                            const token = authData.result.access_token;
-                            
-                            // 2. List ALL devices for the project (no UID needed)
-                            const listRes = await fetch("/api/tuya", {
-                              method: "POST",
-                              headers: { "Content-Type": "application/json" },
-                              body: JSON.stringify({ 
-                                action: "listAllDevices",
-                                accessToken: token,
-                                credentials: {
-                                  clientId: integrations.tuya.clientId,
-                                  clientSecret: integrations.tuya.clientSecret,
-                                  region: integrations.tuya.region
-                                }
-                              })
-                            });
-                            const listData = await listRes.json();
-                            if (!listData.success) throw new Error(listData.msg || "Error al listar dispositivos");
-                            
-                            // Tuya cloud response for listAllDevices might be in result.list
-                            const devices = listData.result.list || listData.result || [];
-                            
-                            setDiscoveredDevices(devices.map((d: any) => ({
-                              id: d.id,
-                              name: d.name,
-                              type: "tuya_device",
-                              remoteId: d.id,
-                              battery: 100
-                            })));
-                          }
-                          
-                          setImportStep('mapping');
-                        }
-                      } catch (err) {
-                        setImportError(String(err));
-                        console.error(err);
-                      } finally {
-                        setImporting(false);
-                      }
-                    }}
-                  >
-                    {importing ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : null}
-                    {selectedProvider === 'tuya' ? 'Sincronizar Dispositivos' : 'Conectar Cuenta'}
-                  </Button>
-                </div>
-                {importError && <p className="text-[10px] text-red-500 mt-2 text-center bg-red-50 p-2 rounded-lg border border-red-100">{importError}</p>}
-
-              </div>
-            )}
-
-            {/* Step 4: Discovery (Spinner) */}
-            {importStep === 'discovery' && (
-              <div className="py-12 flex flex-col items-center gap-4">
-                <div className="relative">
-                  <div className="absolute inset-0 bg-amber-400/20 blur-xl rounded-full scale-150 animate-pulse" />
-                  <Loader2 className="h-12 w-12 text-amber-500 animate-spin relative z-10" />
-                </div>
-                <div className="text-center">
-                  <p className="font-bold text-lg">Buscando dispositivos...</p>
-                  <p className="text-sm text-muted-foreground mt-1">Sincronizando con los servidores de {selectedProvider === 'ttlock' ? 'TTLock' : 'Tuya'}</p>
-                </div>
-              </div>
-            )}
-
-            {/* Step 5: Mapping */}
-            {importStep === 'mapping' && (
-              <div className="space-y-4">
-                <p className="text-xs text-muted-foreground">
-                  Hemos encontrado {discoveredDevices.length} dispositivos. Asígnalos a tus propiedades para finalizar.
-                </p>
-                <div className="space-y-3 max-h-[300px] overflow-y-auto pr-2">
-                  {discoveredDevices.map(dev => (
-                    <div key={dev.id} className="p-3 border rounded-xl flex items-center justify-between gap-4 hover:border-amber-200 hover:bg-amber-50/20 transition-all">
-                      <div className="flex items-center gap-3">
-                        <div className="p-2 bg-slate-100 rounded-lg">
-                          {dev.type.includes('tuya') ? <Zap className="h-4 w-4 text-orange-600" /> : <Lock className="h-4 w-4 text-blue-600" />}
-                        </div>
-                        <div>
-                          <p className="text-sm font-bold">{dev.name}</p>
-                          <p className="text-[10px] text-muted-foreground font-mono uppercase">{dev.remoteId}</p>
-                        </div>
-                      </div>
-                      <Select 
-                        value={deviceMappings[dev.remoteId] || "none"} 
-                        onValueChange={(val) => setDeviceMappings(prev => ({ ...prev, [dev.remoteId]: val }))}
-                      >
-                        <SelectTrigger className="w-[150px] h-8 text-xs rounded-lg">
-                          <SelectValue placeholder="Propiedad..." />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="none">Omitir</SelectItem>
-                          {properties.map(p => <SelectItem key={p.id} value={p.id}>{p.name}</SelectItem>)}
-                          {properties.length === 0 && <SelectItem value="custom-1">Propiedad Principal</SelectItem>}
-                        </SelectContent>
-                      </Select>
-                    </div>
-                  ))}
-                </div>
-                <Button className="w-full h-11 gradient-gold text-primary-foreground font-extrabold text-sm uppercase tracking-wider shadow-lg rounded-xl" onClick={() => {
-                  const toAdd: SmartDevice[] = discoveredDevices
-                    .filter(d => deviceMappings[d.remoteId] && deviceMappings[d.remoteId] !== "none")
-                    .map(d => {
-                      const propId = deviceMappings[d.remoteId];
-                      const propName = properties.find(p => p.id === propId)?.name || "Propiedad Principal";
-                      return {
-                        id: `dev-${Date.now()}-${d.remoteId}`,
-                        remoteId: d.remoteId,
-                        name: d.name,
-                        type: d.type as DeviceType,
-                        provider: selectedProvider!,
-                        propertyId: propId,
-                        propertyName: propName,
-                        online: true,
-                        battery: d.battery || 100,
-                        lastSync: new Date().toISOString()
-                      };
-                    });
-                  
-                  if (toAdd.length > 0) {
-                    setDevices(prev => [...prev, ...toAdd]);
-                  }
-                  
-                  setShowImportWizard(false);
-                  setImportStep('terms');
-                  setDeviceMappings({});
-                  setDiscoveredDevices([]);
-                }}>
-                  Finalizar e Importar {Object.values(deviceMappings).filter(v => v !== "none").length} Dispositivos
-                </Button>
-              </div>
-            )}
-          </div>
-        </DialogContent>
-      </Dialog>
+      <ImportWizardDialog
+        open={showImportWizard}
+        onOpenChange={setShowImportWizard}
+        integrations={integrations}
+        setIntegrations={setIntegrations}
+        properties={properties}
+        onDevicesImported={(newDevices) => setDevices((prev) => [...prev, ...newDevices])}
+      />
     </div>
   );
 }

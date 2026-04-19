@@ -1,0 +1,12 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "skipLibCheck": true,
+    "noEmit": true
+  },
+  "include": [
+    "src/components/dashboard/SmartDevicesPanel.tsx",
+    "src/components/dashboard/smart-devices/**/*.ts",
+    "src/components/dashboard/smart-devices/**/*.tsx"
+  ]
+}
