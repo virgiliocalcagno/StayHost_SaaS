@@ -1,215 +1,601 @@
 /**
  * Check-in API — /api/checkin
- * In-memory store (demo). Replace Map with Firebase Firestore in production.
  *
- * All requests are POST with { action, ...payload }
- * Actions:
- *   "create"          → create a new check-in record
- *   "get"             → get record by id
- *   "list"            → list all records
- *   "auth"            → verify guest (lastName + last4) → returns record if match
- *   "uploadId"        → store base64 ID photo, set idStatus="uploaded"
- *   "payElectricity"  → mark electricityPaid=true
- *   "validateId"      → host validates ID → idStatus="validated", accessGranted=true
- *   "rejectId"        → host rejects ID → idStatus="rejected"
- *   "delete"          → remove record
+ * Persists guest check-in state in Supabase (`public.checkin_records`) and
+ * stores ID photos in a private Storage bucket (`checkin-ids`). Replaces the
+ * in-memory `Map` that evaporated between serverless invocations.
+ *
+ * Two kinds of callers hit this endpoint:
+ *
+ *   A. STAFF (authenticated host/owner, has a Supabase session):
+ *      actions: create, list, update, delete, validateId, rejectId, get
+ *      Scope: only their own tenant's records (enforced via
+ *      `getAuthenticatedTenant()` + tenant_id filter).
+ *
+ *   B. GUEST (unauthenticated, opens the check-in link on their phone):
+ *      actions: auth, get, uploadId, payElectricity
+ *      Scope: a single record, identified by record id + soft token
+ *      (lastName + last4 of phone). The middleware already lets this path
+ *      through without a session.
+ *
+ * The branch is decided per action — staff-only actions refuse unauthenticated
+ * callers; guest actions always require the soft token so a record id leak
+ * alone can't reveal a guest's ID photo.
  */
 
 import { NextRequest, NextResponse } from "next/server";
+import { getAuthenticatedTenant } from "@/lib/supabase/server";
+import { supabaseAdmin } from "@/lib/supabase/admin";
 
-export interface CheckInRecord {
+// ─── Types ───────────────────────────────────────────────────────────────────
+
+type IdStatus = "pending" | "uploaded" | "validated" | "rejected";
+type Status = "pendiente" | "validado";
+
+type Source = "manual" | "auto_direct" | "auto_ical";
+
+interface CheckinRow {
   id: string;
-  guestName: string;
-  guestLastName: string;     // used for auth
-  lastFourDigits: string;    // used for auth
-  checkin: string;           // YYYY-MM-DD
-  checkout: string;          // YYYY-MM-DD
+  tenant_id: string;
+  guest_name: string;
+  guest_last_name: string;
+  last_four_digits: string;
+  checkin: string;
+  checkout: string;
   nights: number;
-  propertyId: string;
-  propertyName: string;
-  propertyAddress?: string;
-  propertyImage?: string;
-  wifiSsid?: string;
-  wifiPassword?: string;
-  electricityEnabled: boolean;
-  electricityRate: number;   // USD per night (default 5)
-  electricityPaid: boolean;
-  electricityTotal: number;  // calculated
-  paypalFeeIncluded: boolean;
-  idPhotoBase64?: string;
-  idStatus: "pending" | "uploaded" | "validated" | "rejected";
-  accessGranted: boolean;
-  status: "pendiente" | "validado";
-  createdAt: string;
-  updatedAt: string;
-  bookingRef?: string;       // link to stayhost_direct_bookings id
+  property_id: string | null;
+  property_name: string;
+  property_address: string | null;
+  property_image: string | null;
+  wifi_ssid: string | null;
+  wifi_password: string | null;
+  electricity_enabled: boolean;
+  electricity_rate: number;
+  electricity_paid: boolean;
+  electricity_total: number;
+  paypal_fee_included: boolean;
+  id_photo_path: string | null;
+  id_status: IdStatus;
+  access_granted: boolean;
+  status: Status;
+  booking_ref: string | null;
+  source: Source;
+  channel: string | null;
+  missing_data: boolean;
+  created_at: string;
+  updated_at: string;
 }
 
-// In-memory store — module-level singleton (persists within a process lifetime)
-// NOTE: In production, swap this Map for a Firestore collection.
-const store = new Map<string, CheckInRecord>();
+// ─── Helpers ─────────────────────────────────────────────────────────────────
 
-function now() { return new Date().toISOString(); }
-
-function calcElectricity(nights: number, rate: number, includePaypal: boolean): number {
+function calcElectricity(nights: number, rate: number, includePaypal: boolean) {
   const subtotal = nights * rate;
-  return includePaypal ? parseFloat((subtotal / 0.943).toFixed(2)) : subtotal;
+  return includePaypal ? Number((subtotal / 0.943).toFixed(2)) : subtotal;
 }
+
+function newId() {
+  return `ci-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+}
+
+/**
+ * Project a DB row into the legacy API shape so the existing frontend keeps
+ * working without changes. `wifiPassword` is only exposed once access is
+ * granted; `idPhotoBase64` is never returned — the client should request a
+ * signed URL if it needs to display the photo (out of scope for now).
+ */
+function rowToApi(row: CheckinRow, opts: { exposeWifi: boolean }) {
+  return {
+    id: row.id,
+    guestName: row.guest_name,
+    guestLastName: row.guest_last_name,
+    lastFourDigits: row.last_four_digits,
+    checkin: row.checkin,
+    checkout: row.checkout,
+    nights: row.nights,
+    propertyId: row.property_id ?? "",
+    propertyName: row.property_name,
+    propertyAddress: row.property_address ?? undefined,
+    propertyImage: row.property_image ?? undefined,
+    wifiSsid: row.wifi_ssid ?? undefined,
+    wifiPassword: opts.exposeWifi ? (row.wifi_password ?? undefined) : undefined,
+    electricityEnabled: row.electricity_enabled,
+    electricityRate: row.electricity_rate,
+    electricityPaid: row.electricity_paid,
+    electricityTotal: row.electricity_total,
+    paypalFeeIncluded: row.paypal_fee_included,
+    idStatus: row.id_status,
+    accessGranted: row.access_granted,
+    status: row.status,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    bookingRef: row.booking_ref ?? undefined,
+    source: row.source,
+    channel: row.channel ?? undefined,
+    missingData: row.missing_data,
+    // idPhotoBase64 intentionally omitted — use a signed Storage URL.
+    idPhotoPath: row.id_photo_path ?? undefined,
+  };
+}
+
+async function fetchRecordForGuest(
+  id: string,
+  lastName: string,
+  last4: string
+): Promise<CheckinRow | null> {
+  const { data } = await supabaseAdmin
+    .from("checkin_records")
+    .select("*")
+    .eq("id", id)
+    .maybeSingle<CheckinRow>();
+  if (!data) return null;
+  if (
+    data.guest_last_name !== lastName.toLowerCase().trim() ||
+    data.last_four_digits !== last4.trim()
+  ) {
+    return null;
+  }
+  return data;
+}
+
+function bad(status: number, error: string) {
+  return NextResponse.json({ error }, { status });
+}
+
+// ─── Route ───────────────────────────────────────────────────────────────────
 
 export async function POST(req: NextRequest) {
   try {
-    const body = await req.json() as Record<string, unknown>;
-    const { action, ...data } = body;
+    const body = (await req.json()) as Record<string, unknown>;
+    const action = String(body.action ?? "");
+    const data = body as Record<string, unknown>;
 
     switch (action) {
+      // ── Staff-only actions ────────────────────────────────────────────────
+      case "create":       return staffCreate(data);
+      case "list":         return staffList();
+      case "update":       return staffUpdate(data);
+      case "delete":       return staffDelete(data);
+      case "validateId":   return staffSetIdStatus(data, "validated");
+      case "rejectId":     return staffSetIdStatus(data, "rejected");
+      case "upsertBatch":  return staffUpsertBatch(data);
 
-      case "create": {
-        const id = `ci-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
-        const nights = data.nights as number ?? 1;
-        const rate = (data.electricityRate as number) ?? 5;
-        const paypal = (data.paypalFeeIncluded as boolean) ?? true;
-        const record: CheckInRecord = {
-          id,
-          guestName: String(data.guestName ?? ""),
-          guestLastName: String(data.guestLastName ?? "").toLowerCase().trim(),
-          lastFourDigits: String(data.lastFourDigits ?? ""),
-          checkin: String(data.checkin ?? ""),
-          checkout: String(data.checkout ?? ""),
-          nights,
-          propertyId: String(data.propertyId ?? ""),
-          propertyName: String(data.propertyName ?? ""),
-          propertyAddress: data.propertyAddress ? String(data.propertyAddress) : undefined,
-          propertyImage: data.propertyImage ? String(data.propertyImage) : undefined,
-          wifiSsid: data.wifiSsid ? String(data.wifiSsid) : undefined,
-          wifiPassword: data.wifiPassword ? String(data.wifiPassword) : undefined,
-          electricityEnabled: (data.electricityEnabled as boolean) ?? true,
-          electricityRate: rate,
-          electricityPaid: false,
-          electricityTotal: calcElectricity(nights, rate, paypal),
-          paypalFeeIncluded: paypal,
-          idStatus: "pending",
-          accessGranted: false,
-          status: "pendiente",
-          createdAt: now(),
-          updatedAt: now(),
-          bookingRef: data.bookingRef ? String(data.bookingRef) : undefined,
-        };
-        store.set(id, record);
-        return NextResponse.json({ success: true, id, record });
-      }
-
-      case "get": {
-        const id = String(data.id ?? "");
-        const record = store.get(id);
-        if (!record) return NextResponse.json({ error: "Not found" }, { status: 404 });
-        // Never expose WiFi/password in unauthenticated get
-        const safe = { ...record, wifiPassword: record.accessGranted ? record.wifiPassword : undefined };
-        return NextResponse.json({ record: safe });
-      }
-
-      case "list": {
-        const records = Array.from(store.values()).sort(
-          (a, b) => a.checkin.localeCompare(b.checkin)
-        );
-        return NextResponse.json({ records });
-      }
-
-      case "auth": {
-        const id = String(data.id ?? "");
-        const lastName = String(data.lastName ?? "").toLowerCase().trim();
-        const last4 = String(data.last4 ?? "").trim();
-        const record = store.get(id);
-        if (!record) return NextResponse.json({ error: "Reservación no encontrada" }, { status: 404 });
-        if (record.guestLastName !== lastName || record.lastFourDigits !== last4) {
-          return NextResponse.json({ error: "Datos incorrectos. Verifica tu apellido y los últimos 4 dígitos de tu teléfono." }, { status: 401 });
-        }
-        return NextResponse.json({ success: true, record });
-      }
-
-      case "uploadId": {
-        const id = String(data.id ?? "");
-        const record = store.get(id);
-        if (!record) return NextResponse.json({ error: "Not found" }, { status: 404 });
-        const photo = String(data.idPhotoBase64 ?? "");
-        // Rough size guard: base64 of 8MB = ~10.9MB string
-        if (photo.length > 11_000_000) {
-          return NextResponse.json({ error: "Imagen demasiado grande (máx 8MB)" }, { status: 413 });
-        }
-        const updated = { ...record, idPhotoBase64: photo, idStatus: "uploaded" as const, updatedAt: now() };
-        store.set(id, updated);
-        return NextResponse.json({ success: true });
-      }
-
-      case "payElectricity": {
-        const id = String(data.id ?? "");
-        const record = store.get(id);
-        if (!record) return NextResponse.json({ error: "Not found" }, { status: 404 });
-        const updated = { ...record, electricityPaid: true, updatedAt: now() };
-        // Auto-grant access if ID already validated
-        if (record.idStatus === "validated") {
-          updated.accessGranted = true;
-          updated.status = "validado";
-        }
-        store.set(id, updated);
-        return NextResponse.json({ success: true, accessGranted: updated.accessGranted, record: updated });
-      }
-
-      case "validateId": {
-        const id = String(data.id ?? "");
-        const record = store.get(id);
-        if (!record) return NextResponse.json({ error: "Not found" }, { status: 404 });
-        const electricityOk = !record.electricityEnabled || record.electricityPaid;
-        const updated = {
-          ...record,
-          idStatus: "validated" as const,
-          accessGranted: electricityOk,
-          status: electricityOk ? ("validado" as const) : ("pendiente" as const),
-          updatedAt: now(),
-        };
-        store.set(id, updated);
-        return NextResponse.json({ success: true, record: updated });
-      }
-
-      case "rejectId": {
-        const id = String(data.id ?? "");
-        const record = store.get(id);
-        if (!record) return NextResponse.json({ error: "Not found" }, { status: 404 });
-        const updated = { ...record, idStatus: "rejected" as const, accessGranted: false, updatedAt: now() };
-        store.set(id, updated);
-        return NextResponse.json({ success: true });
-      }
-
-      case "update": {
-        const id = String(data.id ?? "");
-        const record = store.get(id);
-        if (!record) return NextResponse.json({ error: "Not found" }, { status: 404 });
-        const nights = (data.nights as number) ?? record.nights;
-        const rate = (data.electricityRate as number) ?? record.electricityRate;
-        const paypal = (data.paypalFeeIncluded as boolean) ?? record.paypalFeeIncluded;
-        const updated = {
-          ...record,
-          ...data,
-          id,
-          nights,
-          electricityRate: rate,
-          electricityTotal: calcElectricity(nights, rate, paypal),
-          paypalFeeIncluded: paypal,
-          updatedAt: now(),
-        } as CheckInRecord;
-        store.set(id, updated);
-        return NextResponse.json({ success: true, record: updated });
-      }
-
-      case "delete": {
-        const id = String(data.id ?? "");
-        store.delete(id);
-        return NextResponse.json({ success: true });
-      }
+      // ── Guest actions (no session, soft token required) ───────────────────
+      case "auth":              return guestAuth(data);
+      case "get":               return guestGet(data);
+      case "uploadId":          return guestUploadId(data);
+      case "payElectricity":    return guestPayElectricity(data);
 
       default:
-        return NextResponse.json({ error: "Acción no reconocida" }, { status: 400 });
+        return bad(400, "Acción no reconocida");
     }
   } catch (err) {
-    return NextResponse.json({ error: String(err) }, { status: 500 });
+    console.error("[/api/checkin] unexpected error:", err);
+    return bad(500, String(err));
   }
+}
+
+// ─── Staff actions ───────────────────────────────────────────────────────────
+
+async function staffCreate(data: Record<string, unknown>) {
+  const { tenantId } = await getAuthenticatedTenant();
+  if (!tenantId) return bad(401, "No autenticado");
+
+  const nights = (data.nights as number) ?? 1;
+  const rate = (data.electricityRate as number) ?? 5;
+  const paypal = (data.paypalFeeIncluded as boolean) ?? true;
+
+  // Narrow `source` to the enum the DB constraint accepts.
+  const rawSource = String(data.source ?? "manual");
+  const source: Source =
+    rawSource === "auto_direct" || rawSource === "auto_ical"
+      ? (rawSource as Source)
+      : "manual";
+
+  const row = {
+    id: data.id ? String(data.id) : newId(),
+    tenant_id: tenantId,
+    guest_name: String(data.guestName ?? ""),
+    guest_last_name: String(data.guestLastName ?? "").toLowerCase().trim(),
+    last_four_digits: String(data.lastFourDigits ?? "").trim(),
+    checkin: String(data.checkin ?? ""),
+    checkout: String(data.checkout ?? ""),
+    nights,
+    property_id: data.propertyId ? String(data.propertyId) : null,
+    property_name: String(data.propertyName ?? ""),
+    property_address: data.propertyAddress ? String(data.propertyAddress) : null,
+    property_image: data.propertyImage ? String(data.propertyImage) : null,
+    wifi_ssid: data.wifiSsid ? String(data.wifiSsid) : null,
+    wifi_password: data.wifiPassword ? String(data.wifiPassword) : null,
+    electricity_enabled: (data.electricityEnabled as boolean) ?? true,
+    electricity_rate: rate,
+    electricity_paid: false,
+    electricity_total: calcElectricity(nights, rate, paypal),
+    paypal_fee_included: paypal,
+    id_status: "pending" as const,
+    access_granted: false,
+    status: "pendiente" as const,
+    booking_ref: data.bookingRef ? String(data.bookingRef) : null,
+    source,
+    channel: data.channel ? String(data.channel) : null,
+    missing_data: (data.missingData as boolean) ?? false,
+  };
+
+  // Uses the user's session client so RLS enforces tenant_id = current_tenant_id().
+  const { supabase } = await getAuthenticatedTenant();
+  const { data: inserted, error } = await supabase
+    .from("checkin_records")
+    .insert(row)
+    .select("*")
+    .single<CheckinRow>();
+
+  if (error || !inserted) {
+    console.error("[/api/checkin:create] insert failed:", error);
+    return bad(500, "No se pudo crear el check-in");
+  }
+
+  return NextResponse.json({
+    success: true,
+    id: inserted.id,
+    record: rowToApi(inserted, { exposeWifi: false }),
+  });
+}
+
+async function staffList() {
+  const { tenantId, supabase } = await getAuthenticatedTenant();
+  if (!tenantId) return bad(401, "No autenticado");
+
+  const { data, error } = await supabase
+    .from("checkin_records")
+    .select("*")
+    .order("checkin", { ascending: true });
+
+  if (error) {
+    console.error("[/api/checkin:list] query failed:", error);
+    return bad(500, "No se pudo listar check-ins");
+  }
+
+  const records = ((data ?? []) as CheckinRow[]).map((r) =>
+    rowToApi(r, { exposeWifi: false })
+  );
+  return NextResponse.json({ records });
+}
+
+async function staffUpdate(data: Record<string, unknown>) {
+  const { tenantId, supabase } = await getAuthenticatedTenant();
+  if (!tenantId) return bad(401, "No autenticado");
+  const id = String(data.id ?? "");
+  if (!id) return bad(400, "Falta id");
+
+  // Whitelist the fields staff can update. Camel → snake mapping is explicit
+  // to avoid accidentally letting callers overwrite tenant_id, id_status, etc.
+  const patch: Record<string, unknown> = {};
+  const setIfPresent = (camel: string, snake: string) => {
+    if (camel in data) patch[snake] = data[camel];
+  };
+  setIfPresent("guestName", "guest_name");
+  if ("guestLastName" in data) {
+    patch.guest_last_name = String(data.guestLastName ?? "").toLowerCase().trim();
+  }
+  if ("lastFourDigits" in data) {
+    patch.last_four_digits = String(data.lastFourDigits ?? "").trim();
+  }
+  setIfPresent("checkin", "checkin");
+  setIfPresent("checkout", "checkout");
+  setIfPresent("nights", "nights");
+  setIfPresent("propertyId", "property_id");
+  setIfPresent("propertyName", "property_name");
+  setIfPresent("propertyAddress", "property_address");
+  setIfPresent("propertyImage", "property_image");
+  setIfPresent("wifiSsid", "wifi_ssid");
+  setIfPresent("wifiPassword", "wifi_password");
+  setIfPresent("electricityEnabled", "electricity_enabled");
+  setIfPresent("electricityRate", "electricity_rate");
+  setIfPresent("paypalFeeIncluded", "paypal_fee_included");
+  setIfPresent("bookingRef", "booking_ref");
+  setIfPresent("missingData", "missing_data");
+  setIfPresent("channel", "channel");
+  setIfPresent("electricityPaid", "electricity_paid");
+
+  // Recalculate electricity_total if any of the inputs changed.
+  if (
+    "nights" in data ||
+    "electricityRate" in data ||
+    "paypalFeeIncluded" in data
+  ) {
+    const { data: current } = await supabase
+      .from("checkin_records")
+      .select("nights, electricity_rate, paypal_fee_included")
+      .eq("id", id)
+      .single<Pick<CheckinRow, "nights" | "electricity_rate" | "paypal_fee_included">>();
+    if (current) {
+      const nights = (patch.nights as number) ?? current.nights;
+      const rate = (patch.electricity_rate as number) ?? current.electricity_rate;
+      const paypal =
+        (patch.paypal_fee_included as boolean) ?? current.paypal_fee_included;
+      patch.electricity_total = calcElectricity(nights, rate, paypal);
+    }
+  }
+
+  const { data: updated, error } = await supabase
+    .from("checkin_records")
+    .update(patch)
+    .eq("id", id)
+    .select("*")
+    .single<CheckinRow>();
+
+  if (error || !updated) {
+    console.error("[/api/checkin:update] failed:", error);
+    return bad(404, "No se encontró el check-in");
+  }
+  return NextResponse.json({
+    success: true,
+    record: rowToApi(updated, { exposeWifi: false }),
+  });
+}
+
+async function staffDelete(data: Record<string, unknown>) {
+  const { tenantId, supabase } = await getAuthenticatedTenant();
+  if (!tenantId) return bad(401, "No autenticado");
+  const id = String(data.id ?? "");
+  if (!id) return bad(400, "Falta id");
+
+  // Delete the ID photo from Storage first (if any). Best-effort — if Storage
+  // fails we still delete the row so the staff isn't stuck with a ghost record.
+  const { data: row } = await supabase
+    .from("checkin_records")
+    .select("id_photo_path")
+    .eq("id", id)
+    .maybeSingle<Pick<CheckinRow, "id_photo_path">>();
+  if (row?.id_photo_path) {
+    await supabaseAdmin.storage.from("checkin-ids").remove([row.id_photo_path]);
+  }
+
+  const { error } = await supabase.from("checkin_records").delete().eq("id", id);
+  if (error) {
+    console.error("[/api/checkin:delete] failed:", error);
+    return bad(500, "No se pudo borrar");
+  }
+  return NextResponse.json({ success: true });
+}
+
+async function staffSetIdStatus(
+  data: Record<string, unknown>,
+  next: "validated" | "rejected"
+) {
+  const { tenantId, supabase } = await getAuthenticatedTenant();
+  if (!tenantId) return bad(401, "No autenticado");
+  const id = String(data.id ?? "");
+  if (!id) return bad(400, "Falta id");
+
+  const { data: current } = await supabase
+    .from("checkin_records")
+    .select("electricity_enabled, electricity_paid")
+    .eq("id", id)
+    .single<Pick<CheckinRow, "electricity_enabled" | "electricity_paid">>();
+  if (!current) return bad(404, "No encontrado");
+
+  const electricityOk = !current.electricity_enabled || current.electricity_paid;
+  const accessGranted = next === "validated" && electricityOk;
+
+  const patch = {
+    id_status: next,
+    access_granted: accessGranted,
+    status: (accessGranted ? "validado" : "pendiente") as Status,
+  };
+
+  const { data: updated, error } = await supabase
+    .from("checkin_records")
+    .update(patch)
+    .eq("id", id)
+    .select("*")
+    .single<CheckinRow>();
+
+  if (error || !updated) {
+    console.error("[/api/checkin:setIdStatus] failed:", error);
+    return bad(500, "No se pudo actualizar");
+  }
+  return NextResponse.json({
+    success: true,
+    record: rowToApi(updated, { exposeWifi: accessGranted }),
+  });
+}
+
+async function staffUpsertBatch(data: Record<string, unknown>) {
+  const { tenantId, supabase } = await getAuthenticatedTenant();
+  if (!tenantId) return bad(401, "No autenticado");
+
+  const rawRecords = Array.isArray(data.records) ? data.records : [];
+  if (rawRecords.length === 0) {
+    return NextResponse.json({ success: true, inserted: 0, records: [] });
+  }
+
+  // Map each camelCase input into the DB row shape + stamp tenant_id. We
+  // never trust `tenant_id` from the client.
+  type RawRecord = Record<string, unknown>;
+  const rows = (rawRecords as RawRecord[]).map((r) => {
+    const nights = (r.nights as number) ?? 1;
+    const rate = (r.electricityRate as number) ?? 5;
+    const paypal = (r.paypalFeeIncluded as boolean) ?? true;
+    const rawSource = String(r.source ?? "manual");
+    const source: Source =
+      rawSource === "auto_direct" || rawSource === "auto_ical"
+        ? (rawSource as Source)
+        : "manual";
+    return {
+      id: r.id ? String(r.id) : newId(),
+      tenant_id: tenantId,
+      guest_name: String(r.guestName ?? ""),
+      guest_last_name: String(r.guestLastName ?? "").toLowerCase().trim(),
+      last_four_digits: String(r.lastFourDigits ?? "").trim(),
+      checkin: String(r.checkin ?? ""),
+      checkout: String(r.checkout ?? ""),
+      nights,
+      property_id: r.propertyId ? String(r.propertyId) : null,
+      property_name: String(r.propertyName ?? ""),
+      property_address: r.propertyAddress ? String(r.propertyAddress) : null,
+      property_image: r.propertyImage ? String(r.propertyImage) : null,
+      wifi_ssid: r.wifiSsid ? String(r.wifiSsid) : null,
+      wifi_password: r.wifiPassword ? String(r.wifiPassword) : null,
+      electricity_enabled: (r.electricityEnabled as boolean) ?? true,
+      electricity_rate: rate,
+      electricity_paid: (r.electricityPaid as boolean) ?? false,
+      electricity_total: (r.electricityTotal as number) ?? calcElectricity(nights, rate, paypal),
+      paypal_fee_included: paypal,
+      id_status: ((r.idStatus as IdStatus) ?? "pending") as IdStatus,
+      access_granted: (r.accessGranted as boolean) ?? false,
+      status: (((r.status as Status) ?? "pendiente") as Status),
+      booking_ref: r.bookingRef ? String(r.bookingRef) : null,
+      source,
+      channel: r.channel ? String(r.channel) : null,
+      missing_data: (r.missingData as boolean) ?? false,
+    };
+  });
+
+  // `onConflict: id` makes re-running autoSync idempotent — existing records
+  // get a patch update instead of erroring on the primary key.
+  const { data: inserted, error } = await supabase
+    .from("checkin_records")
+    .upsert(rows, { onConflict: "id" })
+    .select("*");
+
+  if (error) {
+    console.error("[/api/checkin:upsertBatch] failed:", error);
+    return bad(500, "No se pudo sincronizar el lote");
+  }
+
+  const records = ((inserted ?? []) as CheckinRow[]).map((r) =>
+    rowToApi(r, { exposeWifi: false })
+  );
+  return NextResponse.json({ success: true, inserted: records.length, records });
+}
+
+// ─── Guest actions ───────────────────────────────────────────────────────────
+
+async function guestAuth(data: Record<string, unknown>) {
+  const id = String(data.id ?? "");
+  const lastName = String(data.lastName ?? "");
+  const last4 = String(data.last4 ?? "");
+  if (!id) return bad(400, "Falta id");
+
+  const row = await fetchRecordForGuest(id, lastName, last4);
+  if (!row) {
+    return bad(
+      401,
+      "Datos incorrectos. Verifica tu apellido y los últimos 4 dígitos de tu teléfono."
+    );
+  }
+  return NextResponse.json({
+    success: true,
+    record: rowToApi(row, { exposeWifi: row.access_granted }),
+  });
+}
+
+async function guestGet(data: Record<string, unknown>) {
+  const id = String(data.id ?? "");
+  const lastName = String(data.lastName ?? "");
+  const last4 = String(data.last4 ?? "");
+
+  // Allow `get` without soft token for the welcome step — but in that case we
+  // never expose wifi credentials. The guest must pass `auth` to unlock them.
+  if (!id) return bad(400, "Falta id");
+
+  if (lastName && last4) {
+    const row = await fetchRecordForGuest(id, lastName, last4);
+    if (!row) return bad(404, "No encontrado");
+    return NextResponse.json({
+      record: rowToApi(row, { exposeWifi: row.access_granted }),
+    });
+  }
+
+  const { data: row } = await supabaseAdmin
+    .from("checkin_records")
+    .select("*")
+    .eq("id", id)
+    .maybeSingle<CheckinRow>();
+  if (!row) return bad(404, "No encontrado");
+  return NextResponse.json({ record: rowToApi(row, { exposeWifi: false }) });
+}
+
+async function guestUploadId(data: Record<string, unknown>) {
+  const id = String(data.id ?? "");
+  const lastName = String(data.lastName ?? "");
+  const last4 = String(data.last4 ?? "");
+  const photo = String(data.idPhotoBase64 ?? "");
+  if (!id || !photo) return bad(400, "Faltan datos");
+  if (photo.length > 11_000_000) return bad(413, "Imagen demasiado grande (máx 8MB)");
+
+  // Guest must authenticate with their soft token BEFORE uploading — this
+  // prevents randos from dumping files into Storage by brute-forcing ids.
+  const row = lastName && last4
+    ? await fetchRecordForGuest(id, lastName, last4)
+    : null;
+  if (!row) return bad(401, "No autorizado");
+
+  // Strip the data URL prefix if present (`data:image/jpeg;base64,...`).
+  const [header, b64Payload] = photo.includes(",")
+    ? [photo.split(",")[0], photo.split(",")[1]]
+    : ["", photo];
+  const mime =
+    header.match(/data:([^;]+);/)?.[1] ?? "image/jpeg";
+  const ext = mime.split("/")[1]?.replace("jpeg", "jpg") ?? "jpg";
+  const buffer = Buffer.from(b64Payload, "base64");
+
+  const path = `${row.tenant_id}/${row.id}.${ext}`;
+  const { error: uploadErr } = await supabaseAdmin.storage
+    .from("checkin-ids")
+    .upload(path, buffer, { contentType: mime, upsert: true });
+  if (uploadErr) {
+    console.error("[/api/checkin:uploadId] storage upload failed:", uploadErr);
+    return bad(500, "No se pudo subir la imagen");
+  }
+
+  const { error: updateErr } = await supabaseAdmin
+    .from("checkin_records")
+    .update({ id_photo_path: path, id_status: "uploaded" })
+    .eq("id", row.id);
+  if (updateErr) {
+    console.error("[/api/checkin:uploadId] update failed:", updateErr);
+    return bad(500, "No se pudo registrar la imagen");
+  }
+
+  return NextResponse.json({ success: true });
+}
+
+async function guestPayElectricity(data: Record<string, unknown>) {
+  const id = String(data.id ?? "");
+  const lastName = String(data.lastName ?? "");
+  const last4 = String(data.last4 ?? "");
+  if (!id) return bad(400, "Falta id");
+
+  const row = lastName && last4
+    ? await fetchRecordForGuest(id, lastName, last4)
+    : null;
+  if (!row) return bad(401, "No autorizado");
+
+  // If the ID is already validated, paying unlocks access. Otherwise we just
+  // flag the payment and wait for staff to validate the ID.
+  const willGrant = row.id_status === "validated";
+  const patch = {
+    electricity_paid: true,
+    access_granted: willGrant,
+    status: (willGrant ? "validado" : "pendiente") as Status,
+  };
+
+  const { data: updated, error } = await supabaseAdmin
+    .from("checkin_records")
+    .update(patch)
+    .eq("id", row.id)
+    .select("*")
+    .single<CheckinRow>();
+
+  if (error || !updated) {
+    console.error("[/api/checkin:payElectricity] failed:", error);
+    return bad(500, "No se pudo registrar el pago");
+  }
+
+  return NextResponse.json({
+    success: true,
+    accessGranted: updated.access_granted,
+    record: rowToApi(updated, { exposeWifi: updated.access_granted }),
+  });
 }

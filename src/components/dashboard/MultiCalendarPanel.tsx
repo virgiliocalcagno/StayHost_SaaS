@@ -31,14 +31,22 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import ChargeServiceDrawer from "./ChargeServiceDrawer";
 
-import { getActiveTenantEmail } from "@/lib/session";
+// Returns YYYY-MM-DD in the USER's local timezone — never UTC.
+// toISOString() was the old bug: past ~8pm in Chile (UTC-4), UTC already
+// counts as "tomorrow", so the calendar highlighted the wrong day.
+const toLocalDateStr = (d: Date) => {
+  const yyyy = d.getFullYear();
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  return `${yyyy}-${mm}-${dd}`;
+};
 
 // Mock Data with Channel Info and Real Dates (Relative to current month for demo)
 const generateMockBookings = () => {
   const getDateStr = (offsetDays: number) => {
     const d = new Date();
     d.setDate(d.getDate() + offsetDays);
-    return d.toISOString().split("T")[0];
+    return toLocalDateStr(d);
   };
 
   return [
@@ -70,7 +78,7 @@ const generateMockBookings = () => {
 
 const initialMockBookings = generateMockBookings();
 const daysOfWeek = ["Dom", "Lun", "Mar", "Mie", "Jue", "Vie", "Sab"];
-const todayStr = new Date().toISOString().split("T")[0];
+const todayStr = toLocalDateStr(new Date());
 
 const ChannelIcon = ({ channel, className }: { channel?: string, className?: string }) => {
   switch (channel) {
@@ -108,9 +116,8 @@ export default function MultiCalendarPanel() {
   });
 
   const loadData = () => {
-    const email = getActiveTenantEmail();
-    if (!email) return;
-    fetch(`/api/bookings?email=${encodeURIComponent(email)}`)
+    // Tenant is resolved server-side from the session cookie.
+    fetch("/api/bookings", { credentials: "same-origin" })
       .then((r) => r.json())
       .then((data) => { if (data.properties?.length) setProperties(data.properties); })
       .catch(() => {});
@@ -135,13 +142,12 @@ export default function MultiCalendarPanel() {
     if (!blockForm.propertyId || !blockForm.start || !blockForm.end) return;
     setSavingBlock(true);
     try {
-      const email = getActiveTenantEmail();
       const res = await fetch("/api/bookings", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        credentials: "same-origin",
         body: JSON.stringify({
           propertyId: blockForm.propertyId,
-          tenantEmail: email,
           checkIn: blockForm.start,
           checkOut: blockForm.end,
           source: "block",
@@ -164,13 +170,12 @@ export default function MultiCalendarPanel() {
     if (!newBooking.guest || !newBooking.start || !newBooking.end) return;
     setSavingBooking(true);
     try {
-      const email = getActiveTenantEmail();
       const res = await fetch("/api/bookings", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        credentials: "same-origin",
         body: JSON.stringify({
           propertyId: newBooking.propertyId,
-          tenantEmail: email,
           checkIn: newBooking.start,
           checkOut: newBooking.end,
           guestName: newBooking.guest,
@@ -206,10 +211,11 @@ export default function MultiCalendarPanel() {
     for (let i = 0; i < daysToShow; i++) {
       const day = new Date(startDate);
       day.setDate(day.getDate() + i);
+      const str = toLocalDateStr(day);
       days.push({
         date: day,
-        str: day.toISOString().split("T")[0],
-        isToday: day.toISOString().split("T")[0] === todayStr
+        str,
+        isToday: str === todayStr
       });
     }
     return days;

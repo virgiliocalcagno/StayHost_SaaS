@@ -169,8 +169,16 @@ export default function PropertyPage({ params }: { params: Promise<{ hostId: str
   }, [propertyId]);
 
   // ── Booking state ─────────────────────────────────────────────────────────
-  const today = new Date().toISOString().split("T")[0];
-  const tomorrow = new Date(Date.now() + 86400000).toISOString().split("T")[0];
+  // Local date YYYY-MM-DD — not UTC. Fixes the default check-in showing as
+  // tomorrow after ~8pm in west-of-UTC timezones.
+  const _toLocalDate = (d: Date) => {
+    const yyyy = d.getFullYear();
+    const mm = String(d.getMonth() + 1).padStart(2, "0");
+    const dd = String(d.getDate()).padStart(2, "0");
+    return `${yyyy}-${mm}-${dd}`;
+  };
+  const today = _toLocalDate(new Date());
+  const tomorrow = _toLocalDate(new Date(Date.now() + 86400000));
   const [checkin, setCheckin] = useState(today);
   const [checkout, setCheckout] = useState(tomorrow);
   const [guests, setGuests] = useState(2);

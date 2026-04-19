@@ -4,7 +4,6 @@ import { useState, useMemo, useEffect, useCallback } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { getActiveTenantEmail } from "@/lib/session";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Progress } from "@/components/ui/progress";
@@ -363,11 +362,10 @@ export default function PropertiesPanel() {
     localStorage.setItem("stayhost_properties", JSON.stringify(properties));
   }, [properties]);
 
-  // Always load from Supabase on mount — source of truth
+  // Always load from Supabase on mount — source of truth.
+  // Tenant is resolved server-side from the session cookie.
   useEffect(() => {
-    const email = getActiveTenantEmail();
-    if (!email) return;
-    fetch(`/api/properties?email=${encodeURIComponent(email)}`)
+    fetch("/api/properties", { credentials: "same-origin" })
       .then(r => r.json())
       .then(data => {
         if (!data.properties?.length) return;
@@ -525,23 +523,21 @@ export default function PropertiesPanel() {
     if (!editingProperty) return;
     setSyncingChannel(channelName);
     try {
-      const email = getActiveTenantEmail();
-      if (email) {
-        // Ensure property exists in Supabase first
-        const syncRes = await fetch("/api/properties/sync", {
+      // Ensure property exists in Supabase first. Tenant is resolved from session.
+      const syncRes = await fetch("/api/properties/sync", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "same-origin",
+        body: JSON.stringify({ property: editingProperty }),
+      });
+      if (syncRes.ok) {
+        // Then import iCal bookings
+        await fetch("/api/ical/import", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ property: editingProperty, tenantEmail: email }),
+          credentials: "same-origin",
+          body: JSON.stringify({ propertyId: editingProperty.id }),
         });
-        if (syncRes.ok) {
-          // Then import iCal bookings
-          const syncData = await syncRes.json().catch(() => ({}));
-          await fetch("/api/ical/import", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ propertyId: editingProperty.id, tenantId: syncData.tenant_id }),
-          });
-        }
       }
     } catch {}
     const now = new Date().toISOString();
@@ -694,12 +690,12 @@ export default function PropertiesPanel() {
 
   const syncToSupabase = async (prop: Property) => {
     try {
-      const email = getActiveTenantEmail();
-      if (!email) return;
+      // Tenant is resolved server-side from the session cookie.
       const res = await fetch("/api/properties/sync", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ property: prop, tenantEmail: email }),
+        credentials: "same-origin",
+        body: JSON.stringify({ property: prop }),
       });
       return res;
     } catch {

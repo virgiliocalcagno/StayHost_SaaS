@@ -107,15 +107,12 @@ export default function KeysPanel() {
   const fetchBookings = () => {
     setLoading(true);
     try {
-      const session = localStorage.getItem("stayhost_session");
-      const email = (session ? JSON.parse(session).email : null)
-        || localStorage.getItem("stayhost_owner_email");
-      if (!email) { setLoading(false); return; }
-
+      // Tenant is resolved server-side from the auth cookie — no need to
+      // pass email. If the cookie is missing the endpoint returns 403.
       const saved = loadStatuses();
       setStatuses(saved);
 
-      fetch(`/api/bookings?email=${encodeURIComponent(email)}`)
+      fetch(`/api/bookings`, { credentials: "include" })
         .then(r => r.json())
         .then(data => {
           if (!data.properties?.length) { setLoading(false); return; }

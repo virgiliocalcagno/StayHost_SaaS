@@ -1,20 +1,17 @@
-import { NextRequest, NextResponse } from "next/server";
-import { supabaseAdmin } from "@/lib/supabase/server";
+import { NextResponse } from "next/server";
+import { getAuthenticatedTenant } from "@/lib/supabase/server";
 
-// GET /api/properties?email=tenant@example.com
-export async function GET(req: NextRequest) {
-  const email = req.nextUrl.searchParams.get("email");
-  if (!email) return NextResponse.json({ error: "email required" }, { status: 400 });
+// GET /api/properties
+// Returns the properties owned by the authenticated user's tenant.
+// Tenant is resolved from the session cookie — the `email` query param is
+// no longer accepted.
+export async function GET() {
+  const { tenantId, supabase } = await getAuthenticatedTenant();
+  if (!tenantId) {
+    return NextResponse.json({ error: "No tenant linked to this user" }, { status: 403 });
+  }
 
-  const { data: tenant } = await supabaseAdmin
-    .from("tenants")
-    .select("id")
-    .eq("email", email)
-    .single();
-
-  if (!tenant) return NextResponse.json({ properties: [] });
-
-  const { data: props } = await supabaseAdmin
+  const { data: props, error } = await supabase
     .from("properties")
     .select(`
       id, name, address, city, cover_image,
@@ -32,7 +29,11 @@ export async function GET(req: NextRequest) {
       description_es, description_en, photo_tour, amenities_config,
       created_at
     `)
-    .eq("tenant_id", (tenant as any).id);
+    .eq("tenant_id", tenantId);
 
-  return NextResponse.json({ properties: (props ?? []) as any[] });
+  if (error) {
+    return NextResponse.json({ error: error.message }, { status: 500 });
+  }
+
+  return NextResponse.json({ properties: props ?? [] });
 }

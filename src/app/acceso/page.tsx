@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, Suspense } from "react";
+import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -14,25 +15,18 @@ import {
   ArrowRight,
   AlertCircle,
 } from "lucide-react";
+import { supabase } from "@/lib/supabase/client";
 
-// ─── Session Type ─────────────────────────────────────────────────────────────
-export interface StaffSession {
-  memberId: string;
-  name: string;
-  role: string;
-  email: string;
-  phone: string;
-  permissions: {
-    canViewAnalytics: boolean;
-    canManageTasks: boolean;
-    canMessageGuests: boolean;
-    canEditProperties: boolean;
-  };
-  propertyAccess: "all" | string[];
-  available: boolean;
-}
-
-// ─── Login Form ───────────────────────────────────────────────────────────────
+/**
+ * Login page.
+ *
+ * Uses Supabase Auth (`signInWithPassword`). The session is stored in an
+ * httpOnly cookie managed by @supabase/ssr — not in localStorage. After
+ * login we redirect to the `next` query param if present, or to /dashboard
+ * as a default.
+ *
+ * The old "god mode" bypass and localStorage-based team lookup are gone.
+ */
 function LoginForm() {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -42,110 +36,58 @@ function LoginForm() {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
 
+  // If the user is already logged in (e.g. refreshed the login page),
+  // bounce them to their destination.
   useEffect(() => {
-    try {
-      const session = localStorage.getItem("stayhost_session");
-      if (session) router.replace("/staff");
-    } catch {}
-  }, [router]);
+    let active = true;
+    (async () => {
+      const { data } = await supabase.auth.getUser();
+      if (!active) return;
+      if (data.user) {
+        const next = searchParams.get("next") ?? "/dashboard";
+        router.replace(next);
+      }
+    })();
+    return () => {
+      active = false;
+    };
+  }, [router, searchParams]);
 
-  const handleLogin = () => {
+  const handleLogin = async () => {
     setError("");
     setLoading(true);
 
     try {
-      const teamRaw = localStorage.getItem("stayhost_team");
-      const isGodMode = email.toLowerCase().trim() === "virgiliocalcagno@gmail.com";
+      const { data, error: authError } = await supabase.auth.signInWithPassword({
+        email: email.trim(),
+        password,
+      });
 
-      if (!teamRaw && !isGodMode) {
-        setError("No hay equipo registrado. Contacta al administrador.");
-        setLoading(false);
+      if (authError) {
+        // Supabase returns "Invalid login credentials" for both wrong email
+        // and wrong password — intentional, to avoid leaking which one was
+        // wrong to an attacker. We translate the message for the user.
+        setError(
+          authError.message === "Invalid login credentials"
+            ? "Correo o contraseña incorrectos."
+            : authError.message
+        );
         return;
       }
 
-      const team = teamRaw ? JSON.parse(teamRaw) : [];
-      let member = team.find(
-        (m: { email: string }) =>
-          m.email.toLowerCase() === email.toLowerCase().trim()
-      );
-
-      // BYPASS MODO OWNER: Si eres tú, te creamos una cuenta virtual si no existes
-
-      if (!member && isGodMode) {
-        member = {
-          id: "god-001",
-          name: "Virgilio (Master)",
-          email: "virgiliocalcagno@gmail.com",
-          role: "OWNER",
-          status: "active",
-          permissions: {
-            canViewAnalytics: true,
-            canManageTasks: true,
-            canMessageGuests: true,
-            canEditProperties: true,
-          }
-        };
-      } else if (!member) {
-        setError("Correo no encontrado. Verifica con tu administrador.");
-        setLoading(false);
+      if (!data.user) {
+        setError("No se pudo iniciar sesión. Intenta de nuevo.");
         return;
       }
 
-      // Validamos contraseña solo si NO es el Modo OWNER
-      if (!isGodMode && member.password && member.password !== password) {
-        setError("Contraseña incorrecta.");
-        setLoading(false);
-        return;
-      }
-
-      if (member.status === "inactive") {
-        setError("Tu cuenta está inactiva. Contacta al administrador.");
-        setLoading(false);
-        return;
-      }
-
-      // Build and persist session
-      const session: StaffSession = {
-        memberId: member.id,
-        name: member.name,
-        role: isGodMode ? "OWNER" : member.role,
-        email: member.email,
-        phone: member.phone || "",
-        permissions: isGodMode ? {
-          canViewAnalytics: true,
-          canManageTasks: true,
-          canMessageGuests: true,
-          canEditProperties: true,
-        } : (member.permissions || {
-          canViewAnalytics: false,
-          canManageTasks: true,
-          canMessageGuests: false,
-          canEditProperties: false,
-        }),
-        propertyAccess: isGodMode ? "all" : (member.propertyAccess || "all"),
-        available: member.available ?? true,
-      };
-      localStorage.setItem("stayhost_session", JSON.stringify(session));
-
-      // Mark member as active
-      const updatedTeam = team.map((m: { id: string; role?: string }) =>
-        m.id === member.id
-          ? { ...m, status: "active", lastActive: "En línea", role: isGodMode ? "OWNER" : m.role }
-          : m
-      );
-      localStorage.setItem("stayhost_team", JSON.stringify(updatedTeam));
-
-      // Redirección inteligente basada en el rol
-      if (email.toLowerCase() === "virgiliocalcagno@gmail.com") {
-        router.push("/dashboard");
-      } else {
-        router.push("/staff");
-      }
-    } catch {
+      const next = searchParams.get("next") ?? "/dashboard";
+      router.push(next);
+    } catch (err) {
+      console.error("[login] unexpected error:", err);
       setError("Error al iniciar sesión. Intenta de nuevo.");
+    } finally {
+      setLoading(false);
     }
-
-    setLoading(false);
   };
 
   return (
@@ -158,7 +100,7 @@ function LoginForm() {
         {/* Logo Section */}
         <div className="text-center space-y-2">
           <div className="inline-flex items-center justify-center w-20 h-20 rounded-[2rem] bg-white shadow-xl shadow-primary/10 border border-slate-100 mb-6 relative group overflow-hidden">
-             <div className="absolute inset-0 bg-gradient-to-br from-primary/10 to-transparent opacity-0 group-hover:opacity-100 transition-opacity" />
+            <div className="absolute inset-0 bg-gradient-to-br from-primary/10 to-transparent opacity-0 group-hover:opacity-100 transition-opacity" />
             <Building2 className="h-10 w-10 text-primary relative z-10" />
           </div>
           <h1 className="text-3xl font-black text-slate-800 tracking-tight">Portal de Staff</h1>
@@ -174,7 +116,7 @@ function LoginForm() {
               <Label htmlFor="email" className="text-xs font-bold uppercase tracking-widest text-slate-400 pl-1">Correo Electrónico</Label>
               <div className="relative group">
                 <div className="absolute left-4 top-1/2 -translate-y-1/2 h-10 w-10 bg-slate-100 rounded-xl flex items-center justify-center group-focus-within:bg-primary/10 transition-colors">
-                   <Mail className="h-4 w-4 text-slate-400 group-focus-within:text-primary transition-colors" />
+                  <Mail className="h-4 w-4 text-slate-400 group-focus-within:text-primary transition-colors" />
                 </div>
                 <Input
                   id="email"
@@ -184,15 +126,16 @@ function LoginForm() {
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
                   onKeyDown={(e) => e.key === "Enter" && handleLogin()}
+                  autoComplete="email"
                 />
               </div>
             </div>
 
             <div className="space-y-3">
-              <Label htmlFor="password" className="text-xs font-bold uppercase tracking-widest text-slate-400 pl-1">Contraseña secreta</Label>
+              <Label htmlFor="password" className="text-xs font-bold uppercase tracking-widest text-slate-400 pl-1">Contraseña</Label>
               <div className="relative group">
                 <div className="absolute left-4 top-1/2 -translate-y-1/2 h-10 w-10 bg-slate-100 rounded-xl flex items-center justify-center group-focus-within:bg-primary/10 transition-colors">
-                   <Lock className="h-4 w-4 text-slate-400 group-focus-within:text-primary transition-colors" />
+                  <Lock className="h-4 w-4 text-slate-400 group-focus-within:text-primary transition-colors" />
                 </div>
                 <Input
                   id="password"
@@ -202,6 +145,7 @@ function LoginForm() {
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                   onKeyDown={(e) => e.key === "Enter" && handleLogin()}
+                  autoComplete="current-password"
                 />
                 <button
                   type="button"
@@ -228,12 +172,12 @@ function LoginForm() {
           <Button
             className="w-full h-14 rounded-2xl gradient-gold text-primary-foreground font-bold shadow-xl shadow-primary/20 transition-all group"
             onClick={handleLogin}
-            disabled={loading || !email}
+            disabled={loading || !email || !password}
           >
             {loading ? (
               <div className="flex items-center gap-2">
-                 <div className="h-4 w-4 border-2 border-white/20 border-t-white rounded-full animate-spin" />
-                 Autenticando...
+                <div className="h-4 w-4 border-2 border-white/20 border-t-white rounded-full animate-spin" />
+                Autenticando...
               </div>
             ) : (
               <div className="flex items-center gap-2 text-base">
@@ -243,9 +187,17 @@ function LoginForm() {
             )}
           </Button>
 
-          <p className="text-center text-xs font-semibold text-slate-400">
-            ¿Problemas para acceder? Contacta a tu jefe directo.
-          </p>
+          <div className="flex flex-col items-center gap-2">
+            <Link
+              href={`/recuperar${email ? `?email=${encodeURIComponent(email)}` : ""}`}
+              className="text-xs font-semibold text-primary hover:underline"
+            >
+              ¿Olvidaste tu contraseña?
+            </Link>
+            <p className="text-center text-xs font-semibold text-slate-400">
+              ¿Problemas para acceder? Contacta a tu administrador.
+            </p>
+          </div>
         </div>
       </div>
     </div>

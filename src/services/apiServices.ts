@@ -1,5 +1,3 @@
-import { getActiveTenantEmail } from "@/lib/session";
-
 // ─── Tipos exportados ────────────────────────────────────────────────────────
 
 export interface RawTeamMember {
@@ -27,6 +25,7 @@ export interface RawProperty {
 }
 
 // ─── Team: reads from localStorage (configured via Team panel) ───────────────
+// TODO: migrate the team roster to a Supabase table linked by tenant_id.
 
 export async function getTeam(): Promise<RawTeamMember[]> {
   if (typeof window === "undefined") return [];
@@ -39,13 +38,16 @@ export async function getTeam(): Promise<RawTeamMember[]> {
 }
 
 // ─── Properties: reads from Supabase via API ─────────────────────────────────
+//
+// The API reads the tenant_id from the authenticated user's session cookie,
+// so no tenant email needs to be sent from the client. A 401 means the user
+// is not logged in — the middleware will redirect page routes to /acceso.
 
 export async function getProperties(): Promise<RawProperty[]> {
   if (typeof window === "undefined") return [];
   try {
-    const email = getActiveTenantEmail();
-    if (!email) return [];
-    const res = await fetch(`/api/properties?email=${encodeURIComponent(email)}`);
+    const res = await fetch("/api/properties", { credentials: "same-origin" });
+    if (!res.ok) return [];
     const data = await res.json();
     return ((data.properties ?? []) as any[]).map((p: any) => ({
       id: p.id,
@@ -59,12 +61,6 @@ export async function getProperties(): Promise<RawProperty[]> {
       evidenceCriteria: p.evidence_criteria ?? [],
     }));
   } catch {
-    // Fallback to localStorage
-    try {
-      const raw = localStorage.getItem("stayhost_properties");
-      return raw ? (JSON.parse(raw) as RawProperty[]) : [];
-    } catch {
-      return [];
-    }
+    return [];
   }
 }

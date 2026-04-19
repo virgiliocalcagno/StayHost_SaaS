@@ -117,8 +117,10 @@ function CheckInInner({ bookingId }: { bookingId: string }) {
     if (!idBase64) { setError("Selecciona una foto de tu documento."); return; }
     setLoading(true);
     try {
+      // Pasamos el soft token (lastName + last4) porque el endpoint lo exige
+      // para aceptar uploads desde el flujo de huésped sin sesión.
       await fetch("/api/checkin", { method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "uploadId", id: bookingId, idPhotoBase64: idBase64 }) });
+        body: JSON.stringify({ action: "uploadId", id: bookingId, lastName, last4, idPhotoBase64: idBase64 }) });
     } catch {}
     setLoading(false); setError("");
     setStep(upsells.length > 0 ? 3 : (booking?.ee !== false ? 4 : 5));

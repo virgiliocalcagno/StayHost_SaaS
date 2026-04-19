@@ -1,38 +1,37 @@
 import { NextRequest, NextResponse } from "next/server";
-import { supabaseAdmin } from "@/lib/supabase/server";
+import { getAuthenticatedTenant } from "@/lib/supabase/server";
 
+// POST /api/properties/sync
+// Upserts a property for the authenticated tenant. The tenant_id is taken
+// from the session — callers no longer pass `tenantEmail`. RLS ensures a
+// tenant can only upsert rows tagged with their own tenant_id.
 export async function POST(req: NextRequest) {
+  const { tenantId, supabase } = await getAuthenticatedTenant();
+  if (!tenantId) {
+    return NextResponse.json({ error: "No tenant linked to this user" }, { status: 403 });
+  }
+
   try {
     const body = await req.json();
-    const { property, tenantEmail } = body;
+    const { property } = body;
 
-    if (!property?.id || !tenantEmail) {
-      return NextResponse.json({ error: "property.id and tenantEmail required", got: { id: property?.id, tenantEmail } }, { status: 400 });
+    if (!property?.id) {
+      return NextResponse.json({ error: "property.id required" }, { status: 400 });
     }
 
-    // Step 1: upsert tenant
-    const { data: tenant, error: tenantErr } = await supabaseAdmin
-      .from("tenants")
-      .upsert({ email: tenantEmail } as any, { onConflict: "email" })
-      .select("id")
-      .single();
+    // Extract iCal URLs from the channels array
+    const channels: { name?: string; icalUrl?: string }[] = property.channels ?? [];
+    const ical_airbnb =
+      channels.find((c) => c.name?.toLowerCase() === "airbnb")?.icalUrl ?? null;
+    const ical_vrbo =
+      channels.find((c) => ["vrbo", "homeaway"].includes(c.name?.toLowerCase() ?? ""))?.icalUrl ?? null;
 
-    if (tenantErr || !tenant) {
-      return NextResponse.json({ step: "tenant_upsert", error: tenantErr?.message ?? "no tenant", details: tenantErr }, { status: 500 });
-    }
-
-    // Step 2: extract iCal URLs from channels
-    const channels: { name: string; icalUrl?: string }[] = property.channels ?? [];
-    const ical_airbnb = channels.find(c => c.name?.toLowerCase() === "airbnb")?.icalUrl ?? null;
-    const ical_vrbo = channels.find(c => ["vrbo", "homeaway"].includes(c.name?.toLowerCase()))?.icalUrl ?? null;
-
-    // Step 3: upsert property with all fields
-    const { data, error: propErr } = await supabaseAdmin
+    const { data, error: propErr } = await supabase
       .from("properties")
       .upsert(
         {
           id: property.id,
-          tenant_id: (tenant as any).id,
+          tenant_id: tenantId,
           name: property.name,
           address: property.address ?? null,
           city: property.city ?? null,
@@ -69,30 +68,25 @@ export async function POST(req: NextRequest) {
           description_en: property.descriptionEN ?? null,
           photo_tour: property.photoTour ?? [],
           amenities_config: property.amenitiesConfig ?? {},
-        } as any,
+        } as never,
         { onConflict: "id" }
       )
       .select("id, ical_token")
       .single();
 
     if (propErr) {
-      return NextResponse.json({ step: "property_upsert", error: propErr.message, details: propErr }, { status: 500 });
+      return NextResponse.json(
+        { step: "property_upsert", error: propErr.message },
+        { status: 500 }
+      );
     }
 
-    const d = data as any;
-    return NextResponse.json({ ok: true, id: d.id, tenant_id: (tenant as any).id, ical_token: d.ical_token });
-  } catch (err: any) {
-    return NextResponse.json({ step: "exception", error: err?.message ?? String(err) }, { status: 500 });
+    const d = data as { id: string; ical_token: string | null };
+    return NextResponse.json({ ok: true, id: d.id, tenant_id: tenantId, ical_token: d.ical_token });
+  } catch (err) {
+    return NextResponse.json(
+      { step: "exception", error: err instanceof Error ? err.message : String(err) },
+      { status: 500 }
+    );
   }
-}
-
-// GET for quick connectivity test
-export async function GET() {
-  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
-  const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
-  if (!url || !key) {
-    return NextResponse.json({ error: "Missing env vars", NEXT_PUBLIC_SUPABASE_URL: !!url, SUPABASE_SERVICE_ROLE_KEY: !!key });
-  }
-  const { data, error } = await supabaseAdmin.from("tenants").select("id").limit(1);
-  return NextResponse.json({ ok: !error, error: error?.message, data });
 }

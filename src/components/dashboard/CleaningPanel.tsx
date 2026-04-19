@@ -58,7 +58,6 @@ import {
 } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
 import { getTeam, getProperties, type RawTeamMember } from "@/services/apiServices";
-import { getActiveTenantEmail } from "@/lib/session";
 
 // Nuevos componentes universales de Staff
 import { StaffWizard } from "@/components/staff-ui/StaffWizard";
@@ -115,10 +114,21 @@ interface TeamMember {
 
 // ─── Mock Data Helpers ──────────────────────────────────────────────────────
 
+// Returns YYYY-MM-DD in the USER's local timezone, not UTC.
+// Using toISOString() was the old bug: after ~8pm in Chile (UTC-4) the UTC
+// date rolls forward one day, so "today" was being labeled as tomorrow.
 const getDateStr = (offsetDays: number) => {
   const d = new Date();
   d.setDate(d.getDate() + offsetDays);
-  return d.toISOString().split("T")[0];
+  return toLocalDateStr(d);
+};
+
+// Same helper for an arbitrary Date — returns its local YYYY-MM-DD.
+const toLocalDateStr = (d: Date) => {
+  const yyyy = d.getFullYear();
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  return `${yyyy}-${mm}-${dd}`;
 };
 
 const MOCK_TEAM: TeamMember[] = [
@@ -133,9 +143,8 @@ export default function CleaningPanel() {
   const [tasks, setTasks] = useState<CleaningTask[]>([]);
 
   const loadTasks = () => {
-    const email = getActiveTenantEmail();
-    if (!email) return;
-    fetch(`/api/cleaning-tasks?email=${encodeURIComponent(email)}`)
+    // Tenant is resolved server-side from the session cookie.
+    fetch("/api/cleaning-tasks", { credentials: "same-origin" })
       .then(r => r.json())
       .then(data => { if (data.tasks?.length) setTasks(data.tasks); })
       .catch(() => {});
@@ -396,10 +405,13 @@ export default function CleaningPanel() {
     for (let i = 0; i < 7; i++) {
       const d = new Date();
       d.setDate(d.getDate() + i);
+      // Use local date components, not UTC — fixes "Hoy" showing as tomorrow
+      // after ~8pm in timezones west of UTC.
+      const localDate = toLocalDateStr(d);
       days.push({
         label: i === 0 ? "Hoy" : i === 1 ? "Mañana" : d.toLocaleDateString('es-ES', { weekday: 'short' }),
-        date: d.toISOString().split("T")[0],
-        count: tasks.filter(t => t.dueDate === d.toISOString().split("T")[0]).length
+        date: localDate,
+        count: tasks.filter(t => t.dueDate === localDate).length
       });
     }
     return days;
@@ -470,28 +482,25 @@ export default function CleaningPanel() {
     setShowAddTask(false);
     setNewTaskForm({ propertyId: "", dueDate: getDateStr(0), dueTime: "11:00", guestName: "", priority: "medium", isBackToBack: false, isVacant: false, guestCount: "" });
 
-    // Persist to Supabase
-    const email = getActiveTenantEmail();
-    if (email) {
-      fetch("/api/cleaning-tasks", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          tenantEmail: email,
-          propertyId: newTaskForm.propertyId,
-          dueDate: newTaskForm.dueDate,
-          dueTime: newTaskForm.dueTime,
-          guestName: newTaskForm.guestName || "Nuevo huésped",
-          priority: newTaskForm.priority,
-          isBackToBack: newTaskForm.isBackToBack,
-          isVacant: newTaskForm.isVacant,
-          guestCount: newTaskForm.guestCount ? Number(newTaskForm.guestCount) : null,
-          assigneeId: assignee?.id ?? null,
-          assigneeName: assignee?.name ?? null,
-          assigneeAvatar: assignee?.avatar ?? null,
-        }),
-      }).catch(() => {});
-    }
+    // Persist to Supabase. Tenant is resolved server-side from the session.
+    fetch("/api/cleaning-tasks", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "same-origin",
+      body: JSON.stringify({
+        propertyId: newTaskForm.propertyId,
+        dueDate: newTaskForm.dueDate,
+        dueTime: newTaskForm.dueTime,
+        guestName: newTaskForm.guestName || "Nuevo huésped",
+        priority: newTaskForm.priority,
+        isBackToBack: newTaskForm.isBackToBack,
+        isVacant: newTaskForm.isVacant,
+        guestCount: newTaskForm.guestCount ? Number(newTaskForm.guestCount) : null,
+        assigneeId: assignee?.id ?? null,
+        assigneeName: assignee?.name ?? null,
+        assigneeAvatar: assignee?.avatar ?? null,
+      }),
+    }).catch(() => {});
   };
 
   const currentActiveTask = tasks.find(t => t.id === activeTaskId);

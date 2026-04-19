@@ -1,33 +1,38 @@
 import { NextRequest, NextResponse } from "next/server";
-import { supabaseAdmin } from "@/lib/supabase/server";
+import { getAuthenticatedTenant } from "@/lib/supabase/server";
+
+// All three handlers read the tenant_id from the authenticated session
+// cookie. They no longer accept `tenantEmail` in the body or `?email=` in
+// the query — those were the backdoor that let anyone with the right email
+// read or delete someone else's data.
 
 // POST /api/bookings — create a manual booking or block
 export async function POST(req: NextRequest) {
+  const { tenantId, supabase } = await getAuthenticatedTenant();
+  if (!tenantId) {
+    return NextResponse.json({ error: "No tenant linked to this user" }, { status: 403 });
+  }
+
   try {
     const body = await req.json();
     const {
-      propertyId, tenantEmail, checkIn, checkOut,
+      propertyId, checkIn, checkOut,
       guestName, guestPhone, guestDoc, guestNationality,
       source, note, numGuests, totalPrice,
     } = body;
 
-    if (!propertyId || !tenantEmail || !checkIn || !checkOut) {
-      return NextResponse.json({ error: "propertyId, tenantEmail, checkIn, checkOut required" }, { status: 400 });
+    if (!propertyId || !checkIn || !checkOut) {
+      return NextResponse.json(
+        { error: "propertyId, checkIn, checkOut required" },
+        { status: 400 }
+      );
     }
-
-    const { data: tenant } = await supabaseAdmin
-      .from("tenants")
-      .select("id")
-      .eq("email", tenantEmail)
-      .single();
-
-    if (!tenant) return NextResponse.json({ error: "Tenant not found" }, { status: 404 });
 
     const isBlock = source === "block";
 
-    const { data, error } = await supabaseAdmin.from("bookings").insert({
+    const { data, error } = await supabase.from("bookings").insert({
       property_id: propertyId,
-      tenant_id: (tenant as any).id,
+      tenant_id: tenantId,
       source_uid: `manual-${Date.now()}`,
       source: source ?? "manual",
       guest_name: guestName ?? (isBlock ? "Bloqueado" : "Huésped"),
@@ -40,51 +45,70 @@ export async function POST(req: NextRequest) {
       total_price: totalPrice ?? 0,
       num_guests: numGuests ?? 1,
       note: note ?? null,
-    } as any).select("id").single();
+    } as never).select("id").single();
 
     if (error) return NextResponse.json({ error: error.message }, { status: 500 });
-    return NextResponse.json({ ok: true, id: (data as any).id });
-  } catch (err: any) {
-    return NextResponse.json({ error: err?.message }, { status: 500 });
+    return NextResponse.json({ ok: true, id: (data as { id: string }).id });
+  } catch (err) {
+    return NextResponse.json(
+      { error: err instanceof Error ? err.message : String(err) },
+      { status: 500 }
+    );
   }
 }
 
 // DELETE /api/bookings?bookingId=xxx — delete a booking or block
+// RLS enforces that the booking must belong to the current tenant. If the
+// caller passes a bookingId they don't own, the delete is a no-op (0 rows
+// affected).
 export async function DELETE(req: NextRequest) {
+  const { tenantId, supabase } = await getAuthenticatedTenant();
+  if (!tenantId) {
+    return NextResponse.json({ error: "No tenant linked to this user" }, { status: 403 });
+  }
+
   const bookingId = req.nextUrl.searchParams.get("bookingId");
   if (!bookingId) return NextResponse.json({ error: "bookingId required" }, { status: 400 });
-  const { error } = await supabaseAdmin.from("bookings").delete().eq("id", bookingId);
+
+  const { error, count } = await supabase
+    .from("bookings")
+    .delete({ count: "exact" })
+    .eq("id", bookingId);
+
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+  if (!count) return NextResponse.json({ error: "Not found" }, { status: 404 });
   return NextResponse.json({ ok: true });
 }
 
-// GET /api/bookings?email=tenant@example.com
-export async function GET(req: NextRequest) {
-  const email = req.nextUrl.searchParams.get("email");
-  if (!email) return NextResponse.json({ error: "email required" }, { status: 400 });
+// GET /api/bookings
+// Returns the tenant's properties + their bookings (excluding cancelled).
+export async function GET() {
+  const { tenantId, supabase } = await getAuthenticatedTenant();
+  if (!tenantId) {
+    return NextResponse.json({ error: "No tenant linked to this user" }, { status: 403 });
+  }
 
-  const { data: tenant } = await supabaseAdmin
-    .from("tenants")
-    .select("id")
-    .eq("email", email)
-    .single();
-
-  if (!tenant) return NextResponse.json({ properties: [] });
-
-  const { data: props } = await supabaseAdmin
+  const { data: props } = await supabase
     .from("properties")
     .select("id, name, address, price, ical_airbnb, ical_vrbo")
-    .eq("tenant_id", (tenant as any).id);
+    .eq("tenant_id", tenantId);
 
   if (!props?.length) return NextResponse.json({ properties: [] });
 
-  const { data: bookings } = await supabaseAdmin
+  const { data: bookings } = await supabase
     .from("bookings")
     .select("id, property_id, guest_name, guest_phone, guest_doc, guest_nationality, check_in, check_out, status, source, booking_url, source_uid, total_price, num_guests, note")
-    .in("property_id", (props as any[]).map((p) => p.id))
+    .in("property_id", (props as { id: string }[]).map((p) => p.id))
     .neq("status", "cancelled");
 
-  const result = (props as any[]).map((prop) => {
+  const result = (props as {
+    id: string;
+    name: string;
+    address: string | null;
+    price: number | null;
+    ical_airbnb: string | null;
+    ical_vrbo: string | null;
+  }[]).map((prop) => {
     const channel = prop.ical_airbnb ? "airbnb" : prop.ical_vrbo ? "vrbo" : "direct";
     return {
       id: prop.id,
@@ -92,13 +116,15 @@ export async function GET(req: NextRequest) {
       address: prop.address ?? "",
       price: prop.price ?? 0,
       channel,
-      bookings: ((bookings ?? []) as any[])
+      bookings: ((bookings ?? []) as Array<Record<string, unknown>>)
         .filter((b) => b.property_id === prop.id)
         .map((b) => ({
           id: b.id,
           guest: b.guest_name,
           phone: b.guest_phone ?? null,
-          phone4: b.guest_phone ? b.guest_phone.replace(/\D/g, "").slice(-4) : null,
+          phone4: b.guest_phone
+            ? String(b.guest_phone).replace(/\D/g, "").slice(-4)
+            : null,
           guestDoc: b.guest_doc ?? null,
           guestNationality: b.guest_nationality ?? null,
           start: b.check_in,

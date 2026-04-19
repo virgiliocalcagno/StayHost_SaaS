@@ -33,11 +33,20 @@ export interface CleaningTask {
   checklistItems?: { id: string; label: string; done: boolean; type: "general" | "appliance" }[];
 }
 
+// Local date YYYY-MM-DD, NOT UTC — otherwise "today" rolls forward after 8pm
+// in Chile / west-of-UTC timezones.
+const toLocalDateStr = (d: Date) => {
+  const yyyy = d.getFullYear();
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  return `${yyyy}-${mm}-${dd}`;
+};
+
 export const getPriorityInfo = (task: CleaningTask) => {
   const d = new Date();
-  const todayStr = d.toISOString().split("T")[0];
+  const todayStr = toLocalDateStr(d);
   d.setDate(d.getDate() + 1);
-  const tomorrowStr = d.toISOString().split("T")[0];
+  const tomorrowStr = toLocalDateStr(d);
 
   const isToday = task.dueDate === todayStr;
   const isTomorrow = task.dueDate === tomorrowStr;

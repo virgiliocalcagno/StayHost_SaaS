@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { supabaseAdmin } from "@/lib/supabase/server";
+import { getAuthenticatedTenant } from "@/lib/supabase/server";
 
 // Unfold RFC-5545 line continuations before parsing
 function unfold(text: string) {
@@ -68,26 +68,36 @@ function extractGuestName(summary: string): string {
 }
 
 // POST /api/ical/import
-// Body: { propertyId: string; tenantId: string }
+// Body: { propertyId: string }
+// Tenant is resolved from the session — the caller no longer passes tenantId.
+// RLS guarantees the property must belong to the caller's tenant.
 export async function POST(req: NextRequest) {
+  const { tenantId, supabase } = await getAuthenticatedTenant();
+  if (!tenantId) {
+    return NextResponse.json({ error: "No tenant linked to this user" }, { status: 403 });
+  }
+
   try {
-    const { propertyId, tenantId } = await req.json();
-    if (!propertyId || !tenantId) {
-      return NextResponse.json({ error: "propertyId and tenantId required" }, { status: 400 });
+    const { propertyId } = await req.json();
+    if (!propertyId) {
+      return NextResponse.json({ error: "propertyId required" }, { status: 400 });
     }
 
-    const { data: property, error: propErr } = await supabaseAdmin
+    const { data: property, error: propErr } = await supabase
       .from("properties")
       .select("id, ical_airbnb, ical_vrbo")
       .eq("id", propertyId)
-      .eq("tenant_id", tenantId)
       .single();
 
     if (propErr || !property) {
       return NextResponse.json({ error: "Property not found" }, { status: 404 });
     }
 
-    const prop = property as any;
+    const prop = property as {
+      id: string;
+      ical_airbnb: string | null;
+      ical_vrbo: string | null;
+    };
     const feeds: { url: string; source: "airbnb" | "vrbo" | "booking" | "manual" }[] = [];
     if (prop.ical_airbnb) feeds.push({ url: prop.ical_airbnb, source: "airbnb" });
     if (prop.ical_vrbo) feeds.push({ url: prop.ical_vrbo, source: "vrbo" });
@@ -97,7 +107,7 @@ export async function POST(req: NextRequest) {
     }
 
     let imported = 0;
-    let skipped = 0;
+    const skipped = 0;
 
     for (const feed of feeds) {
       let icalText: string;
@@ -139,16 +149,23 @@ export async function POST(req: NextRequest) {
           booking_url: isBlock ? null : ev.bookingUrl,
         };
 
-        let { error } = await supabaseAdmin.from("bookings").upsert(
-          baseRow as any, { onConflict: "property_id,source_uid", ignoreDuplicates: false }
-        );
+        let { error } = await supabase
+          .from("bookings")
+          .upsert(baseRow as never, {
+            onConflict: "property_id,source_uid",
+            ignoreDuplicates: false,
+          });
 
         // Fallback: if booking_url column missing, retry without it
         if (error?.message?.includes("booking_url")) {
           const { booking_url: _drop, ...rowWithout } = baseRow;
-          const res2 = await supabaseAdmin.from("bookings").upsert(
-            rowWithout as any, { onConflict: "property_id,source_uid", ignoreDuplicates: false }
-          );
+          void _drop;
+          const res2 = await supabase
+            .from("bookings")
+            .upsert(rowWithout as never, {
+              onConflict: "property_id,source_uid",
+              ignoreDuplicates: false,
+            });
           error = res2.error;
         }
 

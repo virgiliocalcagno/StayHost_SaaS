@@ -84,10 +84,15 @@ interface Property {
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
+// Local date YYYY-MM-DD, not UTC — fixes "Hoy" rolling to the next day after
+// ~8pm in west-of-UTC timezones.
 const getDateStr = (offsetDays: number) => {
   const d = new Date();
   d.setDate(d.getDate() + offsetDays);
-  return d.toISOString().split("T")[0];
+  const yyyy = d.getFullYear();
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  return `${yyyy}-${mm}-${dd}`;
 };
 
 const getPriorityInfo = (task: CleaningTask) => {

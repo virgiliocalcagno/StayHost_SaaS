@@ -455,7 +455,15 @@ export default function TeamPanel() {
         tasksCompleted: 0,
         tasksToday: 0,
         rating: 0,
-        joinDate: new Date().toISOString().split("T")[0],
+        joinDate: (() => {
+          // Local YYYY-MM-DD (not UTC) — so invites created at night in
+          // Chile don't show the next day's date.
+          const d = new Date();
+          const y = d.getFullYear();
+          const m = String(d.getMonth() + 1).padStart(2, "0");
+          const dd = String(d.getDate()).padStart(2, "0");
+          return `${y}-${m}-${dd}`;
+        })(),
         lastActive: "Invitación enviada",
       };
       setTeam((prev) => [...prev, newMember]);

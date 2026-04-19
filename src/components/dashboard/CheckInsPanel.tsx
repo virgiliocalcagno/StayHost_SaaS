@@ -7,10 +7,15 @@
  *   • stayhost_direct_bookings  (confirmed reservations with phone → last4)
  *   • stayhost_ical_configs     (each config has cached bookings[] with phoneLast4 from iCal)
  *
- * Links are self-contained: all booking data is base64-encoded in the URL ?d= param.
- * No server state required — links work on any device regardless of server restarts.
+ * Persistence: records live in Postgres (`public.checkin_records`) — not in
+ * localStorage — so that every logged-in device sees the same list and the
+ * guest check-in flow works across serverless invocations. The panel talks to
+ * `/api/checkin` for create / list / update / delete / upsertBatch.
  *
- * localStorage key: stayhost_checkins
+ * Self-contained links: we still base64-encode the booking payload into the
+ * URL `?d=` param so guests on their phones don't need to hit the server for
+ * the welcome screen. The record in Postgres is the source of truth for state
+ * transitions (ID validation, electricity payment, access granted).
  */
 
 import React, { useState, useEffect, useCallback } from "react";
@@ -137,21 +142,116 @@ function qrUrl(data: string, size = 180) {
   return `https://api.qrserver.com/v1/create-qr-code/?size=${size}x${size}&data=${encodeURIComponent(data)}&bgcolor=ffffff&color=1a1a2e&margin=8`;
 }
 
-const LS_KEY = "stayhost_checkins";
-
-function loadFromStorage(): LocalCheckIn[] {
-  try {
-    const raw = localStorage.getItem(LS_KEY);
-    return raw ? JSON.parse(raw) : [];
-  } catch { return []; }
-}
-
-function saveToStorage(records: LocalCheckIn[]) {
-  try { localStorage.setItem(LS_KEY, JSON.stringify(records)); } catch {}
-}
-
 function makeId() {
   return `ci-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+}
+
+// ─── API helpers ──────────────────────────────────────────────────────────────
+//
+// Shape returned by /api/checkin. Close to LocalCheckIn but with server-only
+// fields (idPhotoPath) and without client-only ones (encodedData, link),
+// which we derive from the other fields after fetching.
+
+interface ApiCheckin {
+  id: string;
+  guestName: string;
+  guestLastName: string;
+  lastFourDigits: string;
+  checkin: string;
+  checkout: string;
+  nights: number;
+  propertyId: string;
+  propertyName: string;
+  propertyAddress?: string;
+  propertyImage?: string;
+  wifiSsid?: string;
+  wifiPassword?: string;
+  electricityEnabled: boolean;
+  electricityRate: number;
+  electricityPaid: boolean;
+  electricityTotal: number;
+  paypalFeeIncluded: boolean;
+  idStatus: "pending" | "uploaded" | "validated" | "rejected";
+  accessGranted: boolean;
+  status: "pendiente" | "validado";
+  bookingRef?: string;
+  source: "manual" | "auto_direct" | "auto_ical";
+  channel?: string;
+  missingData: boolean;
+  createdAt: string;
+  updatedAt: string;
+  idPhotoPath?: string;
+}
+
+async function apiCheckin<T = unknown>(action: string, payload: Record<string, unknown> = {}): Promise<T> {
+  const res = await fetch("/api/checkin", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ action, ...payload }),
+    credentials: "include",
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error((err as { error?: string }).error ?? `API error ${res.status}`);
+  }
+  return (await res.json()) as T;
+}
+
+/**
+ * Build the full LocalCheckIn (what the panel renders) from the API record.
+ * The encoded URL payload and link are derived here instead of being stored.
+ */
+function fromApi(
+  r: ApiCheckin,
+  upsellsByProperty: (propertyId: string) => { id: string; n: string; p: number; d: string }[]
+): LocalCheckIn {
+  const upsells = upsellsByProperty(r.propertyId);
+  const encoded = r.missingData ? "" : encodeData({
+    n: r.guestName,
+    l: r.guestLastName,
+    d4: r.lastFourDigits,
+    ci: r.checkin,
+    co: r.checkout,
+    nt: r.nights,
+    p: r.propertyName,
+    pa: r.propertyAddress,
+    pi: r.propertyImage,
+    ws: r.wifiSsid,
+    wp: r.wifiPassword,
+    ee: r.electricityEnabled,
+    et: r.electricityTotal,
+    br: r.bookingRef,
+    ...(upsells.length > 0 ? { us: upsells } : {}),
+  });
+  const link = r.missingData ? "" : buildLink(r.id, encoded);
+  return {
+    id: r.id,
+    source: r.source,
+    channel: r.channel,
+    guestName: r.guestName,
+    guestLastName: r.guestLastName,
+    lastFourDigits: r.lastFourDigits,
+    checkin: r.checkin,
+    checkout: r.checkout,
+    nights: r.nights,
+    propertyId: r.propertyId,
+    propertyName: r.propertyName,
+    propertyAddress: r.propertyAddress,
+    propertyImage: r.propertyImage,
+    wifiSsid: r.wifiSsid,
+    wifiPassword: r.wifiPassword,
+    electricityEnabled: r.electricityEnabled,
+    electricityTotal: r.electricityTotal,
+    idStatus: r.idStatus,
+    electricityPaid: r.electricityPaid,
+    accessGranted: r.accessGranted,
+    status: r.status,
+    missingData: r.missingData,
+    createdAt: r.createdAt,
+    bookingRef: r.bookingRef,
+    encodedData: encoded,
+    link,
+  };
 }
 
 // ─── Status Badge ─────────────────────────────────────────────────────────────
@@ -320,9 +420,36 @@ export default function CheckInsPanel() {
   });
   const [createError, setCreateError] = useState("");
 
+  // Helper: look up upsells for a property from localStorage (still a client-only concept).
+  const upsellsByProperty = useCallback((propertyId: string) => {
+    try {
+      const raw = localStorage.getItem("stayhost_upsells");
+      if (!raw) return [];
+      return (JSON.parse(raw) as Array<{ id: string; name: string; price: number; description?: string; active?: boolean; isGlobal?: boolean; propertyId?: string }>)
+        .filter(u => u.active !== false && (u.isGlobal || u.propertyId === propertyId))
+        .slice(0, 6)
+        .map(u => ({ id: u.id, n: u.name, p: u.price, d: u.description ?? "" }));
+    } catch {
+      return [];
+    }
+  }, []);
+
+  // Centralised refresh: fetch records from the backend and derive the panel
+  // shape. Called on mount and after every mutation.
+  const refreshRecords = useCallback(async () => {
+    try {
+      const { records: api } = await apiCheckin<{ records: ApiCheckin[] }>("list");
+      setRecords(api.map(r => fromApi(r, upsellsByProperty)));
+    } catch (err) {
+      console.error("[CheckInsPanel] list failed:", err);
+    }
+  }, [upsellsByProperty]);
+
   // ─── Load ────────────────────────────────────────────────────────────────────
   useEffect(() => {
-    setRecords(loadFromStorage());
+    void refreshRecords();
+    // WiFi, electricity and properties are still per-browser config; only the
+    // check-in records themselves moved to the backend.
     try {
       const w = localStorage.getItem("stayhost_wifi_configs");
       if (w) setWifiConfigs(JSON.parse(w));
@@ -335,11 +462,15 @@ export default function CheckInsPanel() {
       const p = localStorage.getItem("stayhost_properties");
       if (p) setProperties(JSON.parse(p).map((x: {id:string;name:string;address?:string;image?:string}) => ({ id:x.id, name:x.name, address:x.address, image:x.image })));
     } catch {}
-  }, []);
+  }, [refreshRecords]);
 
-  // ─── Build a check-in record + encoded link ───────────────────────────────
+  // ─── Build a candidate record for the backend upsert ─────────────────────
+  // We build the *payload* for `upsertBatch` (raw fields, no link/encoded).
+  // The server persists these; the panel then fetches them back via
+  // `refreshRecords` and derives `link`/`encodedData`. That keeps us from
+  // having two sources of truth.
 
-  const buildRecord = useCallback((fields: {
+  type CandidateFields = {
     source: LocalCheckIn["source"];
     channel?: string;
     guestName: string;
@@ -358,188 +489,180 @@ export default function CheckInsPanel() {
     electricityTotal: number;
     bookingRef?: string;
     missingData?: boolean;
-  }, existingId?: string): LocalCheckIn => {
-    const id = existingId ?? makeId();
-    // Include available upsells for this property
-    let upsells: { id: string; n: string; p: number; d: string }[] = [];
-    try {
-      const raw = localStorage.getItem("stayhost_upsells");
-      if (raw) {
-        upsells = (JSON.parse(raw) as Array<{ id: string; name: string; price: number; description?: string; active?: boolean; isGlobal?: boolean; propertyId?: string }>)
-          .filter(u => u.active !== false && (u.isGlobal || u.propertyId === fields.propertyId))
-          .slice(0, 6)
-          .map(u => ({ id: u.id, n: u.name, p: u.price, d: u.description ?? "" }));
-      }
-    } catch {}
+  };
 
-    const encoded = fields.missingData ? "" : encodeData({
-      n: fields.guestName,
-      l: fields.guestLastName,
-      d4: fields.lastFourDigits,
-      ci: fields.checkin,
-      co: fields.checkout,
-      nt: fields.nights,
-      p: fields.propertyName,
-      pa: fields.propertyAddress,
-      pi: fields.propertyImage,
-      ws: fields.wifiSsid,
-      wp: fields.wifiPassword,
-      ee: fields.electricityEnabled,
-      et: fields.electricityTotal,
-      br: fields.bookingRef,
-      ...(upsells.length > 0 ? { us: upsells } : {}),
-    });
-    const link = fields.missingData ? "" : buildLink(id, encoded);
+  const buildCandidate = useCallback((fields: CandidateFields, existingId?: string) => {
     return {
-      id, source: fields.source, channel: fields.channel,
-      guestName: fields.guestName, guestLastName: fields.guestLastName,
+      id: existingId ?? makeId(),
+      source: fields.source,
+      channel: fields.channel,
+      guestName: fields.guestName,
+      guestLastName: fields.guestLastName,
       lastFourDigits: fields.lastFourDigits,
-      checkin: fields.checkin, checkout: fields.checkout, nights: fields.nights,
-      propertyId: fields.propertyId, propertyName: fields.propertyName,
-      propertyAddress: fields.propertyAddress, propertyImage: fields.propertyImage,
-      missingData: fields.missingData,
-      wifiSsid: fields.wifiSsid, wifiPassword: fields.wifiPassword,
+      checkin: fields.checkin,
+      checkout: fields.checkout,
+      nights: fields.nights,
+      propertyId: fields.propertyId,
+      propertyName: fields.propertyName,
+      propertyAddress: fields.propertyAddress,
+      propertyImage: fields.propertyImage,
+      wifiSsid: fields.wifiSsid,
+      wifiPassword: fields.wifiPassword,
       electricityEnabled: fields.electricityEnabled,
       electricityTotal: fields.electricityTotal,
-      idStatus: "pending", electricityPaid: false,
-      accessGranted: false, status: "pendiente",
-      createdAt: new Date().toISOString(),
       bookingRef: fields.bookingRef,
-      encodedData: encoded, link,
+      missingData: fields.missingData ?? false,
     };
   }, []);
 
   // ─── Auto-sync ───────────────────────────────────────────────────────────────
+  //
+  // Reads pending direct/iCal bookings from localStorage, builds candidate
+  // records, and pushes the NEW ones (those whose bookingRef isn't already in
+  // the backend) as a single `upsertBatch` request. Keeping the
+  // bookingRef-based dedup on the client avoids the backend needing to know
+  // about direct_bookings / ical_configs storage conventions.
 
-  const autoSync = useCallback((quiet = false) => {
+  const autoSync = useCallback(async (quiet = false) => {
     if (!quiet) setSyncing(true);
-    const existing = loadFromStorage();
-    const usedRefs = new Set(existing.map(r => r.bookingRef).filter(Boolean));
-    const newRecords: LocalCheckIn[] = [];
 
-    // Helper: get per-property elec config (with fallback defaults)
-    const getElecConfig = (propertyId: string, savedConfigs: ElecConfig[]) => {
-      const ec = savedConfigs.find(c => c.propertyId === propertyId);
-      return ec ?? { enabled: true, rate: 5, paypal: true };
-    };
-
-    // Load elec configs fresh from storage so sync isn't stale
-    let freshElecConfigs: ElecConfig[] = [];
     try {
-      const raw = localStorage.getItem("stayhost_elec_config");
-      if (raw) freshElecConfigs = JSON.parse(raw);
-    } catch {}
+      // Load current backend records so we know which bookingRefs are already synced.
+      const { records: apiRecords } = await apiCheckin<{ records: ApiCheckin[] }>("list");
+      const usedRefs = new Set(apiRecords.map(r => r.bookingRef).filter(Boolean) as string[]);
 
-    // ── Source 1: direct bookings ────────────────────────────────────────────
-    let directCount = 0;
-    try {
-      const raw = localStorage.getItem("stayhost_direct_bookings");
-      const bookings: DirectBooking[] = raw ? JSON.parse(raw) : [];
-      const wifi = JSON.parse(localStorage.getItem("stayhost_wifi_configs") ?? "[]") as WifiConfig[];
+      const candidates: ReturnType<typeof buildCandidate>[] = [];
 
-      for (const b of bookings) {
-        if (b.status !== "confirmed") continue;
-        if (usedRefs.has(b.id)) continue;
+      // Helper: get per-property elec config (with fallback defaults)
+      const getElecConfig = (propertyId: string, savedConfigs: ElecConfig[]) => {
+        const ec = savedConfigs.find(c => c.propertyId === propertyId);
+        return ec ?? { enabled: true, rate: 5, paypal: true };
+      };
 
-        const phone = b.guestPhone ?? "";
-        const last4 = phone.replace(/\D/g, "").slice(-4);
-        if (last4.length !== 4) continue;  // need 4 digits
+      let freshElecConfigs: ElecConfig[] = [];
+      try {
+        const raw = localStorage.getItem("stayhost_elec_config");
+        if (raw) freshElecConfigs = JSON.parse(raw);
+      } catch {}
 
-        const nights = diffNights(b.checkin, b.checkout);
-        if (nights <= 0) continue;
+      // ── Source 1: direct bookings ──────────────────────────────────────────
+      let directCount = 0;
+      try {
+        const raw = localStorage.getItem("stayhost_direct_bookings");
+        const bookings: DirectBooking[] = raw ? JSON.parse(raw) : [];
+        const wifi = JSON.parse(localStorage.getItem("stayhost_wifi_configs") ?? "[]") as WifiConfig[];
 
-        const nameParts = b.guestName.trim().split(" ");
-        const lastName = nameParts.length > 1 ? nameParts[nameParts.length - 1] : b.guestName;
-        const firstName = nameParts.length > 1 ? nameParts.slice(0, -1).join(" ") : "";
+        for (const b of bookings) {
+          if (b.status !== "confirmed") continue;
+          if (usedRefs.has(b.id)) continue;
 
-        const w = wifi.find(x => x.propertyId === b.propertyId);
-        const ec = getElecConfig(b.propertyId ?? "", freshElecConfigs);
-        const elec = ec.enabled ? calcElectricity(nights, ec.rate, ec.paypal) : 0;
-        const prop = properties.find(p => p.id === b.propertyId);
+          const phone = b.guestPhone ?? "";
+          const last4 = phone.replace(/\D/g, "").slice(-4);
+          if (last4.length !== 4) continue;
 
-        newRecords.push(buildRecord({
-          source: "auto_direct", channel: "direct",
-          guestName: firstName || b.guestName, guestLastName: lastName,
-          lastFourDigits: last4,
-          checkin: b.checkin, checkout: b.checkout, nights,
-          propertyId: b.propertyId ?? "", propertyName: b.propertyName ?? "",
-          propertyAddress: prop?.address, propertyImage: prop?.image,
-          wifiSsid: w?.ssid, wifiPassword: w?.password,
-          electricityEnabled: ec.enabled, electricityTotal: elec,
-          bookingRef: b.id,
-        }));
-        usedRefs.add(b.id);
-        directCount++;
-      }
-    } catch {}
-
-    // ── Source 2: iCal cached bookings ───────────────────────────────────────
-    let icalCount = 0;
-    try {
-      const raw = localStorage.getItem("stayhost_ical_configs");
-      const configs: ICalConfig[] = raw ? JSON.parse(raw) : [];
-      const wifi = JSON.parse(localStorage.getItem("stayhost_wifi_configs") ?? "[]") as WifiConfig[];
-
-      for (const config of configs) {
-        if (!config.bookings?.length) continue;
-        const w = wifi.find(x => x.propertyId === config.propertyId);
-        const propInfo = properties.find(p => p.id === config.propertyId);
-        const ec = getElecConfig(config.propertyId, freshElecConfigs);
-
-        for (const b of config.bookings) {
-          const isMissingPhone = !b.phoneLast4 || b.phoneLast4.length !== 4;
-          const refKey = `ical-${b.uid}`;
-          if (usedRefs.has(refKey)) continue;
-
-          const nights = b.nights > 0 ? b.nights : diffNights(b.checkin, b.checkout);
+          const nights = diffNights(b.checkin, b.checkout);
           if (nights <= 0) continue;
 
           const nameParts = b.guestName.trim().split(" ");
-          const lastName = nameParts.length > 1 ? nameParts[nameParts.length - 1] : (isMissingPhone ? "" : b.guestName);
-          const firstName = nameParts.length > 1 ? nameParts.slice(0, -1).join(" ") : (isMissingPhone ? b.guestName : "");
-          const isMissingName = !firstName || !lastName;
-          const missingData = isMissingPhone || isMissingName;
-          
-          const elec = ec.enabled ? calcElectricity(nights, ec.rate, ec.paypal) : 0;
+          const lastName = nameParts.length > 1 ? nameParts[nameParts.length - 1] : b.guestName;
+          const firstName = nameParts.length > 1 ? nameParts.slice(0, -1).join(" ") : "";
 
-          newRecords.push(buildRecord({
-            source: "auto_ical", channel: b.channel,
-            guestName: missingData ? "Pendiente" : (firstName || b.guestName), 
-            guestLastName: missingData ? "de Datos" : (lastName ?? ""),
-            lastFourDigits: isMissingPhone ? "0000" : (b.phoneLast4 ?? "0000"),
+          const w = wifi.find(x => x.propertyId === b.propertyId);
+          const ec = getElecConfig(b.propertyId ?? "", freshElecConfigs);
+          const elec = ec.enabled ? calcElectricity(nights, ec.rate, ec.paypal) : 0;
+          const prop = properties.find(p => p.id === b.propertyId);
+
+          candidates.push(buildCandidate({
+            source: "auto_direct", channel: "direct",
+            guestName: firstName || b.guestName, guestLastName: lastName,
+            lastFourDigits: last4,
             checkin: b.checkin, checkout: b.checkout, nights,
-            propertyId: config.propertyId, propertyName: propInfo?.name ?? config.propertyId,
-            propertyAddress: propInfo?.address, propertyImage: propInfo?.image,
-            missingData: missingData,
+            propertyId: b.propertyId ?? "", propertyName: b.propertyName ?? "",
+            propertyAddress: prop?.address, propertyImage: prop?.image,
             wifiSsid: w?.ssid, wifiPassword: w?.password,
             electricityEnabled: ec.enabled, electricityTotal: elec,
-            bookingRef: refKey,
+            bookingRef: b.id,
           }));
-          usedRefs.add(refKey);
-          icalCount++;
+          usedRefs.add(b.id);
+          directCount++;
         }
-      }
-    } catch {}
+      } catch {}
 
-    const merged = [...existing, ...newRecords];
-    if (newRecords.length > 0) {
-      saveToStorage(merged);
-      setRecords(merged);
+      // ── Source 2: iCal cached bookings ─────────────────────────────────────
+      let icalCount = 0;
+      try {
+        const raw = localStorage.getItem("stayhost_ical_configs");
+        const configs: ICalConfig[] = raw ? JSON.parse(raw) : [];
+        const wifi = JSON.parse(localStorage.getItem("stayhost_wifi_configs") ?? "[]") as WifiConfig[];
+
+        for (const config of configs) {
+          if (!config.bookings?.length) continue;
+          const w = wifi.find(x => x.propertyId === config.propertyId);
+          const propInfo = properties.find(p => p.id === config.propertyId);
+          const ec = getElecConfig(config.propertyId, freshElecConfigs);
+
+          for (const b of config.bookings) {
+            const isMissingPhone = !b.phoneLast4 || b.phoneLast4.length !== 4;
+            const refKey = `ical-${b.uid}`;
+            if (usedRefs.has(refKey)) continue;
+
+            const nights = b.nights > 0 ? b.nights : diffNights(b.checkin, b.checkout);
+            if (nights <= 0) continue;
+
+            const nameParts = b.guestName.trim().split(" ");
+            const lastName = nameParts.length > 1 ? nameParts[nameParts.length - 1] : (isMissingPhone ? "" : b.guestName);
+            const firstName = nameParts.length > 1 ? nameParts.slice(0, -1).join(" ") : (isMissingPhone ? b.guestName : "");
+            const isMissingName = !firstName || !lastName;
+            const missingData = isMissingPhone || isMissingName;
+
+            const elec = ec.enabled ? calcElectricity(nights, ec.rate, ec.paypal) : 0;
+
+            candidates.push(buildCandidate({
+              source: "auto_ical", channel: b.channel,
+              guestName: missingData ? "Pendiente" : (firstName || b.guestName),
+              guestLastName: missingData ? "de Datos" : (lastName ?? ""),
+              lastFourDigits: isMissingPhone ? "0000" : (b.phoneLast4 ?? "0000"),
+              checkin: b.checkin, checkout: b.checkout, nights,
+              propertyId: config.propertyId, propertyName: propInfo?.name ?? config.propertyId,
+              propertyAddress: propInfo?.address, propertyImage: propInfo?.image,
+              missingData: missingData,
+              wifiSsid: w?.ssid, wifiPassword: w?.password,
+              electricityEnabled: ec.enabled, electricityTotal: elec,
+              bookingRef: refKey,
+            }));
+            usedRefs.add(refKey);
+            icalCount++;
+          }
+        }
+      } catch {}
+
+      if (candidates.length > 0) {
+        await apiCheckin("upsertBatch", { records: candidates });
+        await refreshRecords();
+      } else {
+        // Even with no new candidates, refresh so the UI matches the server.
+        setRecords(apiRecords.map(r => fromApi(r, upsellsByProperty)));
+      }
+
+      setSyncStats(s => ({ direct: s.direct + directCount, ical: s.ical + icalCount }));
+      return { directCount, icalCount };
+    } catch (err) {
+      console.error("[CheckInsPanel] autoSync failed:", err);
+      return { directCount: 0, icalCount: 0 };
+    } finally {
+      if (!quiet) setSyncing(false);
     }
-    setSyncStats(s => ({ direct: s.direct + directCount, ical: s.ical + icalCount }));
-    if (!quiet) setSyncing(false);
-    return { directCount, icalCount };
-  }, [buildRecord, properties]);
+  }, [buildCandidate, properties, refreshRecords, upsellsByProperty]);
 
   // Run auto-sync on mount (quiet)
   useEffect(() => {
-    if (properties.length >= 0) autoSync(true);
+    if (properties.length >= 0) void autoSync(true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [properties]);
 
   // ─── Manual create ──────────────────────────────────────────────────────────
 
-  function handleCreate() {
+  async function handleCreate() {
     const nights = diffNights(form.checkin, form.checkout);
     if (!form.guestName || !form.guestLastName || form.lastFourDigits.length !== 4 || !form.checkin || !form.checkout) {
       setCreateError("Completa todos los campos requeridos (incluyendo exactamente 4 dígitos).");
@@ -551,51 +674,74 @@ export default function CheckInsPanel() {
     const prop = properties.find(p => p.id === form.propertyId);
     const elec = form.electricityEnabled ? calcElectricity(nights, form.electricityRate, form.paypalFeeIncluded) : 0;
 
-    const record = buildRecord({
-      source: "manual",
-      guestName: form.guestName, guestLastName: form.guestLastName,
-      lastFourDigits: form.lastFourDigits,
-      checkin: form.checkin, checkout: form.checkout, nights,
-      propertyId: form.propertyId, propertyName: form.propertyName || form.propertyId,
-      propertyAddress: form.propertyAddress || prop?.address,
-      propertyImage: prop?.image,
-      wifiSsid: wifi?.ssid ?? form.wifiSsid, wifiPassword: wifi?.password ?? form.wifiPassword,
-      electricityEnabled: form.electricityEnabled, electricityTotal: elec,
-    });
-
-    const next = [record, ...loadFromStorage()];
-    saveToStorage(next);
-    setRecords(next);
-    setForm(f => ({ ...f, guestName: "", guestLastName: "", lastFourDigits: "", checkin: "", checkout: "", propertyId: "", propertyName: "" }));
-    setCreateError("");
+    try {
+      await apiCheckin("create", {
+        source: "manual",
+        guestName: form.guestName,
+        guestLastName: form.guestLastName,
+        lastFourDigits: form.lastFourDigits,
+        checkin: form.checkin,
+        checkout: form.checkout,
+        nights,
+        propertyId: form.propertyId,
+        propertyName: form.propertyName || form.propertyId,
+        propertyAddress: form.propertyAddress || prop?.address,
+        propertyImage: prop?.image,
+        wifiSsid: wifi?.ssid ?? form.wifiSsid,
+        wifiPassword: wifi?.password ?? form.wifiPassword,
+        electricityEnabled: form.electricityEnabled,
+        electricityRate: form.electricityRate,
+        paypalFeeIncluded: form.paypalFeeIncluded,
+        electricityTotal: elec,
+      });
+      await refreshRecords();
+      setForm(f => ({ ...f, guestName: "", guestLastName: "", lastFourDigits: "", checkin: "", checkout: "", propertyId: "", propertyName: "" }));
+      setCreateError("");
+    } catch (err) {
+      setCreateError(err instanceof Error ? err.message : "No se pudo crear el check-in");
+    }
   }
 
   // ─── Update status (validate ID, pay electricity, etc.) ──────────────────
+  //
+  // The backend has dedicated actions for ID validation (`validateId`,
+  // `rejectId`) and for marking electricity as paid (`payElectricity`, which
+  // also flips accessGranted in one transaction). Anything else goes through
+  // the generic `update`.
 
-  function updateRecord(id: string, patch: Partial<LocalCheckIn>) {
-    setRecords(prev => {
-      const next = prev.map(r => {
-        if (r.id !== id) return r;
-        const updated = { ...r, ...patch };
-        // auto-grant access when both conditions met
-        if (updated.idStatus === "validated" && (!updated.electricityEnabled || updated.electricityPaid)) {
-          updated.accessGranted = true;
-          updated.status = "validado";
-          // Regenerate link with same id/data (unchanged) — access is server-side only
+  async function updateRecord(id: string, patch: Partial<LocalCheckIn>) {
+    try {
+      if (patch.idStatus === "validated") {
+        await apiCheckin("validateId", { id });
+      } else if (patch.idStatus === "rejected") {
+        await apiCheckin("rejectId", { id });
+      } else if (patch.electricityPaid === true) {
+        // The guest flow uses /api/checkin `payElectricity` (soft token). The
+        // staff equivalent is a plain `update` — RLS ensures we only touch our
+        // own tenant's rows.
+        await apiCheckin("update", { id, electricityPaid: true });
+        // After marking electricity paid, re-trigger the validateId path if
+        // the ID was already validated — that's what grants access.
+        const current = records.find(r => r.id === id);
+        if (current?.idStatus === "validated") {
+          await apiCheckin("validateId", { id });
         }
-        return updated;
-      });
-      saveToStorage(next);
-      return next;
-    });
+      } else {
+        await apiCheckin("update", { id, ...patch });
+      }
+      await refreshRecords();
+    } catch (err) {
+      console.error("[CheckInsPanel] updateRecord failed:", err);
+    }
   }
 
-  function deleteRecord(id: string) {
-    setRecords(prev => {
-      const next = prev.filter(r => r.id !== id);
-      saveToStorage(next);
-      return next;
-    });
+  async function deleteRecord(id: string) {
+    try {
+      await apiCheckin("delete", { id });
+      await refreshRecords();
+    } catch (err) {
+      console.error("[CheckInsPanel] deleteRecord failed:", err);
+    }
   }
 
   // ─── Copy link ────────────────────────────────────────────────────────────
@@ -642,41 +788,26 @@ export default function CheckInsPanel() {
   const [enrichRecord, setEnrichRecord] = useState(null as LocalCheckIn | null);
   const [enrichForm, setEnrichForm] = useState({ firstName: "", lastName: "", last4: "" });
 
-  function handleEnrich() {
+  async function handleEnrich() {
     if (!enrichRecord) return;
     if (!enrichForm.firstName || !enrichForm.lastName || enrichForm.last4.length !== 4) return;
-    
-    // rebuild record with new data to generate link
-    const wifi = wifiConfigs.find(w => w.propertyId === enrichRecord.propertyId);
-    const updated = buildRecord({
-      source: enrichRecord.source,
-      channel: enrichRecord.channel,
-      guestName: enrichForm.firstName,
-      guestLastName: enrichForm.lastName,
-      lastFourDigits: enrichForm.last4,
-      checkin: enrichRecord.checkin,
-      checkout: enrichRecord.checkout,
-      nights: enrichRecord.nights,
-      propertyId: enrichRecord.propertyId,
-      propertyName: enrichRecord.propertyName,
-      propertyAddress: enrichRecord.propertyAddress,
-      propertyImage: enrichRecord.propertyImage,
-      wifiSsid: enrichRecord.wifiSsid || wifi?.ssid,
-      wifiPassword: enrichRecord.wifiPassword || wifi?.password,
-      electricityEnabled: enrichRecord.electricityEnabled,
-      electricityTotal: enrichRecord.electricityTotal,
-      bookingRef: enrichRecord.bookingRef,
-    }, enrichRecord.id); // keep same ID
-    
-    // Force remove missingData flag since builder might not know
-    updated.missingData = false;
 
-    setRecords(prev => {
-      const next = prev.map(r => r.id === updated.id ? updated : r);
-      saveToStorage(next);
-      return next;
-    });
-    setEnrichRecord(null);
+    const wifi = wifiConfigs.find(w => w.propertyId === enrichRecord.propertyId);
+    try {
+      await apiCheckin("update", {
+        id: enrichRecord.id,
+        guestName: enrichForm.firstName,
+        guestLastName: enrichForm.lastName,
+        lastFourDigits: enrichForm.last4,
+        wifiSsid: enrichRecord.wifiSsid || wifi?.ssid,
+        wifiPassword: enrichRecord.wifiPassword || wifi?.password,
+        missingData: false,
+      });
+      await refreshRecords();
+      setEnrichRecord(null);
+    } catch (err) {
+      console.error("[CheckInsPanel] enrich failed:", err);
+    }
   }
 
   // ─── Render ───────────────────────────────────────────────────────────────
