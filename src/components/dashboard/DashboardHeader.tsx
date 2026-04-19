@@ -1,5 +1,6 @@
 "use client";
 
+import { useState, useEffect } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
@@ -12,6 +13,9 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Bell, Search, Menu, Plus, ChevronDown } from "lucide-react";
+import { supabase } from "@/lib/supabase/client";
+
+const MASTER_EMAIL = "virgiliocalcagno@gmail.com";
 
 type PanelType =
   | "overview"
@@ -65,6 +69,28 @@ const panelTitles: Record<PanelType, string> = {
 };
 
 export default function DashboardHeader({ activePanel, sidebarOpen, setSidebarOpen }: HeaderProps) {
+  // Mostramos el primer nombre del usuario autenticado; si es el master,
+  // "Virgilio". Si no hay sesión aún, el saludo se oculta para no mostrar
+  // un nombre hardcoded (antes decía "Juan").
+  const [firstName, setFirstName] = useState<string | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const { data } = await supabase.auth.getUser();
+        if (cancelled) return;
+        const email = String(data.user?.email ?? "").trim().toLowerCase();
+        if (!email) return setFirstName(null);
+        if (email === MASTER_EMAIL) return setFirstName("Virgilio");
+        // Para otros usuarios, derivamos el nombre del local-part del email.
+        setFirstName(email.split("@")[0]);
+      } catch {
+        if (!cancelled) setFirstName(null);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
   return (
     <header className="h-16 bg-card border-b flex items-center justify-between px-6 sticky top-0 z-30">
       <div className="flex items-center gap-4">
@@ -79,9 +105,11 @@ export default function DashboardHeader({ activePanel, sidebarOpen, setSidebarOp
 
         <div>
           <h1 className="text-xl font-bold">{panelTitles[activePanel]}</h1>
-          <p className="text-sm text-muted-foreground hidden sm:block">
-            Bienvenido de nuevo, Juan
-          </p>
+          {firstName && (
+            <p className="text-sm text-muted-foreground hidden sm:block">
+              Bienvenido de nuevo, {firstName}
+            </p>
+          )}
         </div>
       </div>
 

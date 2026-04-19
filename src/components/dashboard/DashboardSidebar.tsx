@@ -35,7 +35,14 @@ import {
   Zap,
 } from "lucide-react";
 
+import { useState, useEffect } from "react";
 import { useModules, ModuleId } from "@/context/ModuleContext";
+import { supabase } from "@/lib/supabase/client";
+
+// Email master — si coincide con el email autenticado en Supabase, el sidebar
+// muestra OWNER sin esperar a que el ModuleContext se sincronice (evita que
+// te parpadee "Staff" durante el primer segundo tras loguear).
+const MASTER_EMAIL = "virgiliocalcagno@gmail.com";
 
 type PanelType =
   | "overview"
@@ -96,7 +103,44 @@ export default function DashboardSidebar({
 }: SidebarProps) {
   const { isModuleEnabled, userRole } = useModules();
 
-  const filteredMainItems = mainMenuItems.filter(item => 
+  // Comprobación independiente contra Supabase auth — si el email autenticado
+  // es el master, forzamos la UI a mostrarlo como OWNER aun cuando el
+  // ModuleContext no haya terminado de sincronizar (evita el flash "Staff"
+  // inicial y cubre casos donde el contexto se queda null por algún error).
+  const [authEmail, setAuthEmail] = useState<string | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const { data } = await supabase.auth.getUser();
+        if (!cancelled) setAuthEmail(data.user?.email ?? null);
+      } catch {
+        if (!cancelled) setAuthEmail(null);
+      }
+    })();
+    const { data: authListener } = supabase.auth.onAuthStateChange((_e, session) => {
+      setAuthEmail(session?.user?.email ?? null);
+    });
+    return () => {
+      cancelled = true;
+      authListener.subscription.unsubscribe();
+    };
+  }, []);
+
+  const isMaster =
+    (authEmail ?? "").trim().toLowerCase() === MASTER_EMAIL;
+  const effectiveRole: "OWNER" | "ADMIN" | "STAFF" | null =
+    isMaster ? "OWNER" : userRole;
+  const displayName = isMaster
+    ? "Virgilio"
+    : effectiveRole === "OWNER"
+      ? "Virgilio"
+      : "Usuario";
+  const displayRoleLabel = effectiveRole === "OWNER"
+    ? "SaaS Master"
+    : (effectiveRole || "Staff");
+
+  const filteredMainItems = mainMenuItems.filter(item =>
     item.id === "overview" || isModuleEnabled(item.id as ModuleId)
   );
 
@@ -244,9 +288,9 @@ export default function DashboardSidebar({
             </Avatar>
             {sidebarOpen && (
               <div className="flex-1 min-w-0">
-                <p className="text-sm font-medium truncate">{userRole === "OWNER" ? "Virgilio" : "Usuario"}</p>
+                <p className="text-sm font-medium truncate">{displayName}</p>
                 <p className="text-xs text-amber-500 font-bold truncate">
-                   {userRole === "OWNER" ? "👑 SaaS Master" : (userRole || "Staff")}
+                   {effectiveRole === "OWNER" ? "Dios · SaaS Master" : displayRoleLabel}
                 </p>
               </div>
             )}
