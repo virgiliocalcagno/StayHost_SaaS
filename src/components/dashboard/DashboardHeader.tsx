@@ -75,15 +75,28 @@ export default function DashboardHeader({ activePanel, sidebarOpen, setSidebarOp
   const [firstName, setFirstName] = useState<string | null>(null);
   useEffect(() => {
     let cancelled = false;
+    const resolveName = (emailRaw: string | null | undefined) => {
+      const email = String(emailRaw ?? "").trim().toLowerCase();
+      if (!email) return null;
+      if (email === MASTER_EMAIL) return "Virgilio";
+      return email.split("@")[0];
+    };
     (async () => {
+      // Preferimos /api/me (cookie del servidor) sobre el SDK del browser.
+      try {
+        const res = await fetch("/api/me", { cache: "no-store", credentials: "include" });
+        if (res.ok) {
+          const data = (await res.json()) as { email: string | null };
+          if (!cancelled && data.email) {
+            setFirstName(resolveName(data.email));
+            return;
+          }
+        }
+      } catch {}
+      // Fallback al SDK.
       try {
         const { data } = await supabase.auth.getUser();
-        if (cancelled) return;
-        const email = String(data.user?.email ?? "").trim().toLowerCase();
-        if (!email) return setFirstName(null);
-        if (email === MASTER_EMAIL) return setFirstName("Virgilio");
-        // Para otros usuarios, derivamos el nombre del local-part del email.
-        setFirstName(email.split("@")[0]);
+        if (!cancelled) setFirstName(resolveName(data.user?.email));
       } catch {
         if (!cancelled) setFirstName(null);
       }

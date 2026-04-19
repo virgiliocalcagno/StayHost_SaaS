@@ -103,23 +103,40 @@ export default function DashboardSidebar({
 }: SidebarProps) {
   const { isModuleEnabled, userRole } = useModules();
 
-  // Comprobación independiente contra Supabase auth — si el email autenticado
-  // es el master, forzamos la UI a mostrarlo como OWNER aun cuando el
-  // ModuleContext no haya terminado de sincronizar (evita el flash "Staff"
-  // inicial y cubre casos donde el contexto se queda null por algún error).
+  // Comprobación independiente contra el servidor — preguntamos a /api/me
+  // que lee la cookie httpOnly directamente. Más fiable que el SDK del
+  // navegador, que no siempre ve la sesión (incógnito, caché borrada, etc.).
+  // Si /api/me no tiene sesión, caemos al SDK como respaldo.
   const [authEmail, setAuthEmail] = useState<string | null>(null);
   useEffect(() => {
     let cancelled = false;
-    (async () => {
+    const load = async () => {
+      try {
+        const res = await fetch("/api/me", { cache: "no-store", credentials: "include" });
+        if (res.ok) {
+          const data = (await res.json()) as { email: string | null };
+          if (!cancelled && data.email) {
+            setAuthEmail(data.email);
+            return;
+          }
+        }
+      } catch {}
+      // Fallback al SDK del browser.
       try {
         const { data } = await supabase.auth.getUser();
         if (!cancelled) setAuthEmail(data.user?.email ?? null);
       } catch {
         if (!cancelled) setAuthEmail(null);
       }
-    })();
+    };
+    void load();
     const { data: authListener } = supabase.auth.onAuthStateChange((_e, session) => {
-      setAuthEmail(session?.user?.email ?? null);
+      if (session?.user?.email) {
+        setAuthEmail(session.user.email);
+      } else {
+        // Re-verificamos con el servidor por si la cookie sí está viva.
+        void load();
+      }
     });
     return () => {
       cancelled = true;
@@ -230,7 +247,7 @@ export default function DashboardSidebar({
         </ScrollArea>
 
         {/* SaaS Control - Fijo, siempre visible para el Master */}
-        {userRole === "OWNER" && (
+        {effectiveRole === "OWNER" && (
           <div className="shrink-0 px-4 py-3 border-t border-amber-100 bg-gradient-to-r from-amber-50/80 to-white">
             {sidebarOpen && <p className="px-2 mb-1.5 text-[10px] font-black text-amber-500 uppercase tracking-[0.2em]">⚡ Master</p>}
             {renderMenuItem({ id: "admin", label: "SaaS Control", icon: Zap })}

@@ -153,12 +153,37 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
   };
 
   const syncSession = async () => {
-    // 1) Rol real desde Supabase auth.
+    // 1) Rol real desde el servidor — leemos /api/me que a su vez lee la
+    //    cookie httpOnly. Esto es más fiable que supabase.auth.getUser() en el
+    //    browser, que a veces no ve la cookie (incógnito, caché borrada, etc.).
+    let sawServerSession = false;
     try {
-      const { data } = await supabase.auth.getUser();
-      applyRoleFromAuthEmail(data.user?.email);
+      const res = await fetch("/api/me", { cache: "no-store", credentials: "include" });
+      if (res.ok) {
+        const data = (await res.json()) as { email: string | null; isMaster: boolean };
+        if (data.email) {
+          sawServerSession = true;
+          applyRoleFromAuthEmail(data.email);
+        }
+      }
     } catch {
-      // Si falla la llamada, caemos al fallback de localStorage.
+      // Cae al segundo intento abajo.
+    }
+
+    // 2) Si /api/me no dio sesión, probamos el cliente Supabase (por si el
+    //    servidor aún no escribió la cookie pero el cliente sí tiene el token).
+    if (!sawServerSession) {
+      try {
+        const { data } = await supabase.auth.getUser();
+        if (data.user?.email) {
+          sawServerSession = true;
+          applyRoleFromAuthEmail(data.user.email);
+        }
+      } catch {}
+    }
+
+    // 3) Último fallback: legacy localStorage.
+    if (!sawServerSession) {
       try {
         const session = localStorage.getItem("stayhost_session");
         if (session) {
@@ -168,7 +193,9 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
         } else {
           setUserRole(null);
         }
-      } catch {}
+      } catch {
+        setUserRole(null);
+      }
     }
 
     // 2) Config de módulos y plugins — se mantienen en localStorage.
