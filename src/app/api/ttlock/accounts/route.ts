@@ -12,6 +12,11 @@
  *   reconnect  { accountId, password }       → same, for an existing row
  *   listLocks  { accountId }                 → TTLock /v3/lock/list
  *   rename     { accountId, label }          → update label
+ *   unlock     { accountId, lockId }         → remote unlock via gateway/WiFi
+ *   createPin  { accountId, lockId, pin, startDate, endDate, name? }
+ *              → /v3/keyboardPwd/add; returns { keyboardPwdId }
+ *   deletePin  { accountId, lockId, keyboardPwdId }
+ *              → /v3/keyboardPwd/delete
  *
  * Also:
  *   GET              → list tenant's accounts (no tokens exposed)
@@ -337,6 +342,86 @@ export async function POST(req: NextRequest) {
         battery: l.electricQuantity ?? null,
       }));
       return NextResponse.json({ locks });
+    }
+
+    case "unlock":
+    case "createPin":
+    case "deletePin": {
+      const accountId = String(body.accountId ?? "");
+      const lockId = String(body.lockId ?? "");
+      if (!accountId || !lockId) {
+        return NextResponse.json(
+          { error: "accountId y lockId requeridos" },
+          { status: 400 }
+        );
+      }
+      const accessToken = await getAccessToken(accountId, tenantId);
+      if (!accessToken) {
+        return NextResponse.json(
+          { error: "TOKEN_EXPIRED", message: "Reconecta esta cuenta con tu contraseña" },
+          { status: 401 }
+        );
+      }
+      const clientId = process.env.TTLOCK_CLIENT_ID;
+      if (!clientId) {
+        return NextResponse.json(
+          { error: "TTLOCK_CLIENT_ID not configured" },
+          { status: 500 }
+        );
+      }
+
+      // Build the POST body shared across all three actions.
+      const common: Record<string, string> = {
+        clientId,
+        accessToken,
+        lockId,
+        date: String(Date.now()),
+      };
+
+      let path = "";
+      if (action === "unlock") {
+        path = "/v3/lock/unlock";
+      } else if (action === "createPin") {
+        const pin = String(body.pin ?? "").trim();
+        const startDate = Number(body.startDate ?? 0);
+        const endDate = Number(body.endDate ?? 0);
+        if (!/^\d{4,8}$/.test(pin) || !startDate || !endDate) {
+          return NextResponse.json(
+            { error: "pin (4-8 dígitos), startDate y endDate son requeridos" },
+            { status: 400 }
+          );
+        }
+        common.keyboardPwd = pin;
+        common.keyboardPwdName = String(body.name ?? "StayHost");
+        common.startDate = String(startDate);
+        common.endDate = String(endDate);
+        common.addType = "2"; // send via TTLock gateway
+        path = "/v3/keyboardPwd/add";
+      } else {
+        const keyboardPwdId = String(body.keyboardPwdId ?? "");
+        if (!keyboardPwdId) {
+          return NextResponse.json(
+            { error: "keyboardPwdId requerido" },
+            { status: 400 }
+          );
+        }
+        common.keyboardPwdId = keyboardPwdId;
+        common.deleteType = "2"; // delete via gateway
+        path = "/v3/keyboardPwd/delete";
+      }
+
+      const form = new URLSearchParams(common);
+      const res = await fetch(`${TTLOCK_API}${path}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: form.toString(),
+      });
+      const json = (await res.json()) as {
+        errcode?: number;
+        errmsg?: string;
+        keyboardPwdId?: number | string;
+      };
+      return NextResponse.json(json);
     }
 
     default:

@@ -1,37 +1,35 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
+import { useState, useEffect, useCallback, useMemo } from "react";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Progress } from "@/components/ui/progress";
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select";
 import {
   Smartphone, Lock, Thermometer, Wifi, WifiOff, Key, Plus, RefreshCw,
-  Settings, Battery, CheckCircle2, AlertCircle, BrainCircuit, Zap,
-  Trash2, Clock, Copy, ExternalLink, Link2, ShieldCheck,
-  Droplets, Wind, Eye, EyeOff, Loader2, Calendar, Phone, Home,
-  PlugZap, ChevronRight, X, ToggleLeft, ToggleRight, BookOpen,
-  Activity, AlertTriangle, Star, Shield, Edit3,
+  Settings, Battery, CheckCircle2, Zap,
+  Clock, Copy, Link2,
+  Droplets, Loader2, Calendar, Phone, Home,
+  X, BookOpen,
+  Activity, AlertTriangle, Edit3,
+  BrainCircuit,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { parseICalFeed, type ParsedICalBooking } from "@/utils/icalParser";
 import { useModules } from "@/context/ModuleContext";
 import TTLockAccountsSection from "./smart-devices/TTLockAccountsSection";
 import ImportWizardDialog from "./smart-devices/ImportWizardDialog";
 import type {
-  DeviceType,
   TabType,
   SmartDevice,
   AccessPin,
   ICalConfig,
   Integrations,
-  DirectBooking,
-  Property,
+  DeviceType,
+  DeviceProvider,
 } from "./smart-devices/types";
 import {
   DEVICE_ICONS,
@@ -39,445 +37,617 @@ import {
   CHANNEL_LABELS,
   CHANNEL_COLORS,
   batteryColor,
-  batteryBg,
   isExpiredPin,
-  formatDate,
   formatDateTime,
 } from "./smart-devices/utils";
 
-// ——— Component ————————————————————————————————————————————————
+// ─── Local DB-shaped types ──────────────────────────────────────────────────
+
+type PropertyRow = {
+  id: string;
+  name: string;
+  ttlock_lock_id: string | number | null;
+  ttlock_account_id: string | null;
+  ical_airbnb: string | null;
+  ical_vrbo: string | null;
+};
+
+type TTLockAccountRow = {
+  id: string;
+  label: string;
+  ttlock_username: string;
+  expired?: boolean;
+  last_synced_at?: string | null;
+};
+
+type LockLive = {
+  lockId: string;
+  name: string;
+  battery: number | null;
+  accountId: string;
+};
+
+type PinRow = {
+  id: string;
+  property_id: string;
+  booking_id: string | null;
+  ttlock_lock_id: string | null;
+  ttlock_pwd_id: string | null;
+  guest_name: string;
+  guest_phone: string | null;
+  pin: string;
+  source: AccessPin["source"];
+  status: AccessPin["status"];
+  valid_from: string;
+  valid_to: string;
+  created_at: string;
+  properties?: { name: string } | { name: string }[] | null;
+};
+
+// ─── Helpers ────────────────────────────────────────────────────────────────
+
+async function api<T>(path: string, init?: RequestInit & { json?: unknown }): Promise<T> {
+  const { json, ...rest } = init ?? {};
+  const res = await fetch(path, {
+    ...rest,
+    credentials: "same-origin",
+    headers: {
+      ...(json ? { "Content-Type": "application/json" } : {}),
+      ...(rest.headers ?? {}),
+    },
+    body: json ? JSON.stringify(json) : rest.body,
+  });
+  const data = (await res.json().catch(() => ({}))) as T & { error?: string };
+  if (!res.ok) throw new Error((data as { error?: string }).error ?? `HTTP ${res.status}`);
+  return data;
+}
+
+function propertyName(p: PinRow): string {
+  const rel = p.properties;
+  if (!rel) return "";
+  if (Array.isArray(rel)) return rel[0]?.name ?? "";
+  return rel.name ?? "";
+}
+
+function pinRowToAccessPin(p: PinRow): AccessPin {
+  return {
+    id: p.id,
+    deviceId: p.ttlock_lock_id ? `lock-${p.property_id}` : "",
+    deviceName: p.ttlock_lock_id ? "Cerradura" : "",
+    propertyId: p.property_id,
+    propertyName: propertyName(p),
+    guestName: p.guest_name,
+    guestPhone: p.guest_phone ?? undefined,
+    pin: p.pin,
+    source: p.source,
+    bookingRef: p.booking_id ?? undefined,
+    validFrom: p.valid_from,
+    validTo: p.valid_to,
+    status: p.status,
+    ttlockPwdId: p.ttlock_pwd_id ?? undefined,
+    createdAt: p.created_at,
+  };
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Component
+// ═══════════════════════════════════════════════════════════════════════════
 
 export default function SmartDevicesPanel() {
   const { userRole } = useModules();
   const [activeTab, setActiveTab] = useState<TabType>("devices");
   const isAdminMode = userRole === "OWNER";
 
-  // Import Wizard (el estado interno vive en ImportWizardDialog)
+  // Import Wizard
   const [showImportWizard, setShowImportWizard] = useState(false);
 
-  // ── State ──────────────────────────────────────────────────────────────────
-  const [devices, setDevices] = useState<SmartDevice[]>(() => {
-    if (typeof window === "undefined") return [];
-    try { 
-      const r = localStorage.getItem("stayhost_smart_devices");
-      const list = r ? JSON.parse(r) : [];
-      // Auto-limpieza si detectamos dispositivos demo antiguos (id: d1, d2...)
-      if (list.length > 0 && list.some((d: any) => d.id && /^d[1-6]$/.test(d.id))) {
-        return [];
-      }
-      return list;
-    } catch { return []; }
-  });
+  // ── DB-backed state ────────────────────────────────────────────────────────
+  const [properties, setProperties] = useState<PropertyRow[]>([]);
+  const [accounts, setAccounts] = useState<TTLockAccountRow[]>([]);
+  const [pins, setPins] = useState<AccessPin[]>([]);
+  const [liveLocks, setLiveLocks] = useState<Record<string, LockLive>>({}); // key = lockId
 
-  const [pins, setPins] = useState<AccessPin[]>(() => {
-    if (typeof window === "undefined") return [];
-    try { const r = localStorage.getItem("stayhost_pins"); return r ? JSON.parse(r) : []; } catch { return []; }
-  });
-
-  const [icalConfigs, setIcalConfigs] = useState<ICalConfig[]>(() => {
-    if (typeof window === "undefined") return [];
-    try { const r = localStorage.getItem("stayhost_ical_configs"); return r ? JSON.parse(r) : []; } catch { return []; }
-  });
-
+  // Legacy credentials state (only for Import Wizard, kept in localStorage)
   const [integrations, setIntegrations] = useState<Integrations>(() => {
-    if (typeof window === "undefined") return { tuya: { clientId: "", clientSecret: "", region: "eu", uid: "" }, ttlock: { clientId: "", clientSecret: "", username: "", password: "" } };
-    try { const r = localStorage.getItem("stayhost_integrations"); return r ? JSON.parse(r) : { tuya: { clientId: "", clientSecret: "", region: "eu", uid: "" }, ttlock: { clientId: "", clientSecret: "", username: "", password: "" } }; } catch { return { tuya: { clientId: "", clientSecret: "", region: "eu", uid: "" }, ttlock: { clientId: "", clientSecret: "", username: "", password: "" } }; }
+    const empty: Integrations = {
+      tuya: { clientId: "", clientSecret: "", region: "eu", uid: "" },
+      ttlock: { clientId: "", clientSecret: "", username: "", password: "" },
+    };
+    if (typeof window === "undefined") return empty;
+    try {
+      const r = localStorage.getItem("stayhost_integrations");
+      return r ? JSON.parse(r) : empty;
+    } catch {
+      return empty;
+    }
   });
+  useEffect(() => {
+    localStorage.setItem("stayhost_integrations", JSON.stringify(integrations));
+  }, [integrations]);
 
-  const [properties, setProperties] = useState<Property[]>([]);
-  const [directBookings, setDirectBookings] = useState<DirectBooking[]>([]);
+  // ── Transient UI state ─────────────────────────────────────────────────────
+  const [loading, setLoading] = useState(false);
   const [syncing, setSyncing] = useState(false);
   const [syncingIcalId, setSyncingIcalId] = useState<string | null>(null);
   const [unlockingId, setUnlockingId] = useState<string | null>(null);
   const [unlockMsg, setUnlockMsg] = useState<{ deviceId: string; text: string; ok: boolean } | null>(null);
 
-  // Pin creation form
+  // Pin form
   const [showPinForm, setShowPinForm] = useState(false);
-  const [pinForm, setPinForm] = useState({ deviceId: "", guestName: "", pin: "", validFrom: "", validTo: "", source: "manual" as AccessPin["source"] });
-  const [pinCreating, setPinCreating] = useState(false);
+  const [pinForm, setPinForm] = useState({
+    propertyId: "", guestName: "", guestPhone: "", pin: "",
+    validFrom: "", validTo: "",
+  });
+  const [pinSaving, setPinSaving] = useState(false);
+  const [pinError, setPinError] = useState<string | null>(null);
   const [editingPinId, setEditingPinId] = useState<string | null>(null);
 
   // iCal form
   const [showIcalForm, setShowIcalForm] = useState(false);
-  const [icalForm, setIcalForm] = useState({ propertyId: "", propertyName: "", channel: "airbnb" as ICalConfig["channel"], url: "", autoGeneratePins: true, targetDeviceId: "" });
+  const [icalForm, setIcalForm] = useState({
+    propertyId: "",
+    channel: "airbnb" as "airbnb" | "vrbo",
+    url: "",
+  });
+  const [icalSaving, setIcalSaving] = useState(false);
+  const [icalError, setIcalError] = useState<string | null>(null);
 
-  // Config show/hide secrets
-
-  // Persist
-  useEffect(() => { localStorage.setItem("stayhost_smart_devices", JSON.stringify(devices)); }, [devices]);
-  useEffect(() => { localStorage.setItem("stayhost_pins", JSON.stringify(pins)); }, [pins]);
-  useEffect(() => { localStorage.setItem("stayhost_ical_configs", JSON.stringify(icalConfigs)); }, [icalConfigs]);
-  useEffect(() => { localStorage.setItem("stayhost_integrations", JSON.stringify(integrations)); }, [integrations]);
-
-
-  useEffect(() => {
+  // ── Loaders ────────────────────────────────────────────────────────────────
+  const refreshProperties = useCallback(async () => {
     try {
-      const rp = localStorage.getItem("stayhost_properties");
-      if (rp) {
-        const parsed = JSON.parse(rp);
-        setProperties(parsed.map((p: any) => ({ 
-          id: p.id, 
-          name: p.name,
-          channels: p.channels || []
-        })));
-      }
-      const rb = localStorage.getItem("stayhost_direct_bookings");
-      if (rb) setDirectBookings(JSON.parse(rb));
-    } catch { /* ignore */ }
+      const data = await api<{ properties?: PropertyRow[] }>("/api/properties");
+      const normalized = (data.properties ?? []).map((p) => ({
+        ...p,
+        ttlock_lock_id: p.ttlock_lock_id == null ? null : String(p.ttlock_lock_id),
+      }));
+      setProperties(normalized);
+    } catch (err) {
+      console.error("[smart-devices] refreshProperties:", err);
+    }
   }, []);
 
-  // ── Stats ──────────────────────────────────────────────────────────────────
-  const online = devices.filter(d => d.online).length;
-  const offline = devices.filter(d => !d.online).length;
-  const lowBattery = devices.filter(d => (d.battery ?? 100) <= 20).length;
-  const activePins = pins.filter(p => p.status === "active" && !isExpiredPin(p.validTo)).length;
+  const refreshAccounts = useCallback(async () => {
+    try {
+      const data = await api<{ accounts?: TTLockAccountRow[] }>("/api/ttlock/accounts");
+      setAccounts(data.accounts ?? []);
+    } catch (err) {
+      console.error("[smart-devices] refreshAccounts:", err);
+    }
+  }, []);
 
-  // ── PIN Auto-generate from iCal booking ───────────────────────────────────
-  const autoGeneratePin = useCallback((
-    booking: ParsedICalBooking,
-    config: ICalConfig,
-    lockDevice: SmartDevice
-  ) => {
-    if (!booking.phoneLast4) return null;
+  const refreshPins = useCallback(async () => {
+    try {
+      const data = await api<{ pins?: PinRow[] }>("/api/access-pins");
+      setPins((data.pins ?? []).map(pinRowToAccessPin));
+    } catch (err) {
+      console.error("[smart-devices] refreshPins:", err);
+    }
+  }, []);
 
-    // Check if pin already exists for this booking
-    const exists = pins.find(p => p.bookingRef === booking.uid);
-    if (exists) return null;
-
-    const newPin: AccessPin = {
-      id: `pin-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-      deviceId: lockDevice.id,
-      deviceName: lockDevice.name,
-      propertyId: config.propertyId,
-      propertyName: config.propertyName,
-      guestName: booking.guestName,
-      pin: booking.phoneLast4,
-      source: booking.channel === "airbnb" ? "airbnb_ical" : booking.channel === "vrbo" ? "vrbo_ical" : "airbnb_ical",
-      bookingRef: booking.uid,
-      validFrom: `${booking.checkin}T14:00:00`,   // Checkin at 2pm
-      validTo: `${booking.checkout}T12:00:00`,     // Checkout at noon
-      status: "active",
-      createdAt: new Date().toISOString(),
-    };
-
-    return newPin;
-  }, [pins]);
-
-  // ── Helper: Program hardware lock ────────────────────────────────────────
-  const programHardwarePin = async (pin: AccessPin, device: SmartDevice) => {
-    if (device.provider === "ttlock" && integrations.ttlock.accessToken) {
+  const refreshLocks = useCallback(async (accountList: TTLockAccountRow[]) => {
+    const next: Record<string, LockLive> = {};
+    for (const acc of accountList) {
+      if (acc.expired) continue;
       try {
-        const res = await fetch("/api/ttlock", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            action: "createPin",
-            accessToken: integrations.ttlock.accessToken,
-            lockId: device.remoteId,
-            keyboard_pwd: pin.pin,
-            startDate: new Date(pin.validFrom).getTime(),
-            endDate: new Date(pin.validTo).getTime(),
-            credentials: {
-              clientId: integrations.ttlock.clientId,
-              clientSecret: integrations.ttlock.clientSecret
-            }
-          }),
-        });
-        const data = await res.json() as { keyboardPwdId?: string };
-        if (data.keyboardPwdId) return data.keyboardPwdId;
-      } catch (e) {
-        console.error("Hardware programming error:", e);
-      }
-    }
-    return undefined;
-  };
-
-  // ── Remote unlock ────────────────────────────────────────────────────────
-  // Opens the lock via TTLock's /v3/lock/unlock. Only works if the lock has
-  // a gateway (G2/G3) or WiFi module — pure bluetooth locks return errcode
-  // -2012 ("no gateway"). We surface that back to the user.
-  const handleRemoteUnlock = async (device: SmartDevice) => {
-    if (device.provider !== "ttlock") {
-      setUnlockMsg({ deviceId: device.id, text: "Solo soportado en TTLock por ahora", ok: false });
-      return;
-    }
-    if (!integrations.ttlock.accessToken) {
-      setUnlockMsg({ deviceId: device.id, text: "Conecta una cuenta TTLock primero", ok: false });
-      return;
-    }
-    setUnlockingId(device.id);
-    setUnlockMsg(null);
-    try {
-      const res = await fetch("/api/ttlock", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          action: "remoteUnlock",
-          accessToken: integrations.ttlock.accessToken,
-          lockId: device.remoteId,
-        }),
-      });
-      const data = (await res.json()) as { errcode?: number; errmsg?: string; error?: string };
-      if (data.errcode === 0) {
-        setUnlockMsg({ deviceId: device.id, text: "Abierta", ok: true });
-        setDevices(prev => prev.map(d => d.id === device.id ? { ...d, locked: false } : d));
-      } else {
-        setUnlockMsg({
-          deviceId: device.id,
-          text: data.errmsg ?? data.error ?? `Error ${data.errcode ?? ""}`.trim(),
-          ok: false,
-        });
-      }
-    } catch (e) {
-      setUnlockMsg({ deviceId: device.id, text: String(e), ok: false });
-    } finally {
-      setUnlockingId(null);
-      setTimeout(() => setUnlockMsg(m => m?.deviceId === device.id ? null : m), 4000);
-    }
-  };
-
-  // ── Sync iCal ─────────────────────────────────────────────────────────────
-  const syncIcal = useCallback(async (config: ICalConfig) => {
-    setSyncingIcalId(config.id);
-    try {
-      const res = await fetch("/api/ical", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ url: config.url }),
-      });
-      const { ical, error } = await res.json() as { ical?: string; error?: string };
-      if (error || !ical) throw new Error(error ?? "No data");
-
-      const bookings = parseICalFeed(ical, config.url);
-      const newPins: AccessPin[] = [];
-
-      if (config.autoGeneratePins && config.targetDeviceId) {
-        const lockDevice = devices.find(d => d.id === config.targetDeviceId);
-        if (lockDevice) {
-          for (const booking of bookings) {
-            const pin = autoGeneratePin(booking, config, lockDevice);
-            if (pin) {
-              const hardwareId = await programHardwarePin(pin, lockDevice);
-              if (hardwareId) pin.ttlockPwdId = hardwareId;
-              newPins.push(pin);
-            }
-          }
+        const data = await api<{ locks?: Array<{ lockId: string; name: string; battery: number | null }> }>(
+          "/api/ttlock/accounts",
+          { method: "POST", json: { action: "listLocks", accountId: acc.id } }
+        );
+        for (const l of data.locks ?? []) {
+          next[String(l.lockId)] = { ...l, lockId: String(l.lockId), accountId: acc.id };
         }
+      } catch (err) {
+        console.warn("[smart-devices] listLocks failed for account", acc.id, err);
       }
+    }
+    setLiveLocks(next);
+  }, []);
 
-      setIcalConfigs(prev => prev.map(c => c.id === config.id
-        ? { ...c, bookings, lastSync: new Date().toISOString() }
-        : c
-      ));
+  const refreshAll = useCallback(async () => {
+    setLoading(true);
+    try {
+      await Promise.all([refreshProperties(), refreshPins()]);
+      const data = await api<{ accounts?: TTLockAccountRow[] }>("/api/ttlock/accounts");
+      const accs = data.accounts ?? [];
+      setAccounts(accs);
+      await refreshLocks(accs);
+    } finally {
+      setLoading(false);
+    }
+  }, [refreshProperties, refreshPins, refreshLocks]);
 
-      if (newPins.length > 0) {
-        setPins(prev => [...prev, ...newPins]);
+  useEffect(() => {
+    void refreshAll();
+  }, [refreshAll]);
+
+  // ── Derived views ──────────────────────────────────────────────────────────
+  const devices: SmartDevice[] = useMemo(() => {
+    return properties
+      .filter((p) => p.ttlock_lock_id)
+      .map((p) => {
+        const lockId = String(p.ttlock_lock_id);
+        const live = liveLocks[lockId];
+        return {
+          id: `lock-${p.id}`,
+          remoteId: lockId,
+          name: live?.name ?? `Cerradura · ${p.name}`,
+          type: "lock_ttlock" as DeviceType,
+          provider: "ttlock" as DeviceProvider,
+          propertyId: p.id,
+          propertyName: p.name,
+          online: !!live,
+          battery: live?.battery ?? undefined,
+          locked: true,
+          lastSync: live ? new Date().toISOString() : undefined,
+        };
+      });
+  }, [properties, liveLocks]);
+
+  const icalConfigs: ICalConfig[] = useMemo(() => {
+    const list: ICalConfig[] = [];
+    for (const p of properties) {
+      if (p.ical_airbnb) {
+        list.push({
+          id: `ical-${p.id}-airbnb`,
+          propertyId: p.id,
+          propertyName: p.name,
+          channel: "airbnb",
+          url: p.ical_airbnb,
+          autoGeneratePins: true,
+          targetDeviceId: p.ttlock_lock_id ? `lock-${p.id}` : undefined,
+        });
+      }
+      if (p.ical_vrbo) {
+        list.push({
+          id: `ical-${p.id}-vrbo`,
+          propertyId: p.id,
+          propertyName: p.name,
+          channel: "vrbo",
+          url: p.ical_vrbo,
+          autoGeneratePins: true,
+          targetDeviceId: p.ttlock_lock_id ? `lock-${p.id}` : undefined,
+        });
+      }
+    }
+    return list;
+  }, [properties]);
+
+  const lockDevices = devices;
+  const online = devices.filter((d) => d.online).length;
+  const offline = devices.filter((d) => !d.online).length;
+  const lowBattery = devices.filter((d) => (d.battery ?? 100) <= 20).length;
+  const activePins = pins.filter((p) => p.status === "active" && !isExpiredPin(p.validTo)).length;
+
+  // ── Remote unlock (server-side via account) ────────────────────────────────
+  const handleRemoteUnlock = useCallback(
+    async (device: SmartDevice) => {
+      const prop = properties.find((p) => p.id === device.propertyId);
+      if (!prop?.ttlock_account_id || !prop.ttlock_lock_id) {
+        setUnlockMsg({ deviceId: device.id, text: "Asigna cuenta y cerradura primero", ok: false });
+        return;
+      }
+      setUnlockingId(device.id);
+      setUnlockMsg(null);
+      try {
+        const data = await api<{ errcode?: number; errmsg?: string }>("/api/ttlock/accounts", {
+          method: "POST",
+          json: {
+            action: "unlock",
+            accountId: prop.ttlock_account_id,
+            lockId: String(prop.ttlock_lock_id),
+          },
+        });
+        if (data.errcode === 0) {
+          setUnlockMsg({ deviceId: device.id, text: "Abierta", ok: true });
+        } else {
+          setUnlockMsg({
+            deviceId: device.id,
+            text: data.errmsg ?? `Error ${data.errcode ?? ""}`.trim(),
+            ok: false,
+          });
+        }
+      } catch (e) {
+        setUnlockMsg({ deviceId: device.id, text: String(e), ok: false });
+      } finally {
+        setUnlockingId(null);
+        setTimeout(() => setUnlockMsg((m) => (m?.deviceId === device.id ? null : m)), 4000);
+      }
+    },
+    [properties]
+  );
+
+  // ── Sync all (refresh locks live state) ────────────────────────────────────
+  const handleSyncAll = useCallback(async () => {
+    setSyncing(true);
+    try {
+      await refreshLocks(accounts);
+      await refreshPins();
+    } finally {
+      setSyncing(false);
+    }
+  }, [refreshLocks, refreshPins, accounts]);
+
+  // ── PIN create / update ────────────────────────────────────────────────────
+  const resetPinForm = () => {
+    setPinForm({ propertyId: "", guestName: "", guestPhone: "", pin: "", validFrom: "", validTo: "" });
+    setEditingPinId(null);
+    setPinError(null);
+  };
+
+  const programPinOnLock = useCallback(
+    async (
+      prop: PropertyRow,
+      pinVal: string,
+      validFrom: string,
+      validTo: string,
+      name: string
+    ): Promise<{ id?: string; error?: string }> => {
+      if (!prop.ttlock_account_id) {
+        return { error: "Esta propiedad no tiene una cuenta TTLock asignada" };
+      }
+      if (!prop.ttlock_lock_id) {
+        return { error: "Esta propiedad no tiene una cerradura TTLock asignada" };
+      }
+      try {
+        const data = await api<{ keyboardPwdId?: number | string; errcode?: number; errmsg?: string }>(
+          "/api/ttlock/accounts",
+          {
+            method: "POST",
+            json: {
+              action: "createPin",
+              accountId: prop.ttlock_account_id,
+              lockId: String(prop.ttlock_lock_id),
+              pin: pinVal,
+              name,
+              startDate: new Date(validFrom).getTime(),
+              endDate: new Date(validTo).getTime(),
+            },
+          }
+        );
+        if (data.keyboardPwdId != null) return { id: String(data.keyboardPwdId) };
+        const msg =
+          data.errmsg ??
+          (data.errcode != null ? `TTLock errcode ${data.errcode}` : "TTLock no devolvió un ID de PIN");
+        console.warn("[smart-devices] TTLock createPin response:", data);
+        return { error: msg };
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.warn("[smart-devices] TTLock createPin failed:", msg);
+        return { error: msg };
+      }
+    },
+    []
+  );
+
+  const revokePinOnLock = useCallback(
+    async (prop: PropertyRow | undefined, ttlockPwdId: string | undefined) => {
+      if (!prop?.ttlock_account_id || !prop.ttlock_lock_id || !ttlockPwdId) return;
+      try {
+        await api("/api/ttlock/accounts", {
+          method: "POST",
+          json: {
+            action: "deletePin",
+            accountId: prop.ttlock_account_id,
+            lockId: String(prop.ttlock_lock_id),
+            keyboardPwdId: ttlockPwdId,
+          },
+        });
+      } catch (err) {
+        console.warn("[smart-devices] TTLock deletePin failed:", err);
+      }
+    },
+    []
+  );
+
+  const handleCreatePin = async () => {
+    setPinError(null);
+    if (!pinForm.propertyId || !pinForm.guestName || !pinForm.pin || !pinForm.validFrom || !pinForm.validTo) {
+      setPinError("Completa todos los campos obligatorios");
+      return;
+    }
+    if (!/^\d{4,8}$/.test(pinForm.pin)) {
+      setPinError("PIN debe tener 4-8 dígitos");
+      return;
+    }
+    if (new Date(pinForm.validTo) <= new Date(pinForm.validFrom)) {
+      setPinError("Válido hasta debe ser posterior a válido desde");
+      return;
+    }
+
+    const prop = properties.find((p) => p.id === pinForm.propertyId);
+    if (!prop) {
+      setPinError("Propiedad no encontrada");
+      return;
+    }
+
+    setPinSaving(true);
+    let lockWarning: string | null = null;
+    try {
+      if (editingPinId) {
+        // Update existing: revoke old TTLock pin and create new one if needed
+        const old = pins.find((p) => p.id === editingPinId);
+        if (old?.ttlockPwdId) {
+          await revokePinOnLock(prop, old.ttlockPwdId);
+        }
+        const result = await programPinOnLock(
+          prop, pinForm.pin, pinForm.validFrom, pinForm.validTo, pinForm.guestName
+        );
+        if (result.error && (prop.ttlock_account_id && prop.ttlock_lock_id)) {
+          lockWarning = result.error;
+        }
+        await api("/api/access-pins", {
+          method: "PATCH",
+          json: {
+            id: editingPinId,
+            pin: pinForm.pin,
+            guest_name: pinForm.guestName,
+            guest_phone: pinForm.guestPhone || null,
+            valid_from: pinForm.validFrom,
+            valid_to: pinForm.validTo,
+            ttlock_pwd_id: result.id ?? null,
+            status: "active",
+          },
+        });
+      } else {
+        // Create new
+        const result = await programPinOnLock(
+          prop, pinForm.pin, pinForm.validFrom, pinForm.validTo, pinForm.guestName
+        );
+        if (result.error && (prop.ttlock_account_id && prop.ttlock_lock_id)) {
+          lockWarning = result.error;
+        }
+        await api("/api/access-pins", {
+          method: "POST",
+          json: {
+            propertyId: prop.id,
+            guestName: pinForm.guestName,
+            guestPhone: pinForm.guestPhone || undefined,
+            pin: pinForm.pin,
+            validFrom: pinForm.validFrom,
+            validTo: pinForm.validTo,
+            source: "manual",
+            ttlockLockId: prop.ttlock_lock_id ? String(prop.ttlock_lock_id) : undefined,
+            ttlockPwdId: result.id,
+          },
+        });
+      }
+      await refreshPins();
+      if (lockWarning) {
+        // PIN quedó en DB pero no se programó en la cerradura — lo dejamos
+        // abierto con el warning para que el usuario lo vea.
+        setPinError(`Guardado, pero la cerradura rechazó el PIN: ${lockWarning}`);
+      } else {
+        setShowPinForm(false);
+        resetPinForm();
       }
     } catch (err) {
-      console.error("iCal Sync Error:", err);
+      setPinError(String(err instanceof Error ? err.message : err));
+    } finally {
+      setPinSaving(false);
+    }
+  };
+
+  // Re-enviar un PIN existente a la cerradura — para los PINs huérfanos
+  // (ttlockPwdId == null) que quedaron guardados en DB pero nunca se
+  // programaron (por ejemplo la primera vez que fallaron silenciosamente).
+  const [reprogrammingId, setReprogrammingId] = useState<string | null>(null);
+  const [reprogramMsg, setReprogramMsg] = useState<{ pinId: string; text: string; ok: boolean } | null>(null);
+  const handleReprogramPin = useCallback(
+    async (pin: AccessPin) => {
+      const prop = properties.find((p) => p.id === pin.propertyId);
+      if (!prop) return;
+      setReprogrammingId(pin.id);
+      setReprogramMsg(null);
+      const result = await programPinOnLock(prop, pin.pin, pin.validFrom, pin.validTo, pin.guestName);
+      if (result.id) {
+        try {
+          await api("/api/access-pins", {
+            method: "PATCH",
+            json: { id: pin.id, ttlock_pwd_id: result.id },
+          });
+          await refreshPins();
+          setReprogramMsg({ pinId: pin.id, text: "Programado en cerradura", ok: true });
+        } catch (err) {
+          setReprogramMsg({
+            pinId: pin.id,
+            text: `Programado en cerradura pero no pude actualizar DB: ${err instanceof Error ? err.message : err}`,
+            ok: false,
+          });
+        }
+      } else {
+        setReprogramMsg({ pinId: pin.id, text: result.error ?? "Error desconocido", ok: false });
+      }
+      setReprogrammingId(null);
+      setTimeout(() => setReprogramMsg((m) => (m?.pinId === pin.id ? null : m)), 6000);
+    },
+    [properties, programPinOnLock, refreshPins]
+  );
+
+  const handleRevokePin = async (pin: AccessPin) => {
+    const prop = properties.find((p) => p.id === pin.propertyId);
+    if (pin.ttlockPwdId) {
+      await revokePinOnLock(prop, pin.ttlockPwdId);
+    }
+    try {
+      await api("/api/access-pins", {
+        method: "PATCH",
+        json: { id: pin.id, status: "revoked" },
+      });
+      await refreshPins();
+    } catch (err) {
+      console.error("[smart-devices] revoke pin:", err);
+    }
+  };
+
+  const handleDeletePin = async (pin: AccessPin) => {
+    if (!confirm("¿Eliminar este PIN permanentemente?")) return;
+    const prop = properties.find((p) => p.id === pin.propertyId);
+    if (pin.ttlockPwdId) {
+      await revokePinOnLock(prop, pin.ttlockPwdId);
+    }
+    try {
+      await api(`/api/access-pins?id=${encodeURIComponent(pin.id)}`, { method: "DELETE" });
+      await refreshPins();
+    } catch (err) {
+      console.error("[smart-devices] delete pin:", err);
+    }
+  };
+
+  // ── iCal handlers ──────────────────────────────────────────────────────────
+  const handleSaveIcal = async () => {
+    setIcalError(null);
+    if (!icalForm.propertyId || !icalForm.url) {
+      setIcalError("Propiedad y URL son obligatorios");
+      return;
+    }
+    setIcalSaving(true);
+    try {
+      const field = icalForm.channel === "airbnb" ? "ical_airbnb" : "ical_vrbo";
+      await api("/api/properties", {
+        method: "PATCH",
+        json: { propertyId: icalForm.propertyId, [field]: icalForm.url },
+      });
+      await refreshProperties();
+      setShowIcalForm(false);
+      setIcalForm({ propertyId: "", channel: "airbnb", url: "" });
+    } catch (err) {
+      setIcalError(String(err instanceof Error ? err.message : err));
+    } finally {
+      setIcalSaving(false);
+    }
+  };
+
+  const handleRemoveIcal = async (config: ICalConfig) => {
+    if (!confirm(`¿Quitar feed ${CHANNEL_LABELS[config.channel] ?? config.channel} de ${config.propertyName}?`)) return;
+    const field = config.channel === "airbnb" ? "ical_airbnb" : "ical_vrbo";
+    try {
+      await api("/api/properties", {
+        method: "PATCH",
+        json: { propertyId: config.propertyId, [field]: null },
+      });
+      await refreshProperties();
+    } catch (err) {
+      console.error("[smart-devices] remove ical:", err);
+    }
+  };
+
+  const handleSyncIcal = async (config: ICalConfig) => {
+    setSyncingIcalId(config.id);
+    try {
+      await api("/api/ical/import", {
+        method: "POST",
+        json: { propertyId: config.propertyId },
+      });
+      // Refresh pins in case auto-generated PINs were inserted server-side
+      await refreshPins();
+    } catch (err) {
+      console.error("[smart-devices] sync ical:", err);
     } finally {
       setSyncingIcalId(null);
     }
-  }, [devices, autoGeneratePin, integrations, pins]);
-
-  // ── Auto-generate PINs from direct bookings ───────────────────────────────
-  const generatePinFromDirectBooking = async (booking: DirectBooking) => {
-    if (!booking.guestPhone) return;
-    const digits = booking.guestPhone.replace(/\D/g, "");
-    const pinVal = digits.slice(-4);
-    if (!pinVal || pinVal.length < 4) return;
-
-    const propDevices = devices.filter(d => d.propertyId === booking.propertyId && (d.provider === "ttlock" || d.provider === "tuya"));
-    if (propDevices.length === 0) return;
-
-    const exists = pins.find(p => p.bookingRef === booking.id);
-    if (exists) return;
-
-    const createdPins: AccessPin[] = [];
-    for (const device of propDevices) {
-      const newPin: AccessPin = {
-        id: `pin-direct-${booking.id}-${device.id}`,
-        deviceId: device.id,
-        deviceName: device.name,
-        propertyId: booking.propertyId,
-        propertyName: booking.propertyName,
-        guestName: booking.guestName,
-        guestPhone: booking.guestPhone,
-        pin: pinVal,
-        source: "direct_booking",
-        bookingRef: booking.id,
-        validFrom: `${booking.checkin}T14:00:00`,
-        validTo: `${booking.checkout}T12:00:00`,
-        status: "active",
-        createdAt: new Date().toISOString(),
-      };
-
-      const hardwareId = await programHardwarePin(newPin, device);
-      if (hardwareId) newPin.ttlockPwdId = hardwareId;
-      createdPins.push(newPin);
-    }
-
-    if (createdPins.length > 0) {
-      setPins(prev => [...prev, ...createdPins]);
-    }
   };
 
-  // ── Manual PIN creation ────────────────────────────────────────────────────
-  const handleCreatePin = async () => {
-    if (!pinForm.deviceId || !pinForm.guestName || !pinForm.pin || !pinForm.validFrom || !pinForm.validTo) return;
-    
-    if (editingPinId) {
-      const oldPin = pins.find(p => p.id === editingPinId);
-      if (oldPin) {
-        await handleUpdatePin(oldPin, pinForm);
-        return;
-      }
-    }
-
-    setPinCreating(true);
-
-    const device = devices.find(d => d.id === pinForm.deviceId);
-    const newPin: AccessPin = {
-      id: `pin-manual-${Date.now()}`,
-      deviceId: pinForm.deviceId,
-      deviceName: device?.name ?? "Dispositivo",
-      propertyId: device?.propertyId ?? "",
-      propertyName: device?.propertyName ?? "",
-      guestName: pinForm.guestName,
-      pin: pinForm.pin,
-      source: "manual",
-      validFrom: pinForm.validFrom,
-      validTo: pinForm.validTo,
-      status: "active",
-      createdAt: new Date().toISOString(),
-    };
-
-    // If TTLock device, call API
-    if (device?.provider === "ttlock" && integrations.ttlock.accessToken) {
-      try {
-        const res = await fetch("/api/ttlock", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            action: "createPin",
-            accessToken: integrations.ttlock.accessToken,
-            lockId: device.remoteId,
-            keyboard_pwd: pinForm.pin,
-            startDate: new Date(pinForm.validFrom).getTime(),
-            endDate: new Date(pinForm.validTo).getTime(),
-          }),
-        });
-        const data = await res.json() as { keyboardPwdId?: string; mock?: boolean };
-        if (data.keyboardPwdId) newPin.ttlockPwdId = data.keyboardPwdId;
-      } catch { /* continue anyway */ }
-    }
-
-    setPins(prev => [newPin, ...prev]);
-    setShowPinForm(false);
-    setPinForm({ deviceId: "", guestName: "", pin: "", validFrom: "", validTo: "", source: "manual" });
-    setPinCreating(false);
-  };
-
-  const handleUpdatePin = async (oldPin: AccessPin, newData: typeof pinForm) => {
-    setPinCreating(true);
-    // 1. Revoke old pin from hardware
-    if (oldPin.ttlockPwdId && integrations.ttlock.accessToken) {
-      const device = devices.find(d => d.id === oldPin.deviceId);
-      if (device?.provider === "ttlock") {
-        try {
-          await fetch("/api/ttlock", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ 
-              action: "deletePin", 
-              accessToken: integrations.ttlock.accessToken, 
-              lockId: device.remoteId, 
-              keyboardPwdId: oldPin.ttlockPwdId,
-              credentials: {
-                clientId: integrations.ttlock.clientId,
-                clientSecret: integrations.ttlock.clientSecret
-              }
-            }),
-          });
-        } catch { /* ignore */ }
-      }
-    }
-    
-    // 2. Create new pin in hardware
-    const device = devices.find(d => d.id === newData.deviceId);
-    const newPin: AccessPin = {
-      ...oldPin,
-      deviceId: newData.deviceId,
-      deviceName: device?.name ?? "Dispositivo",
-      propertyId: device?.propertyId ?? "",
-      propertyName: device?.propertyName ?? "",
-      guestName: newData.guestName,
-      pin: newData.pin,
-      validFrom: newData.validFrom,
-      validTo: newData.validTo,
-      status: "active",
-      ttlockPwdId: undefined, 
-    };
-
-    if (device) {
-      const hardwareId = await programHardwarePin(newPin, device);
-      if (hardwareId) newPin.ttlockPwdId = hardwareId;
-    }
-
-    setPins(prev => prev.map(p => p.id === oldPin.id ? newPin : p));
-    setShowPinForm(false);
-    setEditingPinId(null);
-    setPinForm({ deviceId: "", guestName: "", pin: "", validFrom: "", validTo: "", source: "manual" });
-    setPinCreating(false);
-  };
-
-  const handleRevokePin = async (pin: AccessPin) => {
-    // If TTLock, delete from lock
-    if (pin.ttlockPwdId && integrations.ttlock.accessToken) {
-      const device = devices.find(d => d.id === pin.deviceId);
-      if (device?.provider === "ttlock") {
-        try {
-          await fetch("/api/ttlock", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ action: "deletePin", accessToken: integrations.ttlock.accessToken, lockId: device.remoteId, keyboardPwdId: pin.ttlockPwdId }),
-          });
-        } catch { /* ignore */ }
-      }
-    }
-    setPins(prev => prev.map(p => p.id === pin.id ? { ...p, status: "revoked" } : p));
-  };
-
-  // ── Sync all devices ───────────────────────────────────────────────────────
-  const handleSyncAll = async () => {
-    setSyncing(true);
-    await new Promise(r => setTimeout(r, 1200)); // Simulate API call
-    setDevices(prev => prev.map(d => ({ ...d, lastSync: new Date().toISOString() })));
-    setSyncing(false);
-  };
-
-  // ── Add iCal config ────────────────────────────────────────────────────────
-  const handleAddIcal = async () => {
-    const prop = properties.find(p => p.id === icalForm.propertyId);
-    const newConfig: ICalConfig = {
-      id: `ical-${Date.now()}`,
-      propertyId: icalForm.propertyId,
-      propertyName: prop?.name ?? icalForm.propertyName,
-      channel: icalForm.channel,
-      url: icalForm.url,
-      autoGeneratePins: icalForm.autoGeneratePins,
-      targetDeviceId: icalForm.targetDeviceId,
-    };
-    setIcalConfigs(prev => [newConfig, ...prev]);
-    setShowIcalForm(false);
-    setIcalForm({ propertyId: "", propertyName: "", channel: "airbnb", url: "", autoGeneratePins: true, targetDeviceId: "" });
-    
-    // Sync immediately
-    await syncIcal(newConfig);
-  };
-
-  const lockDevices = devices.filter(d => d.type === "lock_ttlock" || d.type === "lock_tuya");
-
+  // ── Tabs ───────────────────────────────────────────────────────────────────
   const tabs: { id: TabType; label: string; icon: React.ElementType }[] = [
     { id: "devices", label: "Dispositivos", icon: Smartphone },
     { id: "pins", label: "Llaves & PINs", icon: Key },
@@ -485,10 +655,12 @@ export default function SmartDevicesPanel() {
     ...(isAdminMode ? [{ id: "config" as TabType, label: "Configuración", icon: Settings }] : []),
   ];
 
-  // ── RENDER ─────────────────────────────────────────────────────────────────
+  const propertiesWithLockIssue = properties.filter((p) => p.ttlock_lock_id && !p.ttlock_account_id);
+  const accountsNeedingReconnect = accounts.filter((a) => a.expired).length;
+
+  // ── Render ─────────────────────────────────────────────────────────────────
   return (
     <div className="space-y-6 pb-20">
-
       {/* HEADER */}
       <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-4">
         <div>
@@ -496,12 +668,12 @@ export default function SmartDevicesPanel() {
           <p className="text-muted-foreground">Tuya · TTLock · iCal automático · PINs por reserva</p>
         </div>
         <div className="flex items-center gap-3">
-          <Button variant="outline" className="gap-2" onClick={handleSyncAll} disabled={syncing}>
-            <RefreshCw className={cn("h-4 w-4", syncing && "animate-spin")} />
+          <Button variant="outline" className="gap-2" onClick={handleSyncAll} disabled={syncing || loading}>
+            <RefreshCw className={cn("h-4 w-4", (syncing || loading) && "animate-spin")} />
             {syncing ? "Sincronizando..." : "Sincronizar Todo"}
           </Button>
-          <Button 
-            className="gradient-gold text-primary-foreground gap-2" 
+          <Button
+            className="gradient-gold text-primary-foreground gap-2"
             onClick={() => setShowImportWizard(true)}
           >
             <Zap className="h-4 w-4" /> Importar desde App
@@ -514,6 +686,34 @@ export default function SmartDevicesPanel() {
         </div>
       </div>
 
+      {/* Banners de estado */}
+      {accountsNeedingReconnect > 0 && (
+        <Card className="rounded-2xl border-amber-200 bg-amber-50">
+          <CardContent className="p-4 flex items-center gap-3 text-sm">
+            <AlertTriangle className="h-4 w-4 text-amber-600" />
+            <p className="text-amber-800">
+              {accountsNeedingReconnect} cuenta TTLock con token expirado. Ve a{" "}
+              <button
+                type="button"
+                onClick={() => setActiveTab("config")}
+                className="underline font-bold"
+              >Configuración</button>{" "}
+              para reconectar.
+            </p>
+          </CardContent>
+        </Card>
+      )}
+      {propertiesWithLockIssue.length > 0 && (
+        <Card className="rounded-2xl border-orange-200 bg-orange-50">
+          <CardContent className="p-4 flex items-center gap-3 text-sm">
+            <AlertTriangle className="h-4 w-4 text-orange-600" />
+            <p className="text-orange-800">
+              {propertiesWithLockIssue.length} propiedad(es) con cerradura pero sin cuenta TTLock asignada.
+            </p>
+          </CardContent>
+        </Card>
+      )}
+
       {/* KPI STRIP */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
         {[
@@ -521,7 +721,7 @@ export default function SmartDevicesPanel() {
           { label: "Desconectados", value: offline, icon: WifiOff, color: "text-red-600 bg-red-50 border-red-100" },
           { label: "PINs activos", value: activePins, icon: Key, color: "text-primary bg-primary/10 border-primary/20" },
           { label: "Batería baja", value: lowBattery, icon: Battery, color: "text-amber-600 bg-amber-50 border-amber-100" },
-        ].map(kpi => (
+        ].map((kpi) => (
           <Card key={kpi.label} className="rounded-2xl border-gray-100 shadow-sm">
             <CardContent className="p-5 flex items-center gap-4">
               <div className={cn("p-2.5 rounded-xl border shrink-0", kpi.color)}>
@@ -538,7 +738,7 @@ export default function SmartDevicesPanel() {
 
       {/* TAB NAV */}
       <div className="flex gap-1 bg-muted/50 p-1 rounded-2xl border border-gray-100">
-        {tabs.map(tab => (
+        {tabs.map((tab) => (
           <button
             type="button"
             key={tab.id}
@@ -560,23 +760,24 @@ export default function SmartDevicesPanel() {
       {activeTab === "devices" && (
         <div className="grid lg:grid-cols-3 gap-6">
           <div className="lg:col-span-2 space-y-4">
-
-            {Array.from(new Set(devices.map(d => d.propertyId))).map(propId => {
-              const propDevices = devices.filter(d => d.propertyId === propId);
+            {Array.from(new Set(devices.map((d) => d.propertyId))).map((propId) => {
+              const propDevices = devices.filter((d) => d.propertyId === propId);
               const propName = propDevices[0]?.propertyName ?? propId;
               return (
                 <Card key={propId} className="rounded-2xl border-gray-100 shadow-sm overflow-hidden">
                   <CardHeader className="bg-slate-50/80 border-b pb-3">
                     <CardTitle className="text-sm flex items-center gap-2">
                       <Home className="h-4 w-4 text-primary" /> {propName}
-                      <Badge variant="secondary" className="ml-auto text-[10px]">{propDevices.length} dispositivos</Badge>
+                      <Badge variant="secondary" className="ml-auto text-[10px]">{propDevices.length} cerradura{propDevices.length !== 1 ? "s" : ""}</Badge>
                     </CardTitle>
                   </CardHeader>
                   <CardContent className="p-0 divide-y divide-gray-50">
-                    {propDevices.map(device => {
+                    {propDevices.map((device) => {
                       const Icon = DEVICE_ICONS[device.type] ?? Smartphone;
                       const isLock = device.type === "lock_ttlock" || device.type === "lock_tuya";
-                      const devicePins = pins.filter(p => p.deviceId === device.id && p.status === "active" && !isExpiredPin(p.validTo));
+                      const devicePins = pins.filter(
+                        (p) => p.propertyId === device.propertyId && p.status === "active" && !isExpiredPin(p.validTo)
+                      );
                       return (
                         <div key={device.id} className="flex items-center gap-4 p-4 hover:bg-slate-50/50 transition-colors">
                           <div className={cn(
@@ -589,7 +790,7 @@ export default function SmartDevicesPanel() {
                           <div className="flex-1 min-w-0">
                             <div className="flex items-center gap-2 flex-wrap">
                               <h4 className="font-bold text-sm">{device.name}</h4>
-                               <Badge variant="outline" className="text-[8px] tracking-tight bg-white px-1.5 h-3.5 border-slate-200 text-slate-500 uppercase font-black">
+                              <Badge variant="outline" className="text-[8px] tracking-tight bg-white px-1.5 h-3.5 border-slate-200 text-slate-500 uppercase font-black">
                                 {device.provider}
                               </Badge>
                               <div className="flex items-center gap-1">
@@ -602,13 +803,12 @@ export default function SmartDevicesPanel() {
                             <p className="text-[10px] text-muted-foreground mt-0.5 flex items-center gap-1.5">
                               {DEVICE_LABELS[device.type]}
                               <span className="h-0.5 w-0.5 rounded-full bg-slate-300" />
-                              Sinc: {device.lastSync ? new Date(device.lastSync).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '—'}
+                              Sinc: {device.lastSync ? new Date(device.lastSync).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "—"}
                             </p>
                           </div>
 
-                          {/* Readings */}
                           <div className="flex items-center gap-3 text-xs shrink-0">
-                            {device.battery !== undefined && (
+                            {device.battery !== undefined && device.battery !== null && (
                               <div className="flex items-center gap-1">
                                 <Battery className={cn("h-3.5 w-3.5", batteryColor(device.battery))} />
                                 <span className={cn("font-bold", batteryColor(device.battery))}>{device.battery}%</span>
@@ -662,10 +862,6 @@ export default function SmartDevicesPanel() {
                               Abrir
                             </Button>
                           )}
-
-                          <Button variant="ghost" size="icon" className="h-8 w-8 shrink-0">
-                            <Settings className="h-3.5 w-3.5" />
-                          </Button>
                         </div>
                       );
                     })}
@@ -678,14 +874,14 @@ export default function SmartDevicesPanel() {
               <Card className="border-dashed rounded-2xl">
                 <CardContent className="py-16 text-center text-muted-foreground space-y-3">
                   <Smartphone className="h-12 w-12 mx-auto opacity-20" />
-                  <p className="font-bold">No hay dispositivos registrados.</p>
-                  <p className="text-sm">Configura Tuya o TTLock en la pestaña "Configuración" y luego sincroniza.</p>
+                  <p className="font-bold">No hay cerraduras asignadas.</p>
+                  <p className="text-sm">Conecta una cuenta TTLock en <button type="button" onClick={() => setActiveTab("config")} className="underline text-primary">Configuración</button> y asigna una cerradura a cada propiedad.</p>
                 </CardContent>
               </Card>
             )}
           </div>
 
-          {/* Sidebar: Low battery + Alerts */}
+          {/* Sidebar */}
           <div className="space-y-5">
             <Card className="rounded-2xl bg-zinc-900 text-white border-none shadow-xl">
               <CardContent className="p-5 space-y-4">
@@ -694,7 +890,7 @@ export default function SmartDevicesPanel() {
                   <h4 className="font-bold text-sm">Alertas Activas</h4>
                 </div>
                 <div className="space-y-2">
-                  {devices.filter(d => (d.battery ?? 100) <= 20).map(d => (
+                  {devices.filter((d) => (d.battery ?? 100) <= 20).map((d) => (
                     <div key={d.id} className="flex items-center gap-2 p-2 rounded-xl bg-red-500/10 border border-red-500/20">
                       <Battery className="h-3.5 w-3.5 text-red-400 shrink-0" />
                       <div className="flex-1 min-w-0">
@@ -703,16 +899,16 @@ export default function SmartDevicesPanel() {
                       </div>
                     </div>
                   ))}
-                  {devices.filter(d => !d.online).map(d => (
+                  {devices.filter((d) => !d.online).map((d) => (
                     <div key={d.id} className="flex items-center gap-2 p-2 rounded-xl bg-amber-500/10 border border-amber-500/20">
                       <WifiOff className="h-3.5 w-3.5 text-amber-400 shrink-0" />
                       <div className="flex-1 min-w-0">
                         <p className="text-[11px] font-bold truncate">{d.name}</p>
-                        <p className="text-[9px] text-amber-400">Sin conexión · {formatDateTime(d.lastSync ?? "")}</p>
+                        <p className="text-[9px] text-amber-400">Sin conexión</p>
                       </div>
                     </div>
                   ))}
-                  {devices.every(d => d.online && (d.battery ?? 100) > 20) && (
+                  {devices.length > 0 && devices.every((d) => d.online && (d.battery ?? 100) > 20) && (
                     <div className="flex items-center gap-2 p-2 rounded-xl bg-green-500/10 border border-green-500/20">
                       <CheckCircle2 className="h-3.5 w-3.5 text-green-400" />
                       <p className="text-[11px] font-bold text-green-300">Todo en orden</p>
@@ -724,12 +920,12 @@ export default function SmartDevicesPanel() {
 
             <Card className="rounded-2xl border-gray-100 shadow-sm">
               <CardContent className="p-5 space-y-3">
-                <h4 className="font-bold text-sm flex items-center gap-2"><Activity className="h-4 w-4 text-primary" /> Último Acceso</h4>
-                {pins.filter(p => p.status === "active").slice(0, 4).map(p => (
+                <h4 className="font-bold text-sm flex items-center gap-2"><Activity className="h-4 w-4 text-primary" /> Últimos PINs</h4>
+                {pins.filter((p) => p.status === "active").slice(0, 4).map((p) => (
                   <div key={p.id} className="flex items-center justify-between text-xs">
                     <div>
                       <p className="font-bold text-slate-800">{p.guestName}</p>
-                      <p className="text-muted-foreground">{p.deviceName}</p>
+                      <p className="text-muted-foreground">{p.propertyName}</p>
                     </div>
                     <div className="font-mono font-black text-primary text-base">••••</div>
                   </div>
@@ -749,60 +945,69 @@ export default function SmartDevicesPanel() {
           <div className="flex items-center justify-between flex-wrap gap-3">
             <div>
               <h3 className="font-bold text-lg">Llaves de Acceso (PINs)</h3>
-              <p className="text-sm text-muted-foreground">{activePins} activos · Auto-generados desde iCal y reservas directas</p>
+              <p className="text-sm text-muted-foreground">
+                {activePins} activos · {pins.length} en total
+              </p>
             </div>
-            <div className="flex gap-2">
-              {/* Auto-generate from direct bookings with phone */}
-              {directBookings.filter(b => b.guestPhone && !pins.find(p => p.bookingRef === b.id)).length > 0 && (
-                <Button variant="outline" className="gap-2 text-xs rounded-xl" onClick={() => {
-                  directBookings.filter(b => b.guestPhone && !pins.find(p => p.bookingRef === b.id)).forEach(generatePinFromDirectBooking);
-                }}>
-                  <Zap className="h-3.5 w-3.5 text-amber-500" />
-                  Auto-generar de reservas directas
-                </Button>
-              )}
-              <Button className="gradient-gold text-primary-foreground gap-2 rounded-xl text-xs" onClick={() => setShowPinForm(true)}>
-                <Plus className="h-3.5 w-3.5" /> Crear PIN manual
-              </Button>
-            </div>
+            <Button
+              className="gradient-gold text-primary-foreground gap-2 rounded-xl text-xs"
+              onClick={() => { resetPinForm(); setShowPinForm(true); }}
+            >
+              <Plus className="h-3.5 w-3.5" /> Crear PIN manual
+            </Button>
           </div>
 
           {/* Create PIN form */}
           {showPinForm && (
             <Card className="rounded-2xl border-primary/20 bg-primary/5 shadow-sm">
               <CardContent className="p-5 space-y-4">
-                <h4 className="font-bold flex items-center gap-2 text-sm"><Key className="h-4 w-4 text-primary" /> Nuevo PIN de Acceso</h4>
+                <h4 className="font-bold flex items-center gap-2 text-sm">
+                  <Key className="h-4 w-4 text-primary" /> {editingPinId ? "Editar PIN" : "Nuevo PIN de Acceso"}
+                </h4>
                 <div className="grid grid-cols-2 gap-4">
                   <div className="space-y-1.5">
-                    <Label className="text-xs font-black uppercase tracking-wider text-slate-500">Cerradura</Label>
-                    <Select value={pinForm.deviceId} onValueChange={v => setPinForm(f => ({ ...f, deviceId: v }))}>
+                    <Label className="text-xs font-black uppercase tracking-wider text-slate-500">Propiedad</Label>
+                    <Select value={pinForm.propertyId} onValueChange={(v) => setPinForm((f) => ({ ...f, propertyId: v }))}>
                       <SelectTrigger className="rounded-xl"><SelectValue placeholder="Seleccionar..." /></SelectTrigger>
                       <SelectContent>
-                        {lockDevices.map(d => <SelectItem key={d.id} value={d.id}>{d.name} · {d.propertyName}</SelectItem>)}
+                        {properties.map((p) => (
+                          <SelectItem key={p.id} value={p.id}>
+                            {p.name}{p.ttlock_lock_id ? " · 🔒" : ""}
+                          </SelectItem>
+                        ))}
                       </SelectContent>
                     </Select>
                   </div>
                   <div className="space-y-1.5">
                     <Label className="text-xs font-black uppercase tracking-wider text-slate-500">Nombre Huésped</Label>
-                    <Input placeholder="Ana García" value={pinForm.guestName} onChange={e => setPinForm(f => ({ ...f, guestName: e.target.value }))} className="rounded-xl" />
+                    <Input placeholder="Ana García" value={pinForm.guestName} onChange={(e) => setPinForm((f) => ({ ...f, guestName: e.target.value }))} className="rounded-xl" />
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label className="text-xs font-black uppercase tracking-wider text-slate-500">Teléfono (opcional)</Label>
+                    <Input placeholder="+56 9 1234 5678" value={pinForm.guestPhone} onChange={(e) => setPinForm((f) => ({ ...f, guestPhone: e.target.value }))} className="rounded-xl" />
                   </div>
                   <div className="space-y-1.5">
                     <Label className="text-xs font-black uppercase tracking-wider text-slate-500">PIN (4-8 dígitos)</Label>
-                    <Input placeholder="5678" maxLength={8} value={pinForm.pin} onChange={e => setPinForm(f => ({ ...f, pin: e.target.value.replace(/\D/g, "") }))} className="rounded-xl font-mono font-bold text-lg tracking-widest" />
+                    <Input placeholder="5678" maxLength={8} value={pinForm.pin} onChange={(e) => setPinForm((f) => ({ ...f, pin: e.target.value.replace(/\D/g, "") }))} className="rounded-xl font-mono font-bold text-lg tracking-widest" />
                   </div>
                   <div className="space-y-1.5">
                     <Label className="text-xs font-black uppercase tracking-wider text-slate-500">Válido desde</Label>
-                    <Input type="datetime-local" value={pinForm.validFrom} onChange={e => setPinForm(f => ({ ...f, validFrom: e.target.value }))} className="rounded-xl" title="Fecha y hora de inicio" aria-label="Válido desde" />
+                    <Input type="datetime-local" value={pinForm.validFrom} onChange={(e) => setPinForm((f) => ({ ...f, validFrom: e.target.value }))} className="rounded-xl" aria-label="Válido desde" />
                   </div>
-                  <div className="space-y-1.5 col-span-2">
+                  <div className="space-y-1.5">
                     <Label className="text-xs font-black uppercase tracking-wider text-slate-500">Válido hasta</Label>
-                    <Input type="datetime-local" value={pinForm.validTo} onChange={e => setPinForm(f => ({ ...f, validTo: e.target.value }))} className="rounded-xl" title="Fecha y hora de fin" aria-label="Válido hasta" />
+                    <Input type="datetime-local" value={pinForm.validTo} onChange={(e) => setPinForm((f) => ({ ...f, validTo: e.target.value }))} className="rounded-xl" aria-label="Válido hasta" />
                   </div>
                 </div>
+                {pinError && <p className="text-xs text-red-600 font-bold">{pinError}</p>}
                 <div className="flex gap-2 pt-2">
-                  <Button variant="outline" className="flex-1 rounded-xl" onClick={() => setShowPinForm(false)}>Cancelar</Button>
-                  <Button className="flex-1 gradient-gold text-primary-foreground rounded-xl border-none" onClick={handleCreatePin} disabled={pinCreating || !pinForm.deviceId || !pinForm.pin || pinForm.pin.length < 4}>
-                    {pinCreating ? <Loader2 className="h-4 w-4 animate-spin" /> : "Crear PIN"}
+                  <Button variant="outline" className="flex-1 rounded-xl" onClick={() => { setShowPinForm(false); resetPinForm(); }}>Cancelar</Button>
+                  <Button
+                    className="flex-1 gradient-gold text-primary-foreground rounded-xl border-none"
+                    onClick={handleCreatePin}
+                    disabled={pinSaving}
+                  >
+                    {pinSaving ? <Loader2 className="h-4 w-4 animate-spin" /> : (editingPinId ? "Guardar cambios" : "Crear PIN")}
                   </Button>
                 </div>
               </CardContent>
@@ -820,7 +1025,7 @@ export default function SmartDevicesPanel() {
                 </CardContent>
               </Card>
             )}
-            {pins.map(pin => {
+            {pins.map((pin) => {
               const expired = isExpiredPin(pin.validTo);
               const inactive = pin.status === "revoked" || expired;
               const sourceColors: Record<string, string> = {
@@ -841,7 +1046,6 @@ export default function SmartDevicesPanel() {
                   inactive ? "opacity-50 border-dashed" : "hover:shadow-md"
                 )}>
                   <div className="flex items-start gap-4">
-                    {/* PIN display */}
                     <div className={cn("flex flex-col items-center justify-center px-4 py-3 rounded-xl border-2 min-w-[80px]", inactive ? "border-slate-200 bg-slate-50" : "border-primary/30 bg-primary/5")}>
                       <p className="text-[9px] font-black uppercase text-muted-foreground tracking-wider mb-1">PIN</p>
                       <p className={cn("text-2xl font-black tracking-widest font-mono", inactive ? "text-slate-400" : "text-primary")}>{pin.pin}</p>
@@ -856,11 +1060,13 @@ export default function SmartDevicesPanel() {
                         {pin.status === "revoked" && <Badge variant="secondary" className="text-[9px]">Revocado</Badge>}
                         {expired && pin.status !== "revoked" && <Badge variant="secondary" className="text-[9px] text-red-500">Expirado</Badge>}
                         {!inactive && <Badge className="text-[9px] bg-green-500 text-white border-none h-4">Activo</Badge>}
+                        {pin.ttlockPwdId && <Badge className="text-[9px] bg-blue-500 text-white border-none h-4">En cerradura</Badge>}
                       </div>
-                      <p className="text-[11px] text-muted-foreground font-medium">{pin.deviceName} · {pin.propertyName}</p>
+                      <p className="text-[11px] text-muted-foreground font-medium">{pin.propertyName}</p>
                       <div className="flex items-center gap-3 text-[10px] text-slate-500 flex-wrap">
-                        <span className="flex items-center gap-0.5"><Calendar className="h-3 w-3" /> Desde: {formatDateTime(pin.validFrom)}</span>
-                        <span className="flex items-center gap-0.5"><Calendar className="h-3 w-3" /> Hasta: {formatDateTime(pin.validTo)}</span>
+                        <span className="flex items-center gap-0.5"><Clock className="h-3 w-3" /> {formatDateTime(pin.validFrom)}</span>
+                        <span>→</span>
+                        <span className="flex items-center gap-0.5"><Clock className="h-3 w-3" /> {formatDateTime(pin.validTo)}</span>
                         {pin.guestPhone && <span className="flex items-center gap-0.5"><Phone className="h-3 w-3" /> {pin.guestPhone}</span>}
                       </div>
                     </div>
@@ -870,28 +1076,77 @@ export default function SmartDevicesPanel() {
                         <Copy className="h-3.5 w-3.5" />
                       </button>
                       {!inactive && (
-                        <button type="button" onClick={() => {
-                          setEditingPinId(pin.id);
-                          setPinForm({
-                            deviceId: pin.deviceId,
-                            guestName: pin.guestName,
-                            pin: pin.pin,
-                            validFrom: pin.validFrom,
-                            validTo: pin.validTo,
-                            source: pin.source
-                          });
-                          setShowPinForm(true);
-                        }} className="p-1.5 rounded-lg hover:bg-slate-100 text-slate-400 hover:text-primary transition-colors" title="Editar PIN">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setEditingPinId(pin.id);
+                            setPinForm({
+                              propertyId: pin.propertyId,
+                              guestName: pin.guestName,
+                              guestPhone: pin.guestPhone ?? "",
+                              pin: pin.pin,
+                              validFrom: pin.validFrom.slice(0, 16),
+                              validTo: pin.validTo.slice(0, 16),
+                            });
+                            setShowPinForm(true);
+                          }}
+                          className="p-1.5 rounded-lg hover:bg-slate-100 text-slate-400 hover:text-primary transition-colors"
+                          title="Editar PIN"
+                        >
                           <Edit3 className="h-3.5 w-3.5" />
                         </button>
                       )}
+                      {!inactive && !pin.ttlockPwdId && (() => {
+                        const prop = properties.find((p) => p.id === pin.propertyId);
+                        if (!prop?.ttlock_account_id || !prop.ttlock_lock_id) return null;
+                        return (
+                          <button
+                            type="button"
+                            onClick={() => handleReprogramPin(pin)}
+                            disabled={reprogrammingId === pin.id}
+                            className="p-1.5 rounded-lg hover:bg-blue-50 text-slate-400 hover:text-blue-600 transition-colors disabled:opacity-50"
+                            title="Programar este PIN en la cerradura"
+                          >
+                            {reprogrammingId === pin.id ? (
+                              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                            ) : (
+                              <Zap className="h-3.5 w-3.5" />
+                            )}
+                          </button>
+                        );
+                      })()}
                       {!inactive && (
-                        <button type="button" onClick={() => handleRevokePin(pin)} className="p-1.5 rounded-lg hover:bg-red-50 text-slate-400 hover:text-red-500 transition-colors" title="Revocar PIN">
+                        <button
+                          type="button"
+                          onClick={() => handleRevokePin(pin)}
+                          className="p-1.5 rounded-lg hover:bg-red-50 text-slate-400 hover:text-red-500 transition-colors"
+                          title="Revocar PIN"
+                        >
                           <X className="h-3.5 w-3.5" />
                         </button>
                       )}
+                      <button
+                        type="button"
+                        onClick={() => handleDeletePin(pin)}
+                        className="p-1.5 rounded-lg hover:bg-red-50 text-slate-400 hover:text-red-500 transition-colors"
+                        title="Eliminar permanentemente"
+                      >
+                        <AlertTriangle className="h-3.5 w-3.5" />
+                      </button>
                     </div>
                   </div>
+                  {reprogramMsg?.pinId === pin.id && (
+                    <div
+                      className={cn(
+                        "mt-2 text-xs rounded-md px-2 py-1.5 border",
+                        reprogramMsg.ok
+                          ? "bg-emerald-50 text-emerald-800 border-emerald-200"
+                          : "bg-red-50 text-red-700 border-red-200"
+                      )}
+                    >
+                      {reprogramMsg.text}
+                    </div>
+                  )}
                 </div>
               );
             })}
@@ -910,7 +1165,10 @@ export default function SmartDevicesPanel() {
                 <h3 className="font-bold">Feeds iCal por Propiedad</h3>
                 <p className="text-sm text-muted-foreground">Airbnb y VRBO incluyen los últimos 4 dígitos del teléfono → se usan como PIN automático</p>
               </div>
-              <Button className="gradient-gold text-primary-foreground gap-2 rounded-xl text-xs" onClick={() => setShowIcalForm(true)}>
+              <Button
+                className="gradient-gold text-primary-foreground gap-2 rounded-xl text-xs"
+                onClick={() => { setIcalError(null); setShowIcalForm(true); }}
+              >
                 <Plus className="h-3.5 w-3.5" /> Agregar feed
               </Button>
             </div>
@@ -923,80 +1181,43 @@ export default function SmartDevicesPanel() {
                   <div className="grid grid-cols-2 gap-4">
                     <div className="space-y-1.5">
                       <Label className="text-xs font-black uppercase tracking-wider text-slate-500">Propiedad</Label>
-                      <Select value={icalForm.propertyId} onValueChange={v => {
-                        const prop = properties.find(p => p.id === v);
-                        setIcalForm(f => ({ ...f, propertyId: v, propertyName: prop?.name ?? "" }));
-                      }}>
+                      <Select value={icalForm.propertyId} onValueChange={(v) => setIcalForm((f) => ({ ...f, propertyId: v }))}>
                         <SelectTrigger className="rounded-xl"><SelectValue placeholder="Seleccionar..." /></SelectTrigger>
                         <SelectContent>
-                          {properties.map(p => <SelectItem key={p.id} value={p.id}>{p.name}</SelectItem>)}
-                          {properties.length === 0 && <SelectItem value="custom">Personalizada</SelectItem>}
+                          {properties.map((p) => <SelectItem key={p.id} value={p.id}>{p.name}</SelectItem>)}
                         </SelectContent>
                       </Select>
-
-                      {/* Property Channel Shortcuts */}
-                      {icalForm.propertyId && properties.find(p => p.id === icalForm.propertyId)?.channels?.filter(c => c.icalUrl).length! > 0 && (
-                        <div className="mt-2 space-y-2">
-                          <p className="text-[10px] font-bold text-slate-400 uppercase tracking-tight">Vínculos detectados en la propiedad:</p>
-                          <div className="flex flex-wrap gap-2">
-                            {properties.find(p => p.id === icalForm.propertyId)?.channels?.filter(c => c.icalUrl).map(ch => (
-                              <Button 
-                                key={ch.name} 
-                                size="sm" 
-                                variant="outline" 
-                                title="Usar iCal de la propiedad"
-                                className="h-6 text-[10px] rounded-lg gap-1 border-primary/20 bg-white"
-                                onClick={() => setIcalForm(f => ({ 
-                                  ...f, 
-                                  url: ch.icalUrl || "", 
-                                  channel: (ch.name.toLowerCase().includes("airbnb") ? "airbnb" : ch.name.toLowerCase().includes("vrbo") ? "vrbo" : "other") as any 
-                                }))}
-                              >
-                                <Zap className="h-2.5 w-2.5 text-amber-500 fill-amber-500" />
-                                Usar {ch.name}
-                              </Button>
-                            ))}
-                          </div>
-                        </div>
-                      )}
                     </div>
                     <div className="space-y-1.5">
                       <Label className="text-xs font-black uppercase tracking-wider text-slate-500">Canal</Label>
-                      <Select value={icalForm.channel} onValueChange={v => setIcalForm(f => ({ ...f, channel: v as ICalConfig["channel"] }))}>
+                      <Select value={icalForm.channel} onValueChange={(v) => setIcalForm((f) => ({ ...f, channel: v as "airbnb" | "vrbo" }))}>
                         <SelectTrigger className="rounded-xl"><SelectValue /></SelectTrigger>
                         <SelectContent>
                           <SelectItem value="airbnb">Airbnb</SelectItem>
                           <SelectItem value="vrbo">VRBO</SelectItem>
-                          <SelectItem value="booking">Booking.com</SelectItem>
-                          <SelectItem value="other">Otro</SelectItem>
                         </SelectContent>
                       </Select>
                     </div>
                     <div className="space-y-1.5 col-span-2">
                       <Label className="text-xs font-black uppercase tracking-wider text-slate-500">URL del Feed iCal</Label>
-                      <Input placeholder="https://www.airbnb.com/calendar/ical/XXXXX.ics?c=..." value={icalForm.url} onChange={e => setIcalForm(f => ({ ...f, url: e.target.value }))} className="rounded-xl font-mono text-xs" />
-                    </div>
-                    <div className="space-y-1.5">
-                      <Label className="text-xs font-black uppercase tracking-wider text-slate-500">Cerradura destino (auto-PIN)</Label>
-                      <Select value={icalForm.targetDeviceId} onValueChange={v => setIcalForm(f => ({ ...f, targetDeviceId: v }))}>
-                        <SelectTrigger className="rounded-xl"><SelectValue placeholder="Sin asignar" /></SelectTrigger>
-                        <SelectContent>
-                          {lockDevices.map(d => <SelectItem key={d.id} value={d.id}>{d.name}</SelectItem>)}
-                        </SelectContent>
-                      </Select>
-                    </div>
-                    <div className="flex items-center gap-3 pt-5">
-                      <button type="button" onClick={() => setIcalForm(f => ({ ...f, autoGeneratePins: !f.autoGeneratePins }))} aria-label="Alternar auto-generación de PINs">
-                        {icalForm.autoGeneratePins
-                          ? <ToggleRight className="h-7 w-7 text-primary" />
-                          : <ToggleLeft className="h-7 w-7 text-slate-400" />}
-                      </button>
-                      <p className="text-xs font-bold text-slate-700">Auto-generar PINs al sincronizar</p>
+                      <Input
+                        placeholder="https://www.airbnb.com/calendar/ical/XXXXX.ics?c=..."
+                        value={icalForm.url}
+                        onChange={(e) => setIcalForm((f) => ({ ...f, url: e.target.value }))}
+                        className="rounded-xl font-mono text-xs"
+                      />
                     </div>
                   </div>
+                  {icalError && <p className="text-xs text-red-600 font-bold">{icalError}</p>}
                   <div className="flex gap-2 pt-2">
                     <Button variant="outline" className="flex-1 rounded-xl" onClick={() => setShowIcalForm(false)}>Cancelar</Button>
-                    <Button className="flex-1 gradient-gold text-primary-foreground rounded-xl border-none" onClick={handleAddIcal} disabled={!icalForm.url}>Agregar Feed</Button>
+                    <Button
+                      className="flex-1 gradient-gold text-primary-foreground rounded-xl border-none"
+                      onClick={handleSaveIcal}
+                      disabled={icalSaving || !icalForm.url || !icalForm.propertyId}
+                    >
+                      {icalSaving ? <Loader2 className="h-4 w-4 animate-spin" /> : "Guardar Feed"}
+                    </Button>
                   </div>
                 </CardContent>
               </Card>
@@ -1016,83 +1237,46 @@ export default function SmartDevicesPanel() {
               </Card>
             )}
 
-            {icalConfigs.map(config => (
+            {icalConfigs.map((config) => (
               <Card key={config.id} className="rounded-2xl border-gray-100 shadow-sm overflow-hidden">
                 <CardContent className="p-5">
-                  <div className="flex items-start justify-between mb-4">
-                    <div className="flex items-center gap-3">
+                  <div className="flex items-start justify-between mb-4 gap-3">
+                    <div className="flex items-center gap-3 min-w-0">
                       <div className={cn("w-8 h-8 rounded-xl flex items-center justify-center text-white text-[10px] font-black shrink-0", CHANNEL_COLORS[config.channel] ?? "bg-slate-400")}>
                         {config.channel.slice(0, 2).toUpperCase()}
                       </div>
-                      <div>
-                        <h4 className="font-bold text-sm">{CHANNEL_LABELS[config.channel]} · {config.propertyName}</h4>
-                        <p className="text-[10px] text-muted-foreground font-mono truncate max-w-[260px]">{config.url}</p>
+                      <div className="min-w-0">
+                        <h4 className="font-bold text-sm truncate">{CHANNEL_LABELS[config.channel]} · {config.propertyName}</h4>
+                        <p className="text-[10px] text-muted-foreground font-mono truncate max-w-[360px]">{config.url}</p>
                       </div>
                     </div>
-                    <div className="flex items-center gap-2">
-                      {config.autoGeneratePins && (
-                        <Badge className="text-[9px] bg-primary/10 text-primary border-primary/20 border">
-                          <Zap className="h-2.5 w-2.5 mr-0.5" /> Auto-PIN
-                        </Badge>
-                      )}
+                    <div className="flex items-center gap-2 shrink-0">
                       <Button
                         size="sm"
                         variant="outline"
                         className="rounded-xl text-xs gap-1.5 h-8"
-                        onClick={() => syncIcal(config)}
+                        onClick={() => handleSyncIcal(config)}
                         disabled={syncingIcalId === config.id}
                       >
                         <RefreshCw className={cn("h-3 w-3", syncingIcalId === config.id && "animate-spin")} />
                         {syncingIcalId === config.id ? "Sincronizando..." : "Sincronizar"}
                       </Button>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="rounded-xl text-xs gap-1.5 h-8 border-red-200 text-red-600 hover:bg-red-50"
+                        onClick={() => handleRemoveIcal(config)}
+                      >
+                        <X className="h-3 w-3" /> Quitar
+                      </Button>
                     </div>
                   </div>
-
-                  {config.lastSync && (
-                    <p className="text-[10px] text-muted-foreground mb-3">
-                      Última sync: {formatDateTime(config.lastSync)} · {config.bookings?.length ?? 0} reservas encontradas
-                    </p>
-                  )}
-
-                  {/* Parsed bookings preview */}
-                  {config.bookings && config.bookings.length > 0 && (
-                    <div className="space-y-2 mt-3 border-t pt-3">
-                      <p className="text-[10px] font-black uppercase tracking-wider text-slate-400 mb-2">Próximas reservas</p>
-                      {config.bookings.slice(0, 4).map(booking => {
-                        const pinExists = pins.find(p => p.bookingRef === booking.uid);
-                        return (
-                          <div key={booking.uid} className="flex items-center justify-between p-2.5 rounded-xl bg-slate-50 border border-slate-100">
-                            <div className="flex-1 min-w-0">
-                              <p className="text-xs font-bold text-slate-800 truncate">{booking.guestName}</p>
-                              <p className="text-[10px] text-muted-foreground">{formatDate(booking.checkin)} → {formatDate(booking.checkout)} · {booking.nights}n</p>
-                            </div>
-                            <div className="flex items-center gap-2 ml-3 shrink-0">
-                              {booking.phoneLast4 ? (
-                                <div className="flex items-center gap-1">
-                                  <Phone className="h-3 w-3 text-slate-400" />
-                                  <span className="font-mono font-black text-xs text-slate-700">••••{booking.phoneLast4}</span>
-                                </div>
-                              ) : (
-                                <span className="text-[9px] text-amber-500 font-bold">Sin teléfono</span>
-                              )}
-                              {pinExists
-                                ? <Badge className="text-[9px] bg-green-500 text-white border-none h-4"><CheckCircle2 className="h-2.5 w-2.5 mr-0.5" />PIN</Badge>
-                                : booking.phoneLast4
-                                  ? <Badge variant="outline" className="text-[9px] h-4 text-amber-600 border-amber-300">Sin PIN</Badge>
-                                  : null
-                              }
-                            </div>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  )}
                 </CardContent>
               </Card>
             ))}
           </div>
 
-          {/* Sidebar: How it works */}
+          {/* Sidebar */}
           <div className="space-y-5">
             <Card className="rounded-2xl bg-zinc-900 text-white border-none shadow-xl">
               <CardContent className="p-5 space-y-4">
@@ -1104,9 +1288,9 @@ export default function SmartDevicesPanel() {
                   {[
                     { step: "1", text: "Airbnb incluye los últimos 4 dígitos del teléfono del huésped en el iCal (DESCRIPTION del evento)" },
                     { step: "2", text: "StayHost parsea el feed automáticamente y extrae: nombre, fechas y esos 4 dígitos" },
-                    { step: "3", text: "Se crea un PIN en TTLock = esos 4 dígitos, válido desde check-in 2pm hasta check-out 12pm" },
-                    { step: "4", text: "Reservas directas: usamos el teléfono que ingresaste en el checkout del Hub" },
-                  ].map(s => (
+                    { step: "3", text: "Se puede crear un PIN en TTLock = esos 4 dígitos, válido desde check-in hasta check-out" },
+                    { step: "4", text: "Todos los PINs se guardan en la base de datos (no en el navegador)" },
+                  ].map((s) => (
                     <div key={s.step} className="flex items-start gap-3">
                       <div className="w-5 h-5 rounded-full bg-primary/20 flex items-center justify-center text-[10px] font-black text-primary shrink-0 mt-0.5">{s.step}</div>
                       <p className="text-[11px] text-zinc-300 leading-relaxed">{s.text}</p>
@@ -1119,19 +1303,17 @@ export default function SmartDevicesPanel() {
             <Card className="rounded-2xl border-amber-200 bg-amber-50 shadow-sm">
               <CardContent className="p-5 space-y-2">
                 <h4 className="font-bold text-sm text-amber-800 flex items-center gap-2"><AlertTriangle className="h-4 w-4" /> VRBO</h4>
-                <p className="text-[11px] text-amber-700 leading-relaxed">VRBO puede no incluir el teléfono en su iCal según configuración del anuncio. En ese caso el PIN debe crearse manualmente o integrando el Webhook de VRBO.</p>
+                <p className="text-[11px] text-amber-700 leading-relaxed">VRBO puede no incluir el teléfono en su iCal según configuración del anuncio. En ese caso el PIN debe crearse manualmente.</p>
               </CardContent>
             </Card>
 
             <Card className="rounded-2xl border-gray-100 shadow-sm">
               <CardContent className="p-5 space-y-3">
-                <h4 className="font-bold text-sm flex items-center gap-2"><BookOpen className="h-4 w-4 text-primary" /> Cómo obtener el iCal de Airbnb</h4>
+                <h4 className="font-bold text-sm flex items-center gap-2"><BookOpen className="h-4 w-4 text-primary" /> Cómo obtener el iCal</h4>
                 <ol className="text-[11px] text-slate-600 space-y-2 list-decimal list-inside leading-relaxed">
-                  <li>Ve a <strong>Menú → Anuncios</strong></li>
-                  <li>Selecciona tu propiedad</li>
-                  <li>Entra a <strong>Disponibilidad → Sincronizar calendarios</strong></li>
-                  <li>Copia la URL del <strong>Exportar calendario</strong></li>
-                  <li>Pégala arriba como nuevo feed</li>
+                  <li>Airbnb: <strong>Anuncios → Disponibilidad → Sincronizar calendarios → Exportar</strong></li>
+                  <li>VRBO: <strong>Anuncios → Calendario → Importar/Exportar → Exportar</strong></li>
+                  <li>Copia la URL <strong>.ics</strong> y pégala arriba</li>
                 </ol>
               </CardContent>
             </Card>
@@ -1144,10 +1326,8 @@ export default function SmartDevicesPanel() {
       {/* ═══════════════════════════════════════════════════════════════════ */}
       {activeTab === "config" && (
         <div className="space-y-6">
-          {/* Cuentas TTLock + asignación de cerraduras a propiedades */}
           <TTLockAccountsSection />
 
-          {/* Variables de entorno / servidor */}
           <Card className="rounded-2xl border-gray-100 bg-zinc-950 text-zinc-300">
             <CardContent className="p-5 space-y-3">
               <h4 className="font-bold text-white text-sm flex items-center gap-2">
@@ -1168,25 +1348,25 @@ export default function SmartDevicesPanel() {
                 <p>TUYA_UID=tu_uid</p>
               </div>
               <p className="text-[10px] text-zinc-500">
-                Las cuentas TTLock individuales (usuario/contraseña) se guardan por tenant
-                en la tabla <code className="bg-zinc-800 px-1 rounded">ttlock_accounts</code> (arriba).
+                Las cuentas TTLock individuales se guardan por tenant en la tabla{" "}
+                <code className="bg-zinc-800 px-1 rounded">ttlock_accounts</code> (arriba).
+                Los PINs persisten en <code className="bg-zinc-800 px-1 rounded">access_pins</code>.
               </p>
             </CardContent>
           </Card>
 
-          {/* Zona de peligro */}
           <div className="pt-6 border-t border-red-100">
             <h4 className="text-sm font-black text-red-600 uppercase tracking-widest mb-3 flex items-center gap-2">
               <AlertTriangle className="h-4 w-4" /> Zona de Peligro
             </h4>
             <p className="text-xs text-slate-500 mb-4">
-              Borra el caché local (PINs/iCals/dispositivos cacheados). No toca cuentas TTLock ni propiedades.
+              Borra el caché local heredado (credenciales del Import Wizard). No toca cuentas TTLock ni propiedades ni PINs.
             </p>
             <Button
               variant="outline"
               className="rounded-xl font-bold border-slate-200 text-slate-500 hover:bg-slate-50 h-11 px-6"
               onClick={() => {
-                if (confirm("¿Limpiar caché local de dispositivos, PINs e iCals?")) {
+                if (confirm("¿Limpiar caché local heredado?")) {
                   localStorage.removeItem("stayhost_smart_devices");
                   localStorage.removeItem("stayhost_pins");
                   localStorage.removeItem("stayhost_ical_configs");
@@ -1201,17 +1381,16 @@ export default function SmartDevicesPanel() {
         </div>
       )}
 
-      {/* ═══════════════════════════════════════════════════════════════════ */}
-      {/* IMPORT WIZARD (MODAL) — extraído a smart-devices/ImportWizardDialog */}
-      {/* ═══════════════════════════════════════════════════════════════════ */}
+      {/* Import wizard modal (legacy path, keeps working with its own creds) */}
       <ImportWizardDialog
         open={showImportWizard}
         onOpenChange={setShowImportWizard}
         integrations={integrations}
         setIntegrations={setIntegrations}
-        properties={properties}
-        onDevicesImported={(newDevices) => setDevices((prev) => [...prev, ...newDevices])}
+        properties={properties.map((p) => ({ id: p.id, name: p.name }))}
+        onDevicesImported={() => { void refreshAll(); }}
       />
+
     </div>
   );
 }

@@ -50,6 +50,8 @@ export async function GET() {
 const ALLOWED_FIELDS = new Set([
   "ttlock_lock_id",
   "ttlock_account_id",
+  "ical_airbnb",
+  "ical_vrbo",
   // Add more as the UI grows; don't forget to keep migrations in sync.
 ]);
 

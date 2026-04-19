@@ -45,9 +45,26 @@ function parseIcal(text: string) {
     const phone4 = phone4Match?.[1] ?? null;
     const phone = phone4 ? `****${phone4}` : null;
 
-    // Extract booking URL from "Reservation URL: https://..." in DESCRIPTION
-    const urlInDesc = description.match(/https?:\/\/[^\s\\]+/)?.[0] ?? null;
-    const bookingUrl = urlField || urlInDesc || null;
+    // Extract booking URL from "Reservation URL: https://..." in DESCRIPTION.
+    // iCal TEXT values can embed literal \n sequences (RFC-5545 escape for
+    // newline) and commas as delimiters. Airbnb often dumps the URL
+    // immediately followed by "\nPhone Number..." — we must stop at any of
+    // those. We also post-process Airbnb reservation URLs to truncate at the
+    // reservation code (10+ alphanumeric chars) to strip any residual garbage
+    // like "/nPhone..." that can appear when the client collapses the escape.
+    let urlInDesc = description.match(/https?:\/\/[^\s\\,<>"]+/)?.[0] ?? null;
+    if (urlInDesc) {
+      const airbnbMatch = urlInDesc.match(
+        /^(https?:\/\/[a-z.]*airbnb\.[a-z.]+\/[^?#]*\/details\/[A-Z0-9]{6,})/i
+      );
+      if (airbnbMatch) urlInDesc = airbnbMatch[1];
+    }
+    const rawUrl = urlField || urlInDesc || null;
+    // Final guard: drop anything after a literal "\n" or "/n" + capital, which
+    // Airbnb uses to start the Phone Number line.
+    const bookingUrl = rawUrl
+      ? rawUrl.replace(/(\\n|\/n[A-Z]).*$/, "")
+      : null;
 
     events.push({ uid, summary, dtstart: toDate(rawStart), dtend: toDate(rawEnd), phone, phone4, bookingUrl });
   }
