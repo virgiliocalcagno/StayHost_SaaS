@@ -1306,6 +1306,7 @@ export default function PropertiesPanel() {
               <button onClick={() => setModalTab("amenidades")} className={`flex items-center gap-1.5 px-4 py-3 text-sm font-medium border-b-2 transition-colors whitespace-nowrap ${modalTab === "amenidades" ? "border-primary text-primary" : "border-transparent text-muted-foreground hover:text-foreground"}`}><Sparkles className="h-3.5 w-3.5" />Amenidades</button>
               <button onClick={() => setModalTab("comercial")} className={`flex items-center gap-1.5 px-4 py-3 text-sm font-medium border-b-2 transition-colors whitespace-nowrap ${modalTab === "comercial" ? "border-primary text-primary" : "border-transparent text-muted-foreground hover:text-foreground"}`}><DollarSign className="h-3.5 w-3.5" />Comercial</button>
               <button onClick={() => setModalTab("operativa")} className={`flex items-center gap-1.5 px-4 py-3 text-sm font-medium border-b-2 transition-colors whitespace-nowrap ${modalTab === "operativa" ? "border-primary text-primary" : "border-transparent text-muted-foreground hover:text-foreground"}`}><ClipboardList className="h-3.5 w-3.5" />Operativa</button>
+              <button onClick={() => setModalTab("dispositivos")} className={`flex items-center gap-1.5 px-4 py-3 text-sm font-medium border-b-2 transition-colors whitespace-nowrap ${modalTab === "dispositivos" ? "border-primary text-primary" : "border-transparent text-muted-foreground hover:text-foreground"}`}><Settings className="h-3.5 w-3.5" />Dispositivos</button>
             </div>
             )}
 
