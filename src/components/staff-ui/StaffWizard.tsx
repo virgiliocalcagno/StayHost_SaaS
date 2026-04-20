@@ -19,21 +19,59 @@ import {
   Box,
   Camera,
   Image as ImageIcon,
+  AlertTriangle,
+  Plus,
+  Trash2,
+  Wrench,
 } from "lucide-react";
 import { CleaningTask, getPriorityInfo } from "@/types/staff";
+import {
+  MAINTENANCE_CATEGORY_LABELS,
+  MAINTENANCE_SEVERITY_LABELS,
+  type MaintenanceCategory,
+  type MaintenanceSeverity,
+} from "@/types/maintenance";
+
+export interface IssueDraft {
+  localId: string;
+  title: string;
+  category: MaintenanceCategory;
+  severity: MaintenanceSeverity;
+  description: string;
+  photos: string[];
+}
 
 export interface StaffWizardProps {
   task: CleaningTask;
   activeCriteria: string[];
   onClose: () => void;
-  onSubmit: (taskId: string, photos: { category: string; url: string }[], notes: string) => void;
+  onSubmit: (
+    taskId: string,
+    photos: { category: string; url: string }[],
+    notes: string,
+    issues: IssueDraft[]
+  ) => void;
   onToggleChecklist?: (taskId: string, itemId: string) => void;
 }
+
+const SEVERITY_COLORS: Record<MaintenanceSeverity, string> = {
+  low: "bg-slate-100 text-slate-700 border-slate-200",
+  medium: "bg-amber-100 text-amber-800 border-amber-200",
+  high: "bg-orange-100 text-orange-800 border-orange-200",
+  critical: "bg-rose-100 text-rose-800 border-rose-200",
+};
 
 export function StaffWizard({ task, activeCriteria, onClose, onSubmit, onToggleChecklist }: StaffWizardProps) {
   const [wizardStep, setWizardStep] = useState(1);
   const [tempPhotos, setTempPhotos] = useState<{ category: string; url: string }[]>([]);
   const [notes, setNotes] = useState("");
+  const [issues, setIssues] = useState<IssueDraft[]>([]);
+  const [showIssueForm, setShowIssueForm] = useState(false);
+  const [draftTitle, setDraftTitle] = useState("");
+  const [draftCategory, setDraftCategory] = useState<MaintenanceCategory>("other");
+  const [draftSeverity, setDraftSeverity] = useState<MaintenanceSeverity>("medium");
+  const [draftDescription, setDraftDescription] = useState("");
+  const [draftPhotos, setDraftPhotos] = useState<string[]>([]);
   // Estado local para checklist (si no se pasa handler externo, maneja el estado internamente)
   const [localChecklist, setLocalChecklist] = useState(task.checklistItems || []);
 
@@ -63,7 +101,42 @@ export function StaffWizard({ task, activeCriteria, onClose, onSubmit, onToggleC
   };
 
   const handleSubmitTask = () => {
-    onSubmit(task.id, tempPhotos, notes);
+    onSubmit(task.id, tempPhotos, notes, issues);
+  };
+
+  const resetIssueDraft = () => {
+    setDraftTitle("");
+    setDraftCategory("other");
+    setDraftSeverity("medium");
+    setDraftDescription("");
+    setDraftPhotos([]);
+  };
+
+  const handleSaveIssue = () => {
+    if (!draftTitle.trim()) return;
+    setIssues(prev => [
+      ...prev,
+      {
+        localId: `issue-${Date.now()}-${prev.length}`,
+        title: draftTitle.trim(),
+        category: draftCategory,
+        severity: draftSeverity,
+        description: draftDescription.trim(),
+        photos: draftPhotos,
+      },
+    ]);
+    resetIssueDraft();
+    setShowIssueForm(false);
+  };
+
+  const handleRemoveIssue = (localId: string) => {
+    setIssues(prev => prev.filter(i => i.localId !== localId));
+  };
+
+  const handleAddIssuePhoto = () => {
+    // Simula subida — la app real usaría el mismo pipeline que las fotos de cierre
+    const mockUrl = "https://images.unsplash.com/photo-1581578731548-c64695cc6952?w=400&h=300&fit=crop";
+    setDraftPhotos(prev => (prev.length >= 3 ? prev : [...prev, mockUrl]));
   };
 
   return (
@@ -206,13 +279,187 @@ export function StaffWizard({ task, activeCriteria, onClose, onSubmit, onToggleC
               </div>
 
               <div className="bg-white p-6 rounded-[2rem] shadow-soft border border-slate-100">
-                 <Label className="text-sm font-bold text-slate-700 mb-3 block">¿Alguna novedad o daño?</Label>
-                 <textarea 
-                    placeholder="Escribe aquí si falta algo o hay daños..."
+                 <Label className="text-sm font-bold text-slate-700 mb-3 block">Notas generales (opcional)</Label>
+                 <textarea
+                    placeholder="Comentarios sobre la limpieza, recordatorios, etc."
                     value={notes}
                     onChange={(e) => setNotes(e.target.value)}
-                    className="w-full h-28 p-4 rounded-2xl border border-slate-100 bg-slate-50 text-sm focus:ring-2 focus:ring-primary/20 outline-none transition-all"
+                    className="w-full h-24 p-4 rounded-2xl border border-slate-100 bg-slate-50 text-sm focus:ring-2 focus:ring-primary/20 outline-none transition-all"
                  />
+                 <p className="text-[11px] text-slate-400 mt-2">
+                   Los daños o problemas físicos se reportan como tickets abajo, no aquí.
+                 </p>
+              </div>
+
+              {/* ── Reporte de problemas / tickets de mantenimiento ───────── */}
+              <div className="bg-white p-6 rounded-[2rem] shadow-soft border border-slate-100">
+                <div className="flex items-start justify-between gap-3 mb-4">
+                  <div>
+                    <h4 className="text-base font-bold text-slate-800 flex items-center gap-2">
+                      <div className="h-8 w-8 rounded-xl bg-rose-100 flex items-center justify-center">
+                        <Wrench className="h-4 w-4 text-rose-600" />
+                      </div>
+                      Reportar problemas
+                    </h4>
+                    <p className="text-xs text-slate-500 mt-1">
+                      Daños, faltantes o averías. No bloquea el cierre.
+                    </p>
+                  </div>
+                  {issues.length > 0 && (
+                    <Badge className="bg-rose-100 text-rose-700 border-none font-bold">
+                      {issues.length}
+                    </Badge>
+                  )}
+                </div>
+
+                {issues.length > 0 && (
+                  <div className="space-y-2 mb-4">
+                    {issues.map((i) => (
+                      <div
+                        key={i.localId}
+                        className="p-3 rounded-2xl border border-slate-100 bg-slate-50 flex items-start gap-3"
+                      >
+                        <div className="h-9 w-9 rounded-xl bg-white shadow-sm flex items-center justify-center flex-shrink-0">
+                          <AlertTriangle className="h-4 w-4 text-rose-500" />
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm font-bold text-slate-700 truncate">{i.title}</p>
+                          <div className="flex items-center gap-2 mt-1">
+                            <span className="text-[10px] text-slate-500 font-semibold uppercase tracking-wide">
+                              {MAINTENANCE_CATEGORY_LABELS[i.category]}
+                            </span>
+                            <span className={cn(
+                              "text-[10px] px-2 py-0.5 rounded-full border font-bold uppercase tracking-wide",
+                              SEVERITY_COLORS[i.severity]
+                            )}>
+                              {MAINTENANCE_SEVERITY_LABELS[i.severity]}
+                            </span>
+                            {i.photos.length > 0 && (
+                              <span className="text-[10px] text-slate-400 font-semibold">
+                                {i.photos.length} foto{i.photos.length > 1 ? "s" : ""}
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          onClick={() => handleRemoveIssue(i.localId)}
+                          className="h-8 w-8 rounded-full text-slate-400 hover:text-rose-600 hover:bg-rose-50"
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </Button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {!showIssueForm ? (
+                  <Button
+                    variant="outline"
+                    onClick={() => setShowIssueForm(true)}
+                    className="w-full h-12 rounded-2xl border-dashed border-slate-300 text-slate-600 font-bold"
+                  >
+                    <Plus className="h-4 w-4 mr-2" /> Agregar reporte
+                  </Button>
+                ) : (
+                  <div className="space-y-3 p-4 rounded-2xl border border-rose-100 bg-rose-50/40">
+                    <div>
+                      <Label className="text-[11px] font-bold text-slate-600 uppercase tracking-wide mb-1 block">
+                        Título
+                      </Label>
+                      <input
+                        type="text"
+                        placeholder="Ej: Grifo de cocina gotea"
+                        value={draftTitle}
+                        onChange={(e) => setDraftTitle(e.target.value)}
+                        className="w-full h-10 px-3 rounded-xl border border-slate-200 bg-white text-sm focus:ring-2 focus:ring-primary/20 outline-none"
+                      />
+                    </div>
+                    <div className="grid grid-cols-2 gap-2">
+                      <div>
+                        <Label className="text-[11px] font-bold text-slate-600 uppercase tracking-wide mb-1 block">
+                          Categoría
+                        </Label>
+                        <select
+                          value={draftCategory}
+                          onChange={(e) => setDraftCategory(e.target.value as MaintenanceCategory)}
+                          className="w-full h-10 px-3 rounded-xl border border-slate-200 bg-white text-sm focus:ring-2 focus:ring-primary/20 outline-none"
+                        >
+                          {(Object.keys(MAINTENANCE_CATEGORY_LABELS) as MaintenanceCategory[]).map((c) => (
+                            <option key={c} value={c}>{MAINTENANCE_CATEGORY_LABELS[c]}</option>
+                          ))}
+                        </select>
+                      </div>
+                      <div>
+                        <Label className="text-[11px] font-bold text-slate-600 uppercase tracking-wide mb-1 block">
+                          Severidad
+                        </Label>
+                        <select
+                          value={draftSeverity}
+                          onChange={(e) => setDraftSeverity(e.target.value as MaintenanceSeverity)}
+                          className="w-full h-10 px-3 rounded-xl border border-slate-200 bg-white text-sm focus:ring-2 focus:ring-primary/20 outline-none"
+                        >
+                          {(Object.keys(MAINTENANCE_SEVERITY_LABELS) as MaintenanceSeverity[]).map((s) => (
+                            <option key={s} value={s}>{MAINTENANCE_SEVERITY_LABELS[s]}</option>
+                          ))}
+                        </select>
+                      </div>
+                    </div>
+                    <div>
+                      <Label className="text-[11px] font-bold text-slate-600 uppercase tracking-wide mb-1 block">
+                        Descripción (opcional)
+                      </Label>
+                      <textarea
+                        placeholder="Detalles, ubicación, etc."
+                        value={draftDescription}
+                        onChange={(e) => setDraftDescription(e.target.value)}
+                        className="w-full h-16 p-3 rounded-xl border border-slate-200 bg-white text-sm focus:ring-2 focus:ring-primary/20 outline-none"
+                      />
+                    </div>
+                    <div>
+                      <Label className="text-[11px] font-bold text-slate-600 uppercase tracking-wide mb-1 block">
+                        Fotos ({draftPhotos.length}/3)
+                      </Label>
+                      <div className="flex gap-2 flex-wrap">
+                        {draftPhotos.map((url, idx) => (
+                          <img
+                            key={idx}
+                            src={url}
+                            className="h-12 w-12 rounded-xl object-cover border-2 border-white shadow-sm"
+                            alt={`Evidencia ${idx + 1}`}
+                          />
+                        ))}
+                        {draftPhotos.length < 3 && (
+                          <Button
+                            variant="outline"
+                            size="icon"
+                            onClick={handleAddIssuePhoto}
+                            className="h-12 w-12 rounded-xl border-dashed"
+                          >
+                            <Camera className="h-4 w-4" />
+                          </Button>
+                        )}
+                      </div>
+                    </div>
+                    <div className="flex gap-2 pt-1">
+                      <Button
+                        variant="outline"
+                        onClick={() => { resetIssueDraft(); setShowIssueForm(false); }}
+                        className="flex-1 h-10 rounded-xl text-slate-600 font-bold"
+                      >
+                        Cancelar
+                      </Button>
+                      <Button
+                        disabled={!draftTitle.trim()}
+                        onClick={handleSaveIssue}
+                        className="flex-1 h-10 rounded-xl bg-rose-600 hover:bg-rose-700 text-white font-bold disabled:opacity-50"
+                      >
+                        Guardar reporte
+                      </Button>
+                    </div>
+                  </div>
+                )}
               </div>
 
               <div className="flex gap-4">

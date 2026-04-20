@@ -20,6 +20,7 @@ import TeamPanel from "@/components/dashboard/TeamPanel";
 import CheckInsPanel from "@/components/dashboard/CheckInsPanel";
 import AccountsPanel from "@/components/dashboard/AccountsPanel";
 import KeysPanel from "@/components/dashboard/KeysPanel";
+import MaintenancePanel from "@/components/dashboard/MaintenancePanel";
 import ReportsPanel from "@/components/dashboard/ReportsPanel";
 import DocumentsPanel from "@/components/dashboard/DocumentsPanel";
 import SettingsPanel from "@/components/dashboard/SettingsPanel";
@@ -45,6 +46,7 @@ type PanelType =
   | "check-ins"
   | "accounts"
   | "keys"
+  | "maintenance"
   | "reports"
   | "documents"
   | "settings"
@@ -156,6 +158,8 @@ function DashboardContent() {
         return <AccountsPanel />;
       case "keys":
         return <KeysPanel />;
+      case "maintenance":
+        return <MaintenancePanel />;
       case "reports":
         return <ReportsPanel />;
       case "documents":
