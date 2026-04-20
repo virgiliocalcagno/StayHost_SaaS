@@ -651,10 +651,22 @@ export default function CheckInsPanel() {
                 id: string; guest: string; phone: string | null; phone4: string | null;
                 start: string; end: string; status: string; channel: string;
                 bookingUrl: string | null; channelCode: string | null; phoneLast4: string | null;
+                sourceUid: string | null;
               }>;
             }>;
           };
           const wifi = JSON.parse(localStorage.getItem("stayhost_wifi_configs") ?? "[]") as WifiConfig[];
+
+          // Dedupe reforzado: además de usedRefs, construimos un índice por
+          // (propertyId + start + end) desde los apiRecords. Cubre el caso
+          // donde Source 2 (legacy ical-localStorage) creó el record con
+          // bookingRef = "ical-<uid>" y ahora Source 3 lo revisita con la
+          // UUID de bookings. El ref no matchea pero las fechas sí → skip.
+          const existingByPropDates = new Set(
+            apiRecords
+              .filter(r => r.propertyId && r.checkin && r.checkout)
+              .map(r => `${r.propertyId}|${r.checkin}|${r.checkout}`)
+          );
 
           for (const prop of propsWithBookings ?? []) {
             const w = wifi.find(x => x.propertyId === prop.id);
@@ -663,10 +675,15 @@ export default function CheckInsPanel() {
 
             for (const b of prop.bookings ?? []) {
               if (b.status !== "confirmed") continue;
-              // usedRefs tiene IDs de checkin_records. Acá comparamos con el
-              // booking.id (UUID de la tabla bookings). Si ya se creó un
-              // checkin_record para esa booking, lo saltamos.
+
+              // Dedupe por UUID directo (Source 3 previa)
               if (usedRefs.has(b.id)) continue;
+
+              // Dedupe por ref legacy "ical-<uid>" (Source 2 previa)
+              if (b.sourceUid && usedRefs.has(`ical-${b.sourceUid}`)) continue;
+
+              // Dedupe por fechas+propiedad (cubre otros formatos de ref)
+              if (existingByPropDates.has(`${prop.id}|${b.start}|${b.end}`)) continue;
 
               // Preferimos phone_last4 del iCal (Airbnb) si existe; sino de
               // guest_phone. Sin 4 dígitos no podemos sincronizar (el wizard
