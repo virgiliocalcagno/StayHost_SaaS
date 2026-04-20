@@ -18,7 +18,7 @@
  * transitions (ID validation, electricity payment, access granted).
  */
 
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, useRef } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -758,11 +758,18 @@ export default function CheckInsPanel() {
     }
   }, [buildCandidate, properties, refreshRecords, upsellsByProperty]);
 
-  // Run auto-sync on mount (quiet)
+  // Run auto-sync on mount (quiet). OJO: el efecto se disparaba en cada
+  // cambio de `properties` (que arranca [] y luego se completa con la API),
+  // ejecutando autoSync 2 veces en paralelo y metiendo duplicados en la BD.
+  // Ahora corre una sola vez cuando properties está cargado y usamos un
+  // ref-guard para evitar re-entradas.
+  const hasAutoSynced = useRef(false);
   useEffect(() => {
-    if (properties.length >= 0) void autoSync(true);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [properties]);
+    if (hasAutoSynced.current) return;
+    if (properties.length === 0) return;  // esperar a que las props carguen
+    hasAutoSynced.current = true;
+    void autoSync(true);
+  }, [properties, autoSync]);
 
   // ─── Manual create ──────────────────────────────────────────────────────────
 
