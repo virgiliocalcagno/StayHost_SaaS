@@ -1188,120 +1188,94 @@ export default function SmartDevicesPanel() {
       {activeTab === "ical" && (
         <div className="grid lg:grid-cols-3 gap-6">
           <div className="lg:col-span-2 space-y-5">
-            <div className="flex items-start justify-between">
-              <div>
-                <h3 className="font-bold">Feeds iCal por Propiedad</h3>
-                <p className="text-sm text-muted-foreground">Airbnb y VRBO incluyen los últimos 4 dígitos del teléfono → se usan como PIN automático</p>
-              </div>
-              <Button
-                className="gradient-gold text-primary-foreground gap-2 rounded-xl text-xs"
-                onClick={() => { setIcalError(null); setShowIcalForm(true); }}
-              >
-                <Plus className="h-3.5 w-3.5" /> Agregar feed
-              </Button>
+            <div>
+              <h3 className="font-bold">Feeds iCal por Propiedad</h3>
+              <p className="text-sm text-muted-foreground">Se heredan automáticamente del iCal configurado en cada propiedad (Airbnb / VRBO)</p>
             </div>
 
-            {/* Add iCal form */}
-            {showIcalForm && (
-              <Card className="rounded-2xl border-primary/20 bg-primary/5">
-                <CardContent className="p-5 space-y-4">
-                  <h4 className="font-bold text-sm flex items-center gap-2"><Link2 className="h-4 w-4 text-primary" /> Nuevo Feed iCal</h4>
-                  <div className="grid grid-cols-2 gap-4">
-                    <div className="space-y-1.5">
-                      <Label className="text-xs font-black uppercase tracking-wider text-slate-500">Propiedad</Label>
-                      <Select value={icalForm.propertyId} onValueChange={(v) => setIcalForm((f) => ({ ...f, propertyId: v }))}>
-                        <SelectTrigger className="rounded-xl"><SelectValue placeholder="Seleccionar..." /></SelectTrigger>
-                        <SelectContent>
-                          {properties.map((p) => <SelectItem key={p.id} value={p.id}>{p.name}</SelectItem>)}
-                        </SelectContent>
-                      </Select>
-                    </div>
-                    <div className="space-y-1.5">
-                      <Label className="text-xs font-black uppercase tracking-wider text-slate-500">Canal</Label>
-                      <Select value={icalForm.channel} onValueChange={(v) => setIcalForm((f) => ({ ...f, channel: v as "airbnb" | "vrbo" }))}>
-                        <SelectTrigger className="rounded-xl"><SelectValue /></SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="airbnb">Airbnb</SelectItem>
-                          <SelectItem value="vrbo">VRBO</SelectItem>
-                        </SelectContent>
-                      </Select>
-                    </div>
-                    <div className="space-y-1.5 col-span-2">
-                      <Label className="text-xs font-black uppercase tracking-wider text-slate-500">URL del Feed iCal</Label>
-                      <Input
-                        placeholder="https://www.airbnb.com/calendar/ical/XXXXX.ics?c=..."
-                        value={icalForm.url}
-                        onChange={(e) => setIcalForm((f) => ({ ...f, url: e.target.value }))}
-                        className="rounded-xl font-mono text-xs"
-                      />
-                    </div>
-                  </div>
-                  {icalError && <p className="text-xs text-red-600 font-bold">{icalError}</p>}
-                  <div className="flex gap-2 pt-2">
-                    <Button variant="outline" className="flex-1 rounded-xl" onClick={() => setShowIcalForm(false)}>Cancelar</Button>
-                    <Button
-                      className="flex-1 gradient-gold text-primary-foreground rounded-xl border-none"
-                      onClick={handleSaveIcal}
-                      disabled={icalSaving || !icalForm.url || !icalForm.propertyId}
-                    >
-                      {icalSaving ? <Loader2 className="h-4 w-4 animate-spin" /> : "Guardar Feed"}
-                    </Button>
-                  </div>
-                </CardContent>
-              </Card>
-            )}
-
-            {/* iCal config cards */}
-            {icalConfigs.length === 0 && !showIcalForm && (
+            {/* Show ALL properties with their iCal status */}
+            {properties.length === 0 && (
               <Card className="border-dashed rounded-2xl">
                 <CardContent className="py-16 text-center text-muted-foreground space-y-3">
                   <Calendar className="h-12 w-12 mx-auto opacity-20" />
-                  <p className="font-bold">Sin feeds iCal configurados.</p>
-                  <p className="text-sm max-w-sm mx-auto">Agrega la URL del iCal de Airbnb o VRBO para que los PINs se generen automáticamente con los últimos 4 dígitos del teléfono del huésped.</p>
-                  <Button size="sm" className="gradient-gold text-primary-foreground rounded-xl border-none mx-auto" onClick={() => setShowIcalForm(true)}>
-                    <Plus className="h-3.5 w-3.5 mr-1" /> Agregar primer feed
-                  </Button>
+                  <p className="font-bold">No hay propiedades registradas.</p>
+                  <p className="text-sm">Agrega una propiedad con su URL de iCal en el panel de Propiedades.</p>
                 </CardContent>
               </Card>
             )}
 
-            {icalConfigs.map((config) => (
-              <Card key={config.id} className="rounded-2xl border-gray-100 shadow-sm overflow-hidden">
-                <CardContent className="p-5">
-                  <div className="flex items-start justify-between mb-4 gap-3">
-                    <div className="flex items-center gap-3 min-w-0">
-                      <div className={cn("w-8 h-8 rounded-xl flex items-center justify-center text-white text-[10px] font-black shrink-0", CHANNEL_COLORS[config.channel] ?? "bg-slate-400")}>
-                        {config.channel.slice(0, 2).toUpperCase()}
-                      </div>
-                      <div className="min-w-0">
-                        <h4 className="font-bold text-sm truncate">{CHANNEL_LABELS[config.channel]} · {config.propertyName}</h4>
-                        <p className="text-[10px] text-muted-foreground font-mono truncate max-w-[360px]">{config.url}</p>
-                      </div>
+            {properties.map((p) => {
+              const airbnbConfig = icalConfigs.find((c) => c.propertyId === p.id && c.channel === "airbnb");
+              const vrboConfig = icalConfigs.find((c) => c.propertyId === p.id && c.channel === "vrbo");
+              const hasAny = !!airbnbConfig || !!vrboConfig;
+
+              return (
+                <Card key={p.id} className={cn("rounded-2xl shadow-sm overflow-hidden", hasAny ? "border-gray-100" : "border-dashed border-amber-200")}>
+                  <CardContent className="p-5 space-y-3">
+                    <div className="flex items-center justify-between">
+                      <h4 className="font-bold text-sm">{p.name}</h4>
+                      {!hasAny && (
+                        <span className="text-[10px] font-bold text-amber-600 bg-amber-50 px-2 py-0.5 rounded-full">Sin iCal — configúralo en Propiedades</span>
+                      )}
                     </div>
-                    <div className="flex items-center gap-2 shrink-0">
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        className="rounded-xl text-xs gap-1.5 h-8"
-                        onClick={() => handleSyncIcal(config)}
-                        disabled={syncingIcalId === config.id}
-                      >
-                        <RefreshCw className={cn("h-3 w-3", syncingIcalId === config.id && "animate-spin")} />
-                        {syncingIcalId === config.id ? "Sincronizando..." : "Sincronizar"}
-                      </Button>
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        className="rounded-xl text-xs gap-1.5 h-8 border-red-200 text-red-600 hover:bg-red-50"
-                        onClick={() => handleRemoveIcal(config)}
-                      >
-                        <X className="h-3 w-3" /> Quitar
-                      </Button>
-                    </div>
-                  </div>
-                </CardContent>
-              </Card>
-            ))}
+
+                    {/* Airbnb feed */}
+                    {airbnbConfig ? (
+                      <div className="flex items-center justify-between gap-3 p-3 rounded-xl bg-rose-50/50 border border-rose-100">
+                        <div className="flex items-center gap-3 min-w-0">
+                          <div className="w-7 h-7 rounded-lg bg-rose-500 flex items-center justify-center text-white text-[10px] font-black shrink-0">AI</div>
+                          <div className="min-w-0">
+                            <p className="text-xs font-semibold">Airbnb</p>
+                            <p className="text-[10px] text-muted-foreground font-mono truncate max-w-[320px]">{airbnbConfig.url}</p>
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-1.5 shrink-0">
+                          <Button size="sm" variant="outline" className="rounded-lg text-[10px] h-7 px-2 gap-1" onClick={() => handleSyncIcal(airbnbConfig)} disabled={syncingIcalId === airbnbConfig.id}>
+                            <RefreshCw className={cn("h-3 w-3", syncingIcalId === airbnbConfig.id && "animate-spin")} />
+                            Sync
+                          </Button>
+                          <Button size="sm" variant="outline" className="rounded-lg text-[10px] h-7 px-2 border-red-200 text-red-500 hover:bg-red-50" onClick={() => handleRemoveIcal(airbnbConfig)}>
+                            <X className="h-3 w-3" />
+                          </Button>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="flex items-center gap-3 p-3 rounded-xl bg-gray-50 border border-dashed border-gray-200">
+                        <div className="w-7 h-7 rounded-lg bg-gray-300 flex items-center justify-center text-white text-[10px] font-black shrink-0">AI</div>
+                        <p className="text-xs text-muted-foreground">Airbnb — sin iCal configurado</p>
+                      </div>
+                    )}
+
+                    {/* VRBO feed */}
+                    {vrboConfig ? (
+                      <div className="flex items-center justify-between gap-3 p-3 rounded-xl bg-blue-50/50 border border-blue-100">
+                        <div className="flex items-center gap-3 min-w-0">
+                          <div className="w-7 h-7 rounded-lg bg-blue-500 flex items-center justify-center text-white text-[10px] font-black shrink-0">VR</div>
+                          <div className="min-w-0">
+                            <p className="text-xs font-semibold">VRBO</p>
+                            <p className="text-[10px] text-muted-foreground font-mono truncate max-w-[320px]">{vrboConfig.url}</p>
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-1.5 shrink-0">
+                          <Button size="sm" variant="outline" className="rounded-lg text-[10px] h-7 px-2 gap-1" onClick={() => handleSyncIcal(vrboConfig)} disabled={syncingIcalId === vrboConfig.id}>
+                            <RefreshCw className={cn("h-3 w-3", syncingIcalId === vrboConfig.id && "animate-spin")} />
+                            Sync
+                          </Button>
+                          <Button size="sm" variant="outline" className="rounded-lg text-[10px] h-7 px-2 border-red-200 text-red-500 hover:bg-red-50" onClick={() => handleRemoveIcal(vrboConfig)}>
+                            <X className="h-3 w-3" />
+                          </Button>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="flex items-center gap-3 p-3 rounded-xl bg-gray-50 border border-dashed border-gray-200">
+                        <div className="w-7 h-7 rounded-lg bg-gray-300 flex items-center justify-center text-white text-[10px] font-black shrink-0">VR</div>
+                        <p className="text-xs text-muted-foreground">VRBO — sin iCal configurado</p>
+                      </div>
+                    )}
+                  </CardContent>
+                </Card>
+              );
+            })}
           </div>
 
           {/* Sidebar */}
