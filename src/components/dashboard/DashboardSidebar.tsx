@@ -33,6 +33,7 @@ import {
   ShieldCheck,
   ChevronDown,
   Zap,
+  Wrench,
 } from "lucide-react";
 
 import { useState, useEffect } from "react";
@@ -61,6 +62,7 @@ type PanelType =
   | "check-ins"
   | "accounts"
   | "keys"
+  | "maintenance"
   | "reports"
   | "documents"
   | "settings"
@@ -91,6 +93,7 @@ const modulesMenuItems = [
   { id: "check-ins", label: "Check-ins", icon: LogIn },
   { id: "accounts", label: "Cuentas", icon: User },
   { id: "keys", label: "Llaves", icon: Key },
+  { id: "maintenance", label: "Mantenimiento", icon: Wrench },
   { id: "reports", label: "Reportes", icon: BarChart2 },
   { id: "documents", label: "Documentos", icon: Folder },
 ];

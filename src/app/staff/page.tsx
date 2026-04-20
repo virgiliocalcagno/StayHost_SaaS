@@ -657,20 +657,45 @@ export default function StaffPage() {
       activeCriteria={activeCriteria}
       onClose={() => setScreen("home")}
       onToggleChecklist={toggleChecklistItem}
-      onSubmit={(taskId, photos, notes) => {
+      onSubmit={(taskId, photos, notes, issues) => {
         setTasks(prev =>
           prev.map(t =>
             t.id === taskId
-              ? { 
-                  ...t, 
-                  status: "completed", 
-                  isWaitingValidation: true, 
+              ? {
+                  ...t,
+                  status: "completed",
+                  isWaitingValidation: true,
                   closurePhotos: photos,
-                  incidentReport: notes 
+                  incidentReport: notes,
+                  reportedIssues: issues.map(i => i.title),
                 }
               : t
           )
         );
+        // Crear tickets de mantenimiento en background. No bloquea el cierre
+        // de la tarea — si la red falla, el limpiador puede volver a reportar
+        // desde el panel admin. El `propertyId` viene del CleaningTask.
+        const task = tasks.find(t => t.id === taskId);
+        if (task && issues.length) {
+          const propertyId = (task as unknown as { propertyId: string }).propertyId;
+          issues.forEach(i => {
+            fetch("/api/maintenance-tickets", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                propertyId,
+                cleaningTaskId: taskId,
+                reportedById: session?.memberId ?? null,
+                reportedByName: session?.name ?? null,
+                title: i.title,
+                description: i.description || null,
+                category: i.category,
+                severity: i.severity,
+                photos: i.photos,
+              }),
+            }).catch(() => {/* silencioso: no bloqueamos al limpiador */});
+          });
+        }
         setScreen("home");
         setActiveTaskId(null);
         setWizardStep(1);

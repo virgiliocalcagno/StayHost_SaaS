@@ -34,6 +34,7 @@ type PanelType =
   | "check-ins"
   | "accounts"
   | "keys"
+  | "maintenance"
   | "reports"
   | "documents"
   | "settings"
@@ -62,6 +63,7 @@ const panelTitles: Record<PanelType, string> = {
   "check-ins": "Check-ins",
   accounts: "Cuentas y Listados",
   keys: "Llaves",
+  maintenance: "Mantenimiento",
   reports: "Reportes",
   documents: "Documentos",
   settings: "Configuración",
