@@ -24,6 +24,7 @@ export type ModuleId =
   | "check-ins"
   | "accounts"
   | "keys"
+  | "maintenance"
   | "reports"
   | "documents";
 
@@ -68,11 +69,11 @@ const ModuleContext = createContext<ModuleContextType | undefined>(undefined);
 // ─── Plan definitions ─────────────────────────────────────────────────────────
 export const SAAS_PLANS: Record<string, ModuleId[]> = {
   starter: ["properties", "calendar", "bookings", "accounts"],
-  growth: ["properties", "calendar", "bookings", "accounts", "messages", "cleaning", "pricing", "reports"],
+  growth: ["properties", "calendar", "bookings", "accounts", "messages", "cleaning", "pricing", "reports", "maintenance"],
   master: [
     "properties", "calendar", "bookings", "accounts", "messages",
     "cleaning", "pricing", "reports", "devices", "upsells",
-    "agreements", "team", "check-ins", "keys", "documents",
+    "agreements", "team", "check-ins", "keys", "maintenance", "documents",
   ],
 };
 
@@ -98,6 +99,7 @@ export const BUILTIN_PLUGINS: PluginManifest[] = [
   { id: "team",       name: "Equipo",                description: "Roles, permisos y gestión de personal.",          version: "1.0", category: "operations",    planTier: "master",  enabled: true, builtIn: true, icon: "Users" },
   { id: "check-ins",  name: "Check-ins Digitales",   description: "Verificación de identidad y acceso QR.",          version: "2.0", category: "operations",    planTier: "master",  enabled: true, builtIn: true, icon: "LogIn" },
   { id: "keys",       name: "Llaves",                description: "Gestión de llaves físicas y códigos.",             version: "1.0", category: "operations",    planTier: "master",  enabled: true, builtIn: true, icon: "Key" },
+  { id: "maintenance", name: "Mantenimiento",        description: "Tickets de daños y averías, independientes de limpieza.", version: "1.0", category: "operations", planTier: "growth", enabled: true, builtIn: true, icon: "Wrench" },
   { id: "documents",  name: "Documentos",            description: "Almacenamiento de contratos y archivos.",          version: "1.0", category: "compliance",    planTier: "master",  enabled: true, builtIn: true, icon: "Folder" },
 ];
 
@@ -105,7 +107,7 @@ const DEFAULT_MODULES: Record<ModuleId, boolean> = {
   properties: true, calendar: true, messages: true, cleaning: true,
   pricing: true, bookings: true, devices: true, upsells: true,
   agreements: true, team: true, "check-ins": true, accounts: true,
-  keys: true, reports: true, documents: true,
+  keys: true, maintenance: true, reports: true, documents: true,
 };
 
 // ─── Provider ─────────────────────────────────────────────────────────────────
@@ -201,7 +203,12 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
     // 2) Config de módulos y plugins — se mantienen en localStorage.
     try {
       const saved = localStorage.getItem("stayhost_modules_config");
-      if (saved) setModules(JSON.parse(saved));
+      if (saved) {
+        // Merge con DEFAULT_MODULES: módulos nuevos agregados en código
+        // heredan su default (normalmente true) sin requerir que el usuario
+        // limpie localStorage.
+        setModules({ ...DEFAULT_MODULES, ...JSON.parse(saved) });
+      }
     } catch {}
     try {
       const saved = localStorage.getItem("stayhost_plugin_registry");
