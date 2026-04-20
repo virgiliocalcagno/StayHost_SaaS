@@ -126,19 +126,22 @@ export async function POST(req: NextRequest) {
     }
     const bookingId = (data as { id: string }).id;
 
-    // Auto-create PIN if guest has phone and property has a TTLock lock
+    // Auto-create PIN if guest has phone
     if (!isBlock && guestPhone) {
       try {
         const last4 = String(guestPhone).replace(/\D/g, "").slice(-4);
         if (last4.length === 4) {
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          const { data: prop } = await (supabase.from("properties") as any)
-            .select("ttlock_lock_id")
+          const { data: prop } = await (supabaseAdmin.from("properties") as any)
+            .select("ttlock_lock_id, check_in_time, check_out_time")
             .eq("id", propertyId)
             .single();
 
+          const ciTime = prop?.check_in_time ?? "14:00";
+          const coTime = prop?.check_out_time ?? "12:00";
+
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          await (supabase.from("access_pins") as any).insert({
+          await (supabaseAdmin.from("access_pins") as any).insert({
             tenant_id: tenantId,
             property_id: propertyId,
             booking_id: bookingId,
@@ -149,8 +152,8 @@ export async function POST(req: NextRequest) {
             source: source === "block" ? "manual" : "direct_booking",
             status: "active",
             delivery_status: "pending",
-            valid_from: new Date(checkIn + "T14:00:00").toISOString(),
-            valid_to: new Date(checkOut + "T12:00:00").toISOString(),
+            valid_from: new Date(`${checkIn}T${ciTime}:00`).toISOString(),
+            valid_to: new Date(`${checkOut}T${coTime}:00`).toISOString(),
           });
         }
       } catch (pinErr) {
@@ -242,10 +245,19 @@ export async function PATCH(req: NextRequest) {
       // Update associated PIN validity if dates changed
       try {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const { data: prop } = await (supabaseAdmin.from("properties") as any)
+          .select("check_in_time, check_out_time")
+          .eq("id", current.property_id)
+          .single();
+
+        const ciTime = prop?.check_in_time ?? "14:00";
+        const coTime = prop?.check_out_time ?? "12:00";
+
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
         await (supabaseAdmin.from("access_pins") as any)
           .update({
-            valid_from: new Date(newCheckIn + "T14:00:00").toISOString(),
-            valid_to: new Date(newCheckOut + "T12:00:00").toISOString(),
+            valid_from: new Date(`${newCheckIn}T${ciTime}:00`).toISOString(),
+            valid_to: new Date(`${newCheckOut}T${coTime}:00`).toISOString(),
           })
           .eq("booking_id", bookingId);
       } catch {}

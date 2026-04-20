@@ -42,6 +42,8 @@ export async function POST(req: NextRequest) {
           wifi_password: property.wifiPassword ?? null,
           electricity_enabled: property.electricityEnabled ?? false,
           electricity_rate: property.electricityRate ?? 0,
+          check_in_time: property.checkInTime ?? "14:00",
+          check_out_time: property.checkOutTime ?? "12:00",
           ttlock_lock_id: property.ttlockLockId ?? null,
           property_type: property.type ?? "apartment",
           price: property.price ?? 0,

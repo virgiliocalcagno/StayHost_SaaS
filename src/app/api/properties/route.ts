@@ -18,6 +18,7 @@ export async function GET() {
       ical_airbnb, ical_vrbo, ical_token,
       wifi_name, wifi_password,
       electricity_enabled, electricity_rate,
+      check_in_time, check_out_time,
       ttlock_lock_id, ttlock_account_id,
       property_type, price, currency,
       cleaning_fee_one_day, cleaning_fee_more_days,
@@ -52,7 +53,8 @@ const ALLOWED_FIELDS = new Set([
   "ttlock_account_id",
   "ical_airbnb",
   "ical_vrbo",
-  // Add more as the UI grows; don't forget to keep migrations in sync.
+  "check_in_time",
+  "check_out_time",
 ]);
 
 export async function PATCH(req: NextRequest) {
