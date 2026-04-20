@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getAuthenticatedTenant } from "@/lib/supabase/server";
 import { supabaseAdmin } from "@/lib/supabase/admin";
+import { cascadeCancelBooking } from "@/lib/bookings/cleanup";
 
 // All three handlers read the tenant_id from the authenticated session
 // cookie. They no longer accept `tenantEmail` in the body or `?email=` in
@@ -304,14 +305,12 @@ export async function PATCH(req: NextRequest) {
 
     if (error) return NextResponse.json({ error: error.message }, { status: 500 });
 
-    // If status changed to cancelled, revoke associated PINs
+    // Cuando se cancela, limpiamos todo lo asociado: check-in records,
+    // access_pins (y en el futuro el PIN físico en TTLock). Un booking
+    // cancelado no debe tener rastros operativos — el huésped ya no puede
+    // ni hacer check-in ni abrir la puerta.
     if (patch.status === "cancelled") {
-      try {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        await (supabaseAdmin.from("access_pins") as any)
-          .update({ status: "revoked" })
-          .eq("booking_id", bookingId);
-      } catch {}
+      await cascadeCancelBooking(bookingId);
     }
 
     return NextResponse.json({ ok: true });
@@ -336,15 +335,10 @@ export async function DELETE(req: NextRequest) {
   const bookingId = req.nextUrl.searchParams.get("bookingId");
   if (!bookingId) return NextResponse.json({ error: "bookingId required" }, { status: 400 });
 
-  // Delete associated PINs first (before the booking disappears)
-  try {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    await (supabaseAdmin.from("access_pins") as any)
-      .delete()
-      .eq("booking_id", bookingId);
-  } catch (pinErr) {
-    console.error("[bookings/DELETE] PIN cleanup failed (non-fatal):", pinErr);
-  }
+  // Cleanup completo: check-in records + access_pins (y TTLock físico
+  // cuando se implemente). Corre ANTES de borrar el booking para que las
+  // rows dependientes salgan primero.
+  await cascadeCancelBooking(bookingId);
 
   const { error, count } = await supabase
     .from("bookings")

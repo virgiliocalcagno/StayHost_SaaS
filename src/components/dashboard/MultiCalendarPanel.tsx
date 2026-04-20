@@ -61,25 +61,25 @@ const generateMockBookings = () => {
 
   return [
     { id: 1, name: "Pool + Free Shuttle to Beach", channel: "airbnb", price: 125, bookings: [
-      { id: "b1", guest: "Maria Lopez", phone: null as string | null, phone4: null as string | null, numGuests: 2, totalPrice: 625, note: "" as string | null, start: getDateStr(-5), end: getDateStr(-1), status: "confirmed", channel: "airbnb" },
-      { id: "b2", guest: "Carlos Mendez", phone: null, phone4: null, numGuests: 2, totalPrice: 500, note: null, start: getDateStr(2), end: getDateStr(6), status: "pending", channel: "direct" },
-      { id: "b3", guest: "Ana Rodriguez", phone: null, phone4: null, numGuests: 2, totalPrice: 625, note: null, start: getDateStr(9), end: getDateStr(14), status: "confirmed", channel: "airbnb" },
+      { id: "b1", guest: "Maria Lopez", phone: null as string | null, phone4: null as string | null, bookingUrl: null as string | null, channelCode: null as string | null, phoneLast4: null as string | null, numGuests: 2, totalPrice: 625, note: "" as string | null, start: getDateStr(-5), end: getDateStr(-1), status: "confirmed", channel: "airbnb" },
+      { id: "b2", guest: "Carlos Mendez", phone: null, phone4: null, bookingUrl: null, channelCode: null, phoneLast4: null, numGuests: 2, totalPrice: 500, note: null, start: getDateStr(2), end: getDateStr(6), status: "pending", channel: "direct" },
+      { id: "b3", guest: "Ana Rodriguez", phone: null, phone4: null, bookingUrl: null, channelCode: null, phoneLast4: null, numGuests: 2, totalPrice: 625, note: null, start: getDateStr(9), end: getDateStr(14), status: "confirmed", channel: "airbnb" },
     ]},
     { id: 2, name: "Apartamento Centro", channel: "booking", price: 89, bookings: [
-      { id: "b4", guest: "Pedro Sanchez", phone: null, phone4: null, numGuests: 2, totalPrice: 267, note: null, start: getDateStr(0), end: getDateStr(3), status: "confirmed", channel: "booking" },
-      { id: "b5", guest: "Luisa Gomez", phone: null, phone4: null, numGuests: 2, totalPrice: 267, note: null, start: getDateStr(3), end: getDateStr(6), status: "confirmed", channel: "direct" },
+      { id: "b4", guest: "Pedro Sanchez", phone: null, phone4: null, bookingUrl: null, channelCode: null, phoneLast4: null, numGuests: 2, totalPrice: 267, note: null, start: getDateStr(0), end: getDateStr(3), status: "confirmed", channel: "booking" },
+      { id: "b5", guest: "Luisa Gomez", phone: null, phone4: null, bookingUrl: null, channelCode: null, phoneLast4: null, numGuests: 2, totalPrice: 267, note: null, start: getDateStr(3), end: getDateStr(6), status: "confirmed", channel: "direct" },
     ]},
     { id: 3, name: "Casa de Playa Sunset", channel: "vrbo", price: 210, bookings: [
-      { id: "b6", guest: "Sofia Castro", phone: null, phone4: null, numGuests: 2, totalPrice: 630, note: null, start: getDateStr(-2), end: getDateStr(1), status: "confirmed", channel: "vrbo" },
-      { id: "b7", guest: "Jorge Diaz", phone: null, phone4: null, numGuests: 2, totalPrice: 840, note: null, start: getDateStr(1), end: getDateStr(5), status: "confirmed", channel: "airbnb" },
-      { id: "b7b", guest: "Mariano Suarez", phone: null, phone4: null, numGuests: 2, totalPrice: 840, note: null, start: getDateStr(5), end: getDateStr(9), status: "pending", channel: "booking" },
+      { id: "b6", guest: "Sofia Castro", phone: null, phone4: null, bookingUrl: null, channelCode: null, phoneLast4: null, numGuests: 2, totalPrice: 630, note: null, start: getDateStr(-2), end: getDateStr(1), status: "confirmed", channel: "vrbo" },
+      { id: "b7", guest: "Jorge Diaz", phone: null, phone4: null, bookingUrl: null, channelCode: null, phoneLast4: null, numGuests: 2, totalPrice: 840, note: null, start: getDateStr(1), end: getDateStr(5), status: "confirmed", channel: "airbnb" },
+      { id: "b7b", guest: "Mariano Suarez", phone: null, phone4: null, bookingUrl: null, channelCode: null, phoneLast4: null, numGuests: 2, totalPrice: 840, note: null, start: getDateStr(5), end: getDateStr(9), status: "pending", channel: "booking" },
     ]},
     { id: 4, name: "Loft Moderno CDMX", channel: "airbnb", price: 145, bookings: [
-      { id: "b8", guest: "Roberto Jimenez", phone: null, phone4: null, numGuests: 2, totalPrice: 725, note: null, start: getDateStr(4), end: getDateStr(9), status: "pending", channel: "airbnb" },
+      { id: "b8", guest: "Roberto Jimenez", phone: null, phone4: null, bookingUrl: null, channelCode: null, phoneLast4: null, numGuests: 2, totalPrice: 725, note: null, start: getDateStr(4), end: getDateStr(9), status: "pending", channel: "airbnb" },
     ]},
     { id: 5, name: "Cabana en el Bosque", channel: "direct", price: 180, bookings: [] },
     { id: 6, name: "Penthouse Vista al Mar", channel: "booking", price: 450, bookings: [
-      { id: "b9", guest: "Fernanda Torres", phone: null, phone4: null, numGuests: 2, totalPrice: 4050, note: null, start: getDateStr(-1), end: getDateStr(8), status: "confirmed", channel: "booking" },
+      { id: "b9", guest: "Fernanda Torres", phone: null, phone4: null, bookingUrl: null, channelCode: null, phoneLast4: null, numGuests: 2, totalPrice: 4050, note: null, start: getDateStr(-1), end: getDateStr(8), status: "confirmed", channel: "booking" },
     ]},
   ];
 };
@@ -894,6 +894,49 @@ export default function MultiCalendarPanel() {
                               <Phone className="w-3 h-3 text-muted-foreground" />
                               <span>{booking.phone}</span>
                               {booking.phone4 && <Badge variant="outline" className="text-[9px] ml-auto">PIN: {booking.phone4}</Badge>}
+                            </div>
+                          )}
+
+                          {/* ── Datos de check-in: código + 4 dígitos + URL del canal ── */}
+                          {(booking.channelCode || booking.phoneLast4 || booking.bookingUrl) && (
+                            <div className="mb-3 p-2.5 rounded-lg bg-gradient-to-br from-sky-50/50 to-emerald-50/50 border border-emerald-200/60 space-y-1.5">
+                              <p className="text-[9px] uppercase tracking-widest font-bold text-emerald-700">Check-in online</p>
+                              {booking.channelCode && (
+                                <div className="flex items-center justify-between gap-2 text-[11px]">
+                                  <span className="text-muted-foreground">Código</span>
+                                  <div className="flex items-center gap-1">
+                                    <span className="font-mono font-bold tracking-wider">{booking.channelCode}</span>
+                                    <button
+                                      type="button"
+                                      onClick={() => copyChannelCode(booking.channelCode!)}
+                                      className="text-slate-400 hover:text-emerald-600 transition-colors"
+                                      title="Copiar"
+                                    >
+                                      {copiedCode ? <Check className="h-3 w-3 text-emerald-600" /> : <Copy className="h-3 w-3" />}
+                                    </button>
+                                  </div>
+                                </div>
+                              )}
+                              {booking.phoneLast4 && (
+                                <div className="flex items-center justify-between gap-2 text-[11px]">
+                                  <span className="text-muted-foreground">Auth (4 dig)</span>
+                                  <span className="font-mono font-bold">••{booking.phoneLast4}</span>
+                                </div>
+                              )}
+                              {booking.bookingUrl && (
+                                <div className="flex items-center justify-between gap-2 text-[11px]">
+                                  <span className="text-muted-foreground">URL canal</span>
+                                  <a
+                                    href={booking.bookingUrl}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="text-sky-600 hover:text-sky-800 underline truncate max-w-[120px]"
+                                    title={booking.bookingUrl}
+                                  >
+                                    ver reserva
+                                  </a>
+                                </div>
+                              )}
                             </div>
                           )}
 

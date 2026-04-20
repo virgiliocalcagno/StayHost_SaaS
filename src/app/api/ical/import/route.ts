@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getAuthenticatedTenant } from "@/lib/supabase/server";
+import { cascadeCancelBooking } from "@/lib/bookings/cleanup";
 
 // Unfold RFC-5545 line continuations before parsing
 function unfold(text: string) {
@@ -125,6 +126,7 @@ export async function POST(req: NextRequest) {
 
     let imported = 0;
     const skipped = 0;
+    let orphansCancelled = 0;
 
     for (const feed of feeds) {
       let icalText: string;
@@ -147,6 +149,13 @@ export async function POST(req: NextRequest) {
 
       const events = parseIcal(icalText);
       const channel = detectChannel(feed.url);
+
+      // Detección de orphans: bookings que estaban en la BD para este feed
+      // (source = channel) pero NO aparecen en el iCal actual → el huésped
+      // canceló en Airbnb/VRBO. Marcamos cancelled + cascade cleanup.
+      // Recolectamos los UIDs vistos durante la importación y al final
+      // comparamos.
+      const seenUids = new Set<string>();
 
       for (const ev of events) {
         // "Airbnb (Not available)", "Blocked", "Not available" = manual blocks from platform
@@ -208,10 +217,48 @@ export async function POST(req: NextRequest) {
 
         if (!error) imported++;
         else console.error("[ical/import] upsert error:", error.message);
+
+        // Registramos el UID como "visto" solo si el upsert no fallo.
+        if (!error && !isBlock) seenUids.add(ev.uid);
+      }
+
+      // Detectar orphans — bookings del canal que ya no están en el feed.
+      // Solo miramos reservas confirmadas (ignoramos bloques y canceladas).
+      try {
+        const { data: existing } = await supabase
+          .from("bookings")
+          .select("id, source_uid")
+          .eq("property_id", propertyId)
+          .eq("source", channel)
+          .eq("status", "confirmed");
+
+        const toCancel = ((existing ?? []) as Array<{ id: string; source_uid: string | null }>)
+          .filter((b) => b.source_uid && !seenUids.has(b.source_uid));
+
+        for (const orphan of toCancel) {
+          const { error: updErr } = await supabase
+            .from("bookings")
+            .update({ status: "cancelled" } as never)
+            .eq("id", orphan.id);
+          if (updErr) {
+            console.error("[ical/import] orphan cancel error:", updErr.message);
+            continue;
+          }
+          // Cascade cleanup — borra check-in records + access_pins
+          await cascadeCancelBooking(orphan.id);
+          orphansCancelled++;
+        }
+      } catch (orphanErr) {
+        console.error("[ical/import] orphan detection failed:", orphanErr);
       }
     }
 
-    return NextResponse.json({ imported, skipped, total: imported + skipped });
+    return NextResponse.json({
+      imported,
+      skipped,
+      orphansCancelled,
+      total: imported + skipped,
+    });
   } catch (err) {
     console.error("[ical/import]", err);
     return NextResponse.json({ error: "Internal error" }, { status: 500 });
