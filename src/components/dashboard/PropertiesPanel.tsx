@@ -404,12 +404,12 @@ function DevicesTabContent({ formData, setFormData }: { formData: any; setFormDa
                 <RefreshCw className="h-3.5 w-3.5 animate-spin" /> Cargando cerraduras...
               </div>
             ) : locks.length > 0 ? (
-              <Select value={formData.ttlockLockId} onValueChange={(v) => setFormData((p: any) => ({ ...p, ttlockLockId: v }))}>
+              <Select value={formData.ttlockLockId || "__none__"} onValueChange={(v) => setFormData((p: any) => ({ ...p, ttlockLockId: v === "__none__" ? "" : v }))}>
                 <SelectTrigger className="bg-white rounded-xl">
                   <SelectValue placeholder="Seleccionar cerradura..." />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="">Sin cerradura</SelectItem>
+                  <SelectItem value="__none__">Sin cerradura</SelectItem>
                   {locks.map((l) => (
                     <SelectItem key={l.lockId} value={l.lockId}>
                       {l.name} <span className="text-muted-foreground ml-1">({l.accountLabel})</span>
