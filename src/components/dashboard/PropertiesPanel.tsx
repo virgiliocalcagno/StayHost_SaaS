@@ -149,6 +149,8 @@ interface Property {
   wifiPassword?: string;
   electricityEnabled?: boolean;
   electricityRate?: number;
+  checkInTime?: string;
+  checkOutTime?: string;
   ttlockLockId?: string;
 }
 
@@ -418,6 +420,8 @@ export default function PropertiesPanel() {
           wifiPassword: p.wifi_password ?? undefined,
           electricityEnabled: p.electricity_enabled ?? false,
           electricityRate: p.electricity_rate ?? 0,
+          checkInTime: p.check_in_time ?? "14:00",
+          checkOutTime: p.check_out_time ?? "12:00",
           ttlockLockId: p.ttlock_lock_id ?? undefined,
         }));
         setProperties(fromDb);
@@ -495,6 +499,8 @@ export default function PropertiesPanel() {
     wifiPassword: "",
     electricityEnabled: false,
     electricityRate: "",
+    checkInTime: "14:00",
+    checkOutTime: "12:00",
     ttlockLockId: "",
   });
 
@@ -629,7 +635,7 @@ export default function PropertiesPanel() {
     setModalTab("propiedad");
     setCreationStep("options");
     setAirbnbImportLink("");
-    setFormData({ name: "", address: "", city: "", type: "apartment", price: "", beds: "", baths: "", maxGuests: "", airbnbUrl: "", airbnbIcal: "", bookingUrl: "", bookingIcal: "", vrboUrl: "", vrboIcal: "", directaEnabled: false, cleaningFeeOneDay: "", cleaningFeeMoreDays: "", weeklyDiscountPercent: "", energyFeePerDay: "", additionalServicesFee: "", recurringSupplies: [], autoAssignCleaner: false, cleanerPriorities: [], bedConfiguration: "", standardInstructions: "", evidenceCriteria: ["Cocina", "Habitación", "Baño"], descriptionEN: "", descriptionES: "", photoTour: [], amenitiesConfig: { popular: [], bathroom: [], bedroom: [], kitchen: [], outdoor: [] }, wifiSsid: "", wifiPassword: "", electricityEnabled: false, electricityRate: "", ttlockLockId: "" });
+    setFormData({ name: "", address: "", city: "", type: "apartment", price: "", beds: "", baths: "", maxGuests: "", airbnbUrl: "", airbnbIcal: "", bookingUrl: "", bookingIcal: "", vrboUrl: "", vrboIcal: "", directaEnabled: false, cleaningFeeOneDay: "", cleaningFeeMoreDays: "", weeklyDiscountPercent: "", energyFeePerDay: "", additionalServicesFee: "", recurringSupplies: [], autoAssignCleaner: false, cleanerPriorities: [], bedConfiguration: "", standardInstructions: "", evidenceCriteria: ["Cocina", "Habitación", "Baño"], descriptionEN: "", descriptionES: "", photoTour: [], amenitiesConfig: { popular: [], bathroom: [], bedroom: [], kitchen: [], outdoor: [] }, wifiSsid: "", wifiPassword: "", electricityEnabled: false, electricityRate: "", checkInTime: "14:00", checkOutTime: "12:00", ttlockLockId: "" });
     setShowModal(true);
   };
 
@@ -678,6 +684,8 @@ export default function PropertiesPanel() {
       wifiPassword: p.wifiPassword || "",
       electricityEnabled: p.electricityEnabled || false,
       electricityRate: p.electricityRate?.toString() || "",
+      checkInTime: p.checkInTime || "14:00",
+      checkOutTime: p.checkOutTime || "12:00",
       ttlockLockId: p.ttlockLockId || "",
     });
     setShowModal(true);
@@ -712,7 +720,7 @@ export default function PropertiesPanel() {
     let finalProp: Property;
 
     if (editingProperty) {
-      finalProp = { ...editingProperty, name: formData.name, address: formData.address, city: formData.city, type: formData.type, price: Number(formData.price) || editingProperty.price, beds: Number(formData.beds) || editingProperty.beds, baths: Number(formData.baths) || editingProperty.baths, maxGuests: Number(formData.maxGuests) || editingProperty.maxGuests, channels: updatedChannels, cleaningFeeOneDay: Number(formData.cleaningFeeOneDay) || 0, cleaningFeeMoreDays: Number(formData.cleaningFeeMoreDays) || 0, weeklyDiscountPercent: Number(formData.weeklyDiscountPercent) || 0, energyFeePerDay: Number(formData.energyFeePerDay) || 0, additionalServicesFee: Number(formData.additionalServicesFee) || 0, recurringSupplies: formData.recurringSupplies, autoAssignCleaner: formData.autoAssignCleaner, cleanerPriorities: formData.cleanerPriorities, bedConfiguration: formData.bedConfiguration, standardInstructions: formData.standardInstructions, evidenceCriteria: formData.evidenceCriteria, descriptionES: formData.descriptionES, descriptionEN: formData.descriptionEN, photoTour: formData.photoTour, amenitiesConfig: formData.amenitiesConfig, wifiSsid: formData.wifiSsid, wifiPassword: formData.wifiPassword, electricityEnabled: formData.electricityEnabled, electricityRate: Number(formData.electricityRate) || 0, ttlockLockId: formData.ttlockLockId };
+      finalProp = { ...editingProperty, name: formData.name, address: formData.address, city: formData.city, type: formData.type, price: Number(formData.price) || editingProperty.price, beds: Number(formData.beds) || editingProperty.beds, baths: Number(formData.baths) || editingProperty.baths, maxGuests: Number(formData.maxGuests) || editingProperty.maxGuests, channels: updatedChannels, cleaningFeeOneDay: Number(formData.cleaningFeeOneDay) || 0, cleaningFeeMoreDays: Number(formData.cleaningFeeMoreDays) || 0, weeklyDiscountPercent: Number(formData.weeklyDiscountPercent) || 0, energyFeePerDay: Number(formData.energyFeePerDay) || 0, additionalServicesFee: Number(formData.additionalServicesFee) || 0, recurringSupplies: formData.recurringSupplies, autoAssignCleaner: formData.autoAssignCleaner, cleanerPriorities: formData.cleanerPriorities, bedConfiguration: formData.bedConfiguration, standardInstructions: formData.standardInstructions, evidenceCriteria: formData.evidenceCriteria, descriptionES: formData.descriptionES, descriptionEN: formData.descriptionEN, photoTour: formData.photoTour, amenitiesConfig: formData.amenitiesConfig, wifiSsid: formData.wifiSsid, wifiPassword: formData.wifiPassword, electricityEnabled: formData.electricityEnabled, electricityRate: Number(formData.electricityRate) || 0, checkInTime: formData.checkInTime, checkOutTime: formData.checkOutTime, ttlockLockId: formData.ttlockLockId };
     } else {
       finalProp = {
         id: crypto.randomUUID(),
@@ -754,6 +762,8 @@ export default function PropertiesPanel() {
         wifiPassword: formData.wifiPassword,
         electricityEnabled: formData.electricityEnabled,
         electricityRate: Number(formData.electricityRate) || 0,
+        checkInTime: formData.checkInTime,
+        checkOutTime: formData.checkOutTime,
         ttlockLockId: formData.ttlockLockId,
       };
     }
@@ -2167,6 +2177,35 @@ export default function PropertiesPanel() {
                         </div>
                         <p className="text-[10px] text-muted-foreground italic">El ID de la cerradura permite generar códigos de acceso únicos para cada reserva automáticamente.</p>
                       </div>
+                    </div>
+                  </div>
+
+                  {/* ── Horarios Check-in / Check-out ─────────────────────── */}
+                  <div className="space-y-4">
+                    <h4 className="text-sm font-bold flex items-center gap-2">
+                      <Clock className="h-4 w-4 text-violet-500" /> Horarios de Check-in / Check-out
+                    </h4>
+                    <div className="grid grid-cols-2 gap-4">
+                      <div className="space-y-2">
+                        <Label className="text-xs">Hora de Check-in</Label>
+                        <Input
+                          type="time"
+                          value={formData.checkInTime}
+                          onChange={(e) => setFormData(p => ({ ...p, checkInTime: e.target.value }))}
+                        />
+                      </div>
+                      <div className="space-y-2">
+                        <Label className="text-xs">Hora de Check-out</Label>
+                        <Input
+                          type="time"
+                          value={formData.checkOutTime}
+                          onChange={(e) => setFormData(p => ({ ...p, checkOutTime: e.target.value }))}
+                        />
+                      </div>
+                    </div>
+                    <div className="p-3 rounded-xl bg-violet-50 border border-violet-100 flex gap-3">
+                      <Info className="h-4 w-4 text-violet-500 shrink-0 mt-0.5" />
+                      <p className="text-[10px] text-violet-700 leading-relaxed">Estos horarios se usan para los PINs de acceso automático: el PIN se activa a la hora de check-in y se desactiva a la hora de check-out.</p>
                     </div>
                   </div>
 
