@@ -63,6 +63,7 @@ type PanelType =
   | "accounts"
   | "keys"
   | "maintenance"
+  | "vendors"
   | "reports"
   | "documents"
   | "settings"
@@ -94,6 +95,7 @@ const modulesMenuItems = [
   { id: "accounts", label: "Cuentas", icon: User },
   { id: "keys", label: "Llaves", icon: Key },
   { id: "maintenance", label: "Mantenimiento", icon: Wrench },
+  { id: "vendors", label: "Proveedores", icon: Users },
   { id: "reports", label: "Reportes", icon: BarChart2 },
   { id: "documents", label: "Documentos", icon: Folder },
 ];

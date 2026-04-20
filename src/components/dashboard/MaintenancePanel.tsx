@@ -31,6 +31,8 @@ import {
   X,
   ImageIcon,
   Trash2,
+  MessageCircle,
+  Star,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
@@ -42,6 +44,11 @@ import {
   MAINTENANCE_SEVERITY_LABELS,
   MAINTENANCE_STATUS_LABELS,
 } from "@/types/maintenance";
+import {
+  type ServiceVendor,
+  matchesMaintenanceCategory,
+  coversProperty,
+} from "@/types/vendor";
 
 const SEVERITY_COLORS: Record<MaintenanceSeverity, string> = {
   low: "bg-slate-100 text-slate-700 border-slate-200",
@@ -62,6 +69,7 @@ type Property = { id: string; name: string | null };
 export default function MaintenancePanel() {
   const [tickets, setTickets] = useState<MaintenanceTicket[]>([]);
   const [properties, setProperties] = useState<Property[]>([]);
+  const [vendors, setVendors] = useState<ServiceVendor[]>([]);
   const [loading, setLoading] = useState(true);
   const [filterStatus, setFilterStatus] = useState<MaintenanceStatus | "all">("all");
   const [filterProperty, setFilterProperty] = useState<string>("all");
@@ -96,10 +104,19 @@ export default function MaintenancePanel() {
     } catch {/* silencioso */}
   }, []);
 
+  const loadVendors = useCallback(async () => {
+    try {
+      const res = await fetch("/api/vendors?type=maintenance&active=true", { cache: "no-store" });
+      const data = await res.json();
+      if (Array.isArray(data.vendors)) setVendors(data.vendors);
+    } catch {/* silencioso */}
+  }, []);
+
   useEffect(() => {
     void loadTickets();
     void loadProperties();
-  }, [loadTickets, loadProperties]);
+    void loadVendors();
+  }, [loadTickets, loadProperties, loadVendors]);
 
   const filteredTickets = useMemo(() => {
     return tickets.filter((t) => {
@@ -290,6 +307,7 @@ export default function MaintenancePanel() {
           {openTicket && (
             <TicketDetail
               ticket={openTicket}
+              vendors={vendors}
               onUpdate={(patch) => handleUpdate(openTicket.id, patch)}
               onDelete={() => handleDelete(openTicket.id)}
             />
@@ -344,14 +362,70 @@ function StatCard({
 
 function TicketDetail({
   ticket,
+  vendors,
   onUpdate,
   onDelete,
 }: {
   ticket: MaintenanceTicket;
+  vendors: ServiceVendor[];
   onUpdate: (patch: Partial<MaintenanceTicket>) => void;
   onDelete: () => void;
 }) {
   const [resolutionNotes, setResolutionNotes] = useState(ticket.resolutionNotes ?? "");
+
+  // Vendors candidatos: matchean categoría del ticket y cubren la propiedad.
+  // Los preferidos aparecen primero (el API ya ordena por is_preferred).
+  const matchingVendors = useMemo(() => {
+    return vendors.filter(
+      (v) => matchesMaintenanceCategory(v, ticket.category) && coversProperty(v, ticket.propertyId)
+    );
+  }, [vendors, ticket.category, ticket.propertyId]);
+
+  const selectedVendor = useMemo(
+    () => (ticket.assigneeId ? vendors.find((v) => v.id === ticket.assigneeId) ?? null : null),
+    [vendors, ticket.assigneeId]
+  );
+
+  const handleAssignVendor = (vendorId: string) => {
+    if (vendorId === "__manual__") return;
+    const v = vendors.find((x) => x.id === vendorId);
+    if (!v) return;
+    onUpdate({ assigneeId: v.id, assigneeName: v.name });
+  };
+
+  const handleSendWhatsApp = (vendor: ServiceVendor) => {
+    if (!vendor.phone) {
+      alert("Este proveedor no tiene teléfono registrado.");
+      return;
+    }
+    const cleanPhone = vendor.phone.replace(/\D/g, "");
+    const lines = [
+      `*Nuevo pedido de mantenimiento — StayHost*`,
+      ``,
+      `🏠 *Propiedad:* ${ticket.propertyName || ticket.propertyId}`,
+      `⚠️ *Problema:* ${ticket.title}`,
+      `📋 *Categoría:* ${MAINTENANCE_CATEGORY_LABELS[ticket.category]}`,
+      `🔥 *Severidad:* ${MAINTENANCE_SEVERITY_LABELS[ticket.severity]}`,
+    ];
+    if (ticket.description) {
+      lines.push(``, `*Detalles:*`, ticket.description);
+    }
+    if (ticket.photos.length > 0) {
+      lines.push(``, `📷 *Fotos:*`);
+      ticket.photos.forEach((url) => lines.push(url));
+    }
+    lines.push(``, `Por favor confirma disponibilidad. ¡Gracias!`);
+    const text = encodeURIComponent(lines.join("\n"));
+    window.open(`https://wa.me/${cleanPhone}?text=${text}`, "_blank");
+
+    // Al enviar, marcar el ticket como in_progress si estaba open y guardar asignación.
+    const patch: Partial<MaintenanceTicket> = {
+      assigneeId: vendor.id,
+      assigneeName: vendor.name,
+    };
+    if (ticket.status === "open") patch.status = "in_progress";
+    onUpdate(patch);
+  };
 
   return (
     <>
@@ -403,6 +477,55 @@ function TicketDetail({
           </div>
         )}
 
+        {/* ── Escalar a proveedor ─────────────────────────────────────────── */}
+        <div className="space-y-3 pt-2 border-t bg-emerald-50/30 -mx-6 px-6 py-4 rounded-none">
+          <Label className="text-xs font-bold text-emerald-700 uppercase tracking-wide flex items-center gap-1">
+            <MessageCircle className="h-3.5 w-3.5" /> Escalar a proveedor
+          </Label>
+          {matchingVendors.length === 0 ? (
+            <p className="text-xs text-slate-500 italic">
+              No hay proveedores registrados para la categoría {MAINTENANCE_CATEGORY_LABELS[ticket.category]}.
+              Agrégalos desde el panel <strong>Proveedores</strong>.
+            </p>
+          ) : (
+            <>
+              <Select value={selectedVendor?.id ?? ""} onValueChange={handleAssignVendor}>
+                <SelectTrigger><SelectValue placeholder="Elegir proveedor…" /></SelectTrigger>
+                <SelectContent>
+                  {matchingVendors.map((v) => (
+                    <SelectItem key={v.id} value={v.id}>
+                      {v.isPreferred && "⭐ "}{v.name}
+                      {v.phone && ` · ${v.phone}`}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              {selectedVendor && (
+                <div className="flex items-center gap-2 p-3 bg-white rounded-xl border border-emerald-100">
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-bold text-slate-800 flex items-center gap-1">
+                      {selectedVendor.isPreferred && <Star className="h-3.5 w-3.5 text-amber-500 fill-amber-500" />}
+                      {selectedVendor.name}
+                    </p>
+                    {selectedVendor.phone && (
+                      <p className="text-xs text-slate-500">{selectedVendor.phone}</p>
+                    )}
+                  </div>
+                  <Button
+                    size="sm"
+                    onClick={() => handleSendWhatsApp(selectedVendor)}
+                    disabled={!selectedVendor.phone}
+                    className="bg-emerald-600 hover:bg-emerald-700 text-white"
+                  >
+                    <MessageCircle className="h-4 w-4 mr-1" />
+                    Enviar WhatsApp
+                  </Button>
+                </div>
+              )}
+            </>
+          )}
+        </div>
+
         <div className="space-y-2 pt-2 border-t">
           <Label className="text-xs font-bold text-slate-600 uppercase tracking-wide">Cambiar estado</Label>
           <div className="flex gap-2 flex-wrap">
@@ -420,13 +543,16 @@ function TicketDetail({
         </div>
 
         <div>
-          <Label className="text-xs font-bold text-slate-600 uppercase tracking-wide">Asignado a</Label>
+          <Label className="text-xs font-bold text-slate-600 uppercase tracking-wide">Asignado a (manual)</Label>
           <Input
             value={ticket.assigneeName ?? ""}
             onChange={(e) => onUpdate({ assigneeName: e.target.value })}
             placeholder="Nombre del técnico o responsable"
             className="mt-1"
           />
+          <p className="text-[11px] text-slate-400 mt-1">
+            Se completa automáticamente al elegir un proveedor arriba, pero puedes editarlo.
+          </p>
         </div>
 
         <div>

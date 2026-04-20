@@ -25,6 +25,7 @@ export type ModuleId =
   | "accounts"
   | "keys"
   | "maintenance"
+  | "vendors"
   | "reports"
   | "documents";
 
@@ -69,11 +70,11 @@ const ModuleContext = createContext<ModuleContextType | undefined>(undefined);
 // ─── Plan definitions ─────────────────────────────────────────────────────────
 export const SAAS_PLANS: Record<string, ModuleId[]> = {
   starter: ["properties", "calendar", "bookings", "accounts"],
-  growth: ["properties", "calendar", "bookings", "accounts", "messages", "cleaning", "pricing", "reports", "maintenance"],
+  growth: ["properties", "calendar", "bookings", "accounts", "messages", "cleaning", "pricing", "reports", "maintenance", "vendors"],
   master: [
     "properties", "calendar", "bookings", "accounts", "messages",
     "cleaning", "pricing", "reports", "devices", "upsells",
-    "agreements", "team", "check-ins", "keys", "maintenance", "documents",
+    "agreements", "team", "check-ins", "keys", "maintenance", "vendors", "documents",
   ],
 };
 
@@ -100,6 +101,7 @@ export const BUILTIN_PLUGINS: PluginManifest[] = [
   { id: "check-ins",  name: "Check-ins Digitales",   description: "Verificación de identidad y acceso QR.",          version: "2.0", category: "operations",    planTier: "master",  enabled: true, builtIn: true, icon: "LogIn" },
   { id: "keys",       name: "Llaves",                description: "Gestión de llaves físicas y códigos.",             version: "1.0", category: "operations",    planTier: "master",  enabled: true, builtIn: true, icon: "Key" },
   { id: "maintenance", name: "Mantenimiento",        description: "Tickets de daños y averías, independientes de limpieza.", version: "1.0", category: "operations", planTier: "growth", enabled: true, builtIn: true, icon: "Wrench" },
+  { id: "vendors",    name: "Proveedores",           description: "Directorio de técnicos, insumos, servicios y utilities.", version: "1.0", category: "operations", planTier: "growth", enabled: true, builtIn: true, icon: "Users" },
   { id: "documents",  name: "Documentos",            description: "Almacenamiento de contratos y archivos.",          version: "1.0", category: "compliance",    planTier: "master",  enabled: true, builtIn: true, icon: "Folder" },
 ];
 
@@ -107,7 +109,7 @@ const DEFAULT_MODULES: Record<ModuleId, boolean> = {
   properties: true, calendar: true, messages: true, cleaning: true,
   pricing: true, bookings: true, devices: true, upsells: true,
   agreements: true, team: true, "check-ins": true, accounts: true,
-  keys: true, maintenance: true, reports: true, documents: true,
+  keys: true, maintenance: true, vendors: true, reports: true, documents: true,
 };
 
 // ─── Provider ─────────────────────────────────────────────────────────────────
