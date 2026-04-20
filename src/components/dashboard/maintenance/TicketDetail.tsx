@@ -281,6 +281,9 @@ export function TicketDetail({
         onAssign={async (vendor) => {
           await onUpdate({ assigneeId: vendor.id, assigneeName: vendor.name });
         }}
+        onUnassign={async () => {
+          await onUpdate({ assigneeId: null, assigneeName: null });
+        }}
         onSendWhatsApp={handleSendWhatsApp}
         onVendorCreated={(v) => {
           onVendorCreated?.(v);
@@ -499,6 +502,7 @@ interface VendorAssignmentBlockProps {
   matchingVendors: ServiceVendor[];
   selectedVendor: ServiceVendor | null;
   onAssign: (vendor: ServiceVendor) => Promise<void> | void;
+  onUnassign: () => Promise<void> | void;
   onSendWhatsApp: (vendor: ServiceVendor) => Promise<void> | void;
   onVendorCreated: (vendor: ServiceVendor) => void;
 }
@@ -509,14 +513,21 @@ function VendorAssignmentBlock({
   matchingVendors,
   selectedVendor,
   onAssign,
+  onUnassign,
   onSendWhatsApp,
   onVendorCreated,
 }: VendorAssignmentBlockProps) {
   const [query, setQuery] = useState("");
   const [showAddForm, setShowAddForm] = useState(false);
+  const [changing, setChanging] = useState(false); // mostrar buscador aunque haya asignado
   const [newName, setNewName] = useState("");
   const [newPhone, setNewPhone] = useState("");
   const [creating, setCreating] = useState(false);
+
+  // Al cambiar el ticket, resetear el modo "cambiando"
+  useEffect(() => {
+    setChanging(false);
+  }, [ticket.id]);
 
   // Si la query no está vacía, buscamos también en TODOS los vendors (no solo
   // los que matchean la categoría) para permitir escalar a uno de otra
@@ -563,24 +574,43 @@ function VendorAssignmentBlock({
     }
   };
 
+  const showSearch = !selectedVendor || changing;
+
   return (
     <div className="py-3 border-b space-y-3 bg-emerald-50/20 -mx-6 px-6">
       <div className="flex items-center justify-between">
         <Label className="text-[11px] font-bold text-emerald-700 uppercase tracking-wider flex items-center gap-1">
           <MessageCircle className="h-3.5 w-3.5" /> Proveedor asignado
         </Label>
-        {selectedVendor && (
+        {selectedVendor && !changing && (
+          <div className="flex items-center gap-3 text-[11px]">
+            <button
+              onClick={() => { setChanging(true); setQuery(""); }}
+              className="text-sky-600 hover:text-sky-800 flex items-center gap-1 font-semibold"
+              title="Cambiar a otro proveedor"
+            >
+              Cambiar
+            </button>
+            <button
+              onClick={() => void onUnassign()}
+              className="text-slate-500 hover:text-rose-600 flex items-center gap-1"
+              title="Quitar asignación"
+            >
+              <X className="h-3 w-3" /> Quitar
+            </button>
+          </div>
+        )}
+        {selectedVendor && changing && (
           <button
-            onClick={() => onAssign({ ...selectedVendor, id: "" } as ServiceVendor)}
-            className="text-[11px] text-slate-500 hover:text-rose-600 flex items-center gap-1"
-            title="Quitar asignación"
+            onClick={() => setChanging(false)}
+            className="text-[11px] text-slate-500 hover:text-slate-700 flex items-center gap-1"
           >
-            <X className="h-3 w-3" /> Quitar
+            <X className="h-3 w-3" /> Cancelar
           </button>
         )}
       </div>
 
-      {selectedVendor ? (
+      {selectedVendor && !changing ? (
         <div className="flex items-center gap-2 p-3 bg-white rounded-xl border border-emerald-200">
           <div className="flex-1 min-w-0">
             <p className="text-sm font-bold text-slate-800 flex items-center gap-1">
@@ -600,7 +630,7 @@ function VendorAssignmentBlock({
             <MessageCircle className="h-4 w-4 mr-1" /> WhatsApp
           </Button>
         </div>
-      ) : (
+      ) : showSearch ? (
         <>
           {/* Buscador */}
           <div className="relative">
@@ -624,7 +654,7 @@ function VendorAssignmentBlock({
                 results.map((v) => (
                   <button
                     key={v.id}
-                    onClick={() => onAssign(v)}
+                    onClick={async () => { await onAssign(v); setChanging(false); }}
                     className="w-full flex items-center gap-2 p-2 rounded-xl hover:bg-white text-left transition-colors"
                   >
                     <div className="flex-1 min-w-0">
@@ -698,7 +728,7 @@ function VendorAssignmentBlock({
             </div>
           )}
         </>
-      )}
+      ) : null}
     </div>
   );
 }
