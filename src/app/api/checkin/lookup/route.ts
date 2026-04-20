@@ -136,10 +136,61 @@ export async function POST(req: NextRequest): Promise<NextResponse<LookupResult 
     )
   );
 
+  // Buscar/crear checkin_record para este booking. La API de huésped
+  // (uploadId, payElectricity, etc.) usa checkin_records.id como identidad,
+  // no bookings.id. Retornamos el id correcto para que el flow funcione.
+  let checkinRecordId: string | null = null;
+  const { data: existingRecords } = await supabaseAdmin
+    .from("checkin_records")
+    .select("id")
+    .eq("booking_ref", b.id)
+    .eq("tenant_id", b.tenant_id)
+    .limit(1);
+
+  if (existingRecords && existingRecords.length > 0) {
+    checkinRecordId = (existingRecords[0] as { id: string }).id;
+  } else {
+    // Crear uno nuevo al vuelo. Usamos channel_code como guest_last_name
+    // (soft-token) y phoneLast4 como last_four_digits para que los demás
+    // endpoints de huésped autentiquen sin pedir nada más.
+    const newId = `ci-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+    const { error: insertErr } = await supabaseAdmin
+      .from("checkin_records")
+      .insert({
+        id: newId,
+        tenant_id: b.tenant_id,
+        guest_name: b.guest_name ?? "Huésped",
+        guest_last_name: b.channel_code.toLowerCase().trim(),
+        last_four_digits: phoneLast4,
+        checkin: b.check_in,
+        checkout: b.check_out,
+        nights,
+        property_id: b.property_id,
+        property_name: b.properties?.name ?? "Propiedad",
+        property_address: b.properties?.address ?? null,
+        status: "pendiente",
+        id_status: "pending",
+        source: "auto_direct",
+        booking_ref: b.id,
+        access_granted: false,
+        electricity_enabled: true,
+        electricity_rate: 5,
+        electricity_paid: false,
+        electricity_total: 0,
+        paypal_fee_included: true,
+      } as never);
+    if (insertErr) {
+      console.error("[/api/checkin/lookup] create checkin_record failed:", insertErr);
+    } else {
+      checkinRecordId = newId;
+    }
+  }
+
   return NextResponse.json({
     ok: true,
     booking: {
-      id: b.id,
+      id: checkinRecordId ?? b.id,   // ← ahora es checkin_records.id, no bookings.id
+      bookingId: b.id,                // por si el cliente necesita el original
       channelCode: b.channel_code,
       propertyId: b.property_id,
       propertyName: b.properties?.name ?? null,
