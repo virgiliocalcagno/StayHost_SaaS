@@ -636,6 +636,80 @@ export default function CheckInsPanel() {
         }
       } catch {}
 
+      // ── Source 3: bookings en BD (via /api/bookings) ──────────────────────
+      // La fuente de verdad está en Postgres, no en localStorage. Esta fuente
+      // cubre el caso donde el iCal se importó antes de que este panel se
+      // abriera (los datos viven en bookings pero no en stayhost_ical_configs).
+      let dbCount = 0;
+      try {
+        const res = await fetch("/api/bookings", { cache: "no-store" });
+        if (res.ok) {
+          const { properties: propsWithBookings } = await res.json() as {
+            properties: Array<{
+              id: string; name: string; address: string; channel: string;
+              bookings: Array<{
+                id: string; guest: string; phone: string | null; phone4: string | null;
+                start: string; end: string; status: string; channel: string;
+                bookingUrl: string | null; channelCode: string | null; phoneLast4: string | null;
+              }>;
+            }>;
+          };
+          const wifi = JSON.parse(localStorage.getItem("stayhost_wifi_configs") ?? "[]") as WifiConfig[];
+
+          for (const prop of propsWithBookings ?? []) {
+            const w = wifi.find(x => x.propertyId === prop.id);
+            const propInfo = properties.find(p => p.id === prop.id);
+            const ec = getElecConfig(prop.id, freshElecConfigs);
+
+            for (const b of prop.bookings ?? []) {
+              if (b.status !== "confirmed") continue;
+              // usedRefs tiene IDs de checkin_records. Acá comparamos con el
+              // booking.id (UUID de la tabla bookings). Si ya se creó un
+              // checkin_record para esa booking, lo saltamos.
+              if (usedRefs.has(b.id)) continue;
+
+              // Preferimos phone_last4 del iCal (Airbnb) si existe; sino de
+              // guest_phone. Sin 4 dígitos no podemos sincronizar (el wizard
+              // actual los requiere como auth).
+              const last4 = b.phoneLast4 || b.phone4 || "";
+              const isMissingPhone = last4.length !== 4;
+
+              const nights = diffNights(b.start, b.end);
+              if (nights <= 0) continue;
+
+              const nameParts = (b.guest || "").trim().split(/\s+/);
+              const firstName = nameParts[0] ?? "";
+              const lastName = nameParts.length > 1 ? nameParts.slice(1).join(" ") : "";
+              const isMissingName = !lastName;
+              const missingData = isMissingPhone || isMissingName;
+
+              const elec = ec.enabled ? calcElectricity(nights, ec.rate, ec.paypal) : 0;
+              const sourceKind: "auto_ical" | "auto_direct" =
+                b.channel === "direct" || b.channel === "manual" ? "auto_direct" : "auto_ical";
+
+              candidates.push(buildCandidate({
+                source: sourceKind,
+                channel: (b.channel as "airbnb" | "vrbo" | "booking" | "direct") ?? "direct",
+                guestName: missingData ? "Pendiente" : (firstName || b.guest),
+                guestLastName: missingData ? "de Datos" : lastName,
+                lastFourDigits: isMissingPhone ? "0000" : last4,
+                checkin: b.start, checkout: b.end, nights,
+                propertyId: prop.id, propertyName: propInfo?.name ?? prop.name,
+                propertyAddress: propInfo?.address, propertyImage: propInfo?.image,
+                missingData,
+                wifiSsid: w?.ssid, wifiPassword: w?.password,
+                electricityEnabled: ec.enabled, electricityTotal: elec,
+                bookingRef: b.id,        // UUID de bookings → sincroniza 1:1
+              }));
+              usedRefs.add(b.id);
+              dbCount++;
+            }
+          }
+        }
+      } catch (err) {
+        console.warn("[CheckInsPanel] bookings sync skipped:", err);
+      }
+
       if (candidates.length > 0) {
         await apiCheckin("upsertBatch", { records: candidates });
         await refreshRecords();
@@ -644,8 +718,11 @@ export default function CheckInsPanel() {
         setRecords(apiRecords.map(r => fromApi(r, upsellsByProperty)));
       }
 
-      setSyncStats(s => ({ direct: s.direct + directCount, ical: s.ical + icalCount }));
-      return { directCount, icalCount };
+      setSyncStats(s => ({
+        direct: s.direct + directCount,
+        ical: s.ical + icalCount + dbCount,
+      }));
+      return { directCount, icalCount: icalCount + dbCount };
     } catch (err) {
       console.error("[CheckInsPanel] autoSync failed:", err);
       return { directCount: 0, icalCount: 0 };

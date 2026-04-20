@@ -368,7 +368,7 @@ export async function GET() {
 
   const { data: bookings } = await supabase
     .from("bookings")
-    .select("id, property_id, guest_name, guest_phone, guest_doc, guest_nationality, check_in, check_out, status, source, booking_url, source_uid, total_price, num_guests, note")
+    .select("id, property_id, guest_name, guest_phone, guest_doc, guest_nationality, check_in, check_out, status, source, booking_url, source_uid, total_price, num_guests, note, channel_code, phone_last4")
     .in("property_id", (props as { id: string }[]).map((p) => p.id))
     .neq("status", "cancelled");
 
@@ -413,6 +413,8 @@ export async function GET() {
           totalPrice: b.total_price ?? 0,
           numGuests: b.num_guests ?? 1,
           note: b.note ?? null,
+          channelCode: b.channel_code ?? null,
+          phoneLast4: b.phone_last4 ?? null,
         })),
     };
   });
