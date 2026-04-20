@@ -42,7 +42,7 @@ import { supabase } from "@/lib/supabase/client";
 // Email master — si coincide con el email autenticado en Supabase, el sidebar
 // muestra OWNER sin esperar a que el ModuleContext se sincronice (evita que
 // te parpadee "Staff" durante el primer segundo tras loguear).
-const MASTER_EMAIL = "virgiliocalcagno@gmail.com";
+const MASTER_EMAIL = (process.env.NEXT_PUBLIC_MASTER_EMAIL || "virgiliocalcagno@gmail.com").trim().toLowerCase();
 
 type PanelType =
   | "overview"

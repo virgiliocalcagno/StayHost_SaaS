@@ -33,7 +33,12 @@ import {
   ImageIcon,
   X,
 } from "lucide-react";
-import type { StaffSession } from "../acceso/page";
+interface StaffSession {
+  memberId: string;
+  name: string;
+  role: string;
+  available: boolean;
+}
 
 import { StaffWizard } from "@/components/staff-ui/StaffWizard";
 import { StaffTaskDetail } from "@/components/staff-ui/StaffTaskDetail";
@@ -167,22 +172,113 @@ export default function StaffPage() {
   const [rejectReason, setRejectReason] = useState("");
 
   useEffect(() => {
-    try {
+    let cancelled = false;
+
+    function loadFromLocalStorage(): boolean {
       const raw = localStorage.getItem("stayhost_session");
-      if (!raw) { router.replace("/acceso"); return; }
-      const sess = JSON.parse(raw) as StaffSession;
-      setSession(sess);
-      setAvailable(sess.available);
-
-      const rawTasks = localStorage.getItem("stayhost_tasks");
-      if (rawTasks) setTasks(JSON.parse(rawTasks));
-
-      const rawProps = localStorage.getItem("stayhost_properties");
-      if (rawProps) setProperties(JSON.parse(rawProps));
-    } catch {
-      router.replace("/acceso");
+      if (!raw) return false;
+      try {
+        const sess = JSON.parse(raw) as StaffSession;
+        setSession(sess);
+        setAvailable(sess.available);
+        const rawTasks = localStorage.getItem("stayhost_tasks");
+        if (rawTasks) setTasks(JSON.parse(rawTasks));
+        const rawProps = localStorage.getItem("stayhost_properties");
+        if (rawProps) setProperties(JSON.parse(rawProps));
+        return true;
+      } catch { return false; }
     }
-    setLoading(false);
+
+    async function initSession() {
+      try {
+        // 1. Check Supabase auth session via /api/me
+        const meRes = await fetch("/api/me");
+        if (!meRes.ok) throw new Error("api/me failed");
+        const me = await meRes.json();
+
+        if (cancelled) return;
+
+        if (!me.email || !me.tenantId) {
+          if (!loadFromLocalStorage()) router.replace("/acceso");
+          return;
+        }
+
+        // 2. Fetch team member for authenticated user
+        const tmRes = await fetch("/api/team-members");
+        const members = tmRes.ok ? ((await tmRes.json()).members ?? []) : [];
+        if (cancelled) return;
+
+        const myMember = members.find(
+          (m: { email: string }) => m.email.trim().toLowerCase() === me.email.trim().toLowerCase()
+        );
+
+        const sess: StaffSession = {
+          memberId: myMember?.id ?? me.tenantId,
+          name: myMember?.name ?? me.email.split("@")[0],
+          role: myMember?.role ?? (me.isMaster ? "owner" : "cleaner"),
+          available: myMember?.available ?? true,
+        };
+
+        localStorage.setItem("stayhost_session", JSON.stringify(sess));
+        setSession(sess);
+        setAvailable(sess.available);
+
+        // 3. Fetch real tasks from backend
+        const tasksRes = await fetch("/api/cleaning-tasks");
+        if (tasksRes.ok && !cancelled) {
+          const tasksData = await tasksRes.json();
+          const realTasks = (tasksData.tasks ?? tasksData ?? []).map((t: Record<string, unknown>) => ({
+            id: t.id,
+            propertyId: t.property_id ?? t.propertyId ?? "",
+            propertyName: t.property_name ?? t.propertyName ?? "Propiedad",
+            address: t.address ?? "",
+            propertyImage: t.property_image ?? t.propertyImage,
+            assigneeId: t.assignee_id ?? t.assigneeId,
+            assigneeName: t.assignee_name ?? t.assigneeName,
+            dueDate: t.due_date ?? t.dueDate ?? "",
+            dueTime: t.due_time ?? t.dueTime ?? "12:00",
+            status: t.status ?? "pending",
+            priority: t.priority ?? "medium",
+            isBackToBack: t.is_back_to_back ?? t.isBackToBack ?? false,
+            isVacant: t.is_vacant ?? t.isVacant,
+            guestName: t.guest_name ?? t.guestName ?? "",
+            guestCount: t.guest_count ?? t.guestCount,
+            stayDuration: t.stay_duration ?? t.stayDuration,
+            checklistItems: t.checklist_items ?? t.checklistItems ?? [],
+            closurePhotos: t.closure_photos ?? t.closurePhotos ?? [],
+            isWaitingValidation: t.is_waiting_validation ?? t.isWaitingValidation ?? false,
+            startTime: t.start_time ?? t.startTime,
+            declinedByIds: t.declined_by_ids ?? t.declinedByIds ?? [],
+            rejectionReason: t.rejection_reason ?? t.rejectionReason,
+            acceptanceStatus: t.acceptance_status ?? t.acceptanceStatus ?? "pending",
+          })) as CleaningTask[];
+          setTasks(realTasks);
+          localStorage.setItem("stayhost_tasks", JSON.stringify(realTasks));
+        }
+
+        // 4. Fetch properties
+        const propsRes = await fetch("/api/bookings");
+        if (propsRes.ok && !cancelled) {
+          const propsData = await propsRes.json();
+          const realProps = (propsData.properties ?? []).map((p: Record<string, unknown>) => ({
+            id: p.id,
+            name: p.name ?? "",
+            address: p.address,
+            bedConfiguration: p.bed_configuration ?? p.bedConfiguration,
+            evidenceCriteria: p.evidence_criteria ?? p.evidenceCriteria,
+          })) as Property[];
+          setProperties(realProps);
+          localStorage.setItem("stayhost_properties", JSON.stringify(realProps));
+        }
+      } catch {
+        if (!loadFromLocalStorage()) router.replace("/acceso");
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    }
+
+    initSession();
+    return () => { cancelled = true; };
   }, [router]);
 
   // Persist task changes back to localStorage
@@ -247,7 +343,7 @@ export default function StaffPage() {
     } catch {}
   };
 
-  const handleLogout = () => {
+  const handleLogout = async () => {
     try {
       localStorage.removeItem("stayhost_session");
       const rawTeam = localStorage.getItem("stayhost_team");
@@ -263,6 +359,9 @@ export default function StaffPage() {
           ))
         );
       }
+      // Sign out from Supabase to clear the httpOnly cookie
+      const { supabase } = await import("@/lib/supabase/client");
+      await supabase.auth.signOut();
     } catch {}
     router.replace("/acceso");
   };
@@ -354,7 +453,7 @@ export default function StaffPage() {
               <div className="relative">
                 <Avatar className="h-12 w-12 border-2 border-primary/10">
                   <AvatarFallback className="bg-primary/10 text-primary font-black text-sm">
-                    {session.name.split(" ").map(n => n[0]).join("").slice(0, 2).toUpperCase()}
+                    {session.name.split(" ").map((n: string) => n[0]).join("").slice(0, 2).toUpperCase()}
                   </AvatarFallback>
                 </Avatar>
                 <span

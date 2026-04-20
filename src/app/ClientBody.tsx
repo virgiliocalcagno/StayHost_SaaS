@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect } from "react";
+import { Toaster } from "sonner";
 import { ModuleProvider } from "@/context/ModuleContext";
 
 export default function ClientBody({
@@ -17,6 +18,7 @@ export default function ClientBody({
   return (
     <ModuleProvider>
       <div className="antialiased">{children}</div>
+      <Toaster richColors position="bottom-right" />
     </ModuleProvider>
   );
 }

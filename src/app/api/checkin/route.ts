@@ -549,8 +549,8 @@ async function guestUploadId(data: Record<string, unknown>) {
     return bad(500, "No se pudo subir la imagen");
   }
 
-  const { error: updateErr } = await supabaseAdmin
-    .from("checkin_records")
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- no generated DB types yet
+  const { error: updateErr } = await (supabaseAdmin.from("checkin_records") as any)
     .update({ id_photo_path: path, id_status: "uploaded" })
     .eq("id", row.id);
   if (updateErr) {
@@ -581,12 +581,12 @@ async function guestPayElectricity(data: Record<string, unknown>) {
     status: (willGrant ? "validado" : "pendiente") as Status,
   };
 
-  const { data: updated, error } = await supabaseAdmin
-    .from("checkin_records")
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- no generated DB types yet
+  const { data: updated, error } = (await (supabaseAdmin.from("checkin_records") as any)
     .update(patch)
     .eq("id", row.id)
     .select("*")
-    .single<CheckinRow>();
+    .single()) as { data: CheckinRow | null; error: unknown };
 
   if (error || !updated) {
     console.error("[/api/checkin:payElectricity] failed:", error);

@@ -15,7 +15,7 @@ import {
 import { Bell, Search, Menu, Plus, ChevronDown } from "lucide-react";
 import { supabase } from "@/lib/supabase/client";
 
-const MASTER_EMAIL = "virgiliocalcagno@gmail.com";
+const MASTER_EMAIL = (process.env.NEXT_PUBLIC_MASTER_EMAIL || "virgiliocalcagno@gmail.com").trim().toLowerCase();
 
 type PanelType =
   | "overview"

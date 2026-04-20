@@ -63,12 +63,14 @@ import {
   Crown,
   CalendarRange,
   Copy,
-  Info
+  Info,
+  Zap,
 } from "lucide-react";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Textarea } from "@/components/ui/textarea";
+import { toast } from "sonner";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 interface ChannelLink {
@@ -766,10 +768,10 @@ export default function PropertiesPanel() {
         }
         setShowModal(false);
       } else {
-        alert("Error al sincronizar con el servidor. Por favor intenta de nuevo.");
+        toast.error("Error al sincronizar con el servidor. Por favor intenta de nuevo.");
       }
     } catch (err) {
-      alert("Error de conexión. Verifica tu internet.");
+      toast.error("Error de conexión. Verifica tu internet.");
     } finally {
       setIsSaving(false);
     }
@@ -2227,7 +2229,7 @@ export default function PropertiesPanel() {
                               className="pl-7 bg-white" 
                               placeholder="0.15" 
                               value={formData.electricityRate} 
-                              onChange={(e) => setFormData(p => ({ ...p, electricityRate: parseFloat(e.target.value) || 0 }))}
+                              onChange={(e) => setFormData(p => ({ ...p, electricityRate: e.target.value }))}
                             />
                           </div>
                         </div>
