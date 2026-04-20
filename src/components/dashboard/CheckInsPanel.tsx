@@ -523,7 +523,14 @@ export default function CheckInsPanel() {
   // bookingRef-based dedup on the client avoids the backend needing to know
   // about direct_bookings / ical_configs storage conventions.
 
+  // Lock para prevenir corridas concurrentes de autoSync (desde el effect,
+  // el boton, o cualquier otra ruta). Si ya hay una en curso, la segunda
+  // no hace nada — evita double-insert bajo cualquier circunstancia.
+  const syncInFlight = useRef(false);
+
   const autoSync = useCallback(async (quiet = false) => {
+    if (syncInFlight.current) return { directCount: 0, icalCount: 0 };
+    syncInFlight.current = true;
     if (!quiet) setSyncing(true);
 
     try {
@@ -755,6 +762,7 @@ export default function CheckInsPanel() {
       return { directCount: 0, icalCount: 0 };
     } finally {
       if (!quiet) setSyncing(false);
+      syncInFlight.current = false;
     }
   }, [buildCandidate, properties, refreshRecords, upsellsByProperty]);
 
@@ -918,18 +926,40 @@ export default function CheckInsPanel() {
   }
 
   // ─── Stats ────────────────────────────────────────────────────────────────
-
-  const stats = {
-    total: records.length,
-    validated: records.filter(r => r.accessGranted).length,
-    idReview: records.filter(r => r.idStatus === "uploaded").length,
-    autoGen: records.filter(r => r.source !== "manual").length,
-  };
+  // NOTA: stats se calcula sobre dedupedRecords (definido abajo) para que los
+  // contadores no cuenten duplicados de BD. Lo declaramos después del dedup.
 
   // ─── Filter logic ─────────────────────────────────────────────────────────
 
+  // Dedup de visualizacion: si hay duplicados en BD (de corridas previas con
+  // race condition), quedamos con uno solo por (propiedad + checkin + checkout).
+  // Preferimos el que ya tiene accessGranted o idStatus != pending para no
+  // perder el trabajo hecho en el huesped.
+  const dedupedRecords = (() => {
+    const byKey = new Map<string, LocalCheckIn>();
+    for (const r of records) {
+      const key = `${r.propertyId}|${r.checkin}|${r.checkout}|${r.guestLastName}`;
+      const prev = byKey.get(key);
+      if (!prev) { byKey.set(key, r); continue; }
+      // Score: mayor es mejor (más "progreso" del huésped)
+      const score = (x: LocalCheckIn) =>
+        (x.accessGranted ? 10 : 0) +
+        (x.idStatus === "validated" ? 4 : x.idStatus === "uploaded" ? 2 : 0) +
+        (x.electricityPaid ? 1 : 0);
+      if (score(r) > score(prev)) byKey.set(key, r);
+    }
+    return Array.from(byKey.values());
+  })();
+
+  const stats = {
+    total: dedupedRecords.length,
+    validated: dedupedRecords.filter(r => r.accessGranted).length,
+    idReview: dedupedRecords.filter(r => r.idStatus === "uploaded").length,
+    autoGen: dedupedRecords.filter(r => r.source !== "manual").length,
+  };
+
   const today = new Date().toISOString().slice(0, 10);
-  const filtered = records.filter(r => {
+  const filtered = dedupedRecords.filter(r => {
     if (search && !`${r.guestName} ${r.guestLastName} ${r.propertyName}`.toLowerCase().includes(search.toLowerCase())) return false;
     if (filter === "today") return r.checkin === today || r.checkout === today;
     if (filter === "review") return r.idStatus === "uploaded";
