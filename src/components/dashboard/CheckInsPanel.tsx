@@ -404,6 +404,11 @@ export default function CheckInsPanel() {
   const [syncStats, setSyncStats] = useState({ direct: 0, ical: 0 });
   const [showWifiPass, setShowWifiPass] = useState({} as Record<string, boolean>);
 
+  // Cache bookingId → channel_code para que el boton WhatsApp arme la URL
+  // /checkin?code=HMXXXXXXXX (code real del canal) en vez del UUID del
+  // booking. Se popula desde /api/bookings al cargar y tras cada sync.
+  const [bookingCodeMap, setBookingCodeMap] = useState(new Map<string, string>());
+
   // Search & filter
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState("all" as "all" | "today" | "review" | "granted" | "pending");
@@ -664,6 +669,18 @@ export default function CheckInsPanel() {
           };
           const wifi = JSON.parse(localStorage.getItem("stayhost_wifi_configs") ?? "[]") as WifiConfig[];
 
+          // Populamos el mapa bookingId → channel_code para el boton
+          // WhatsApp. Sin esto, shareWhatsApp usa el UUID del booking como
+          // si fuera el code, lo cual genera URLs tipo /checkin?code=<uuid>
+          // que confunden al huesped.
+          const newCodeMap = new Map<string, string>();
+          for (const p of propsWithBookings ?? []) {
+            for (const b of p.bookings ?? []) {
+              if (b.channelCode) newCodeMap.set(b.id, b.channelCode);
+            }
+          }
+          setBookingCodeMap(newCodeMap);
+
           // Dedupe reforzado: además de usedRefs, construimos un índice por
           // (propertyId + start + end) desde los apiRecords. Cubre el caso
           // donde Source 2 (legacy ical-localStorage) creó el record con
@@ -878,7 +895,11 @@ export default function CheckInsPanel() {
   // o copia al portapapeles como fallback.
   function shareWhatsApp(r: LocalCheckIn) {
     const origin = typeof window !== "undefined" ? window.location.origin : "";
-    const channelCode = r.bookingRef ?? "";
+    // Preferir el channel_code real del booking vinculado (HMXXXXXXXX de
+    // Airbnb o D-XXXXXXXX de reserva directa). Si no hay match en el
+    // mapa (caso raro: booking sin code), no pre-rellenamos nada y el
+    // huésped escribe manualmente.
+    const channelCode = r.bookingRef ? bookingCodeMap.get(r.bookingRef) : undefined;
     const genericUrl = channelCode
       ? `${origin}/checkin?code=${encodeURIComponent(channelCode)}`
       : `${origin}/checkin`;
