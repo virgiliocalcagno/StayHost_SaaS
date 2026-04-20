@@ -31,6 +31,8 @@ import {
   X,
   ImageIcon,
   Trash2,
+  MessageCircle,
+  Star,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
@@ -42,6 +44,8 @@ import {
   MAINTENANCE_SEVERITY_LABELS,
   MAINTENANCE_STATUS_LABELS,
 } from "@/types/maintenance";
+import { type ServiceVendor } from "@/types/vendor";
+import { TicketDetail } from "@/components/dashboard/maintenance/TicketDetail";
 
 const SEVERITY_COLORS: Record<MaintenanceSeverity, string> = {
   low: "bg-slate-100 text-slate-700 border-slate-200",
@@ -52,8 +56,13 @@ const SEVERITY_COLORS: Record<MaintenanceSeverity, string> = {
 
 const STATUS_COLORS: Record<MaintenanceStatus, string> = {
   open: "bg-rose-100 text-rose-700 border-rose-200",
-  in_progress: "bg-sky-100 text-sky-700 border-sky-200",
+  awaiting_response: "bg-amber-100 text-amber-700 border-amber-200",
+  confirmed: "bg-sky-100 text-sky-700 border-sky-200",
+  in_progress: "bg-blue-100 text-blue-700 border-blue-200",
+  pending_verification: "bg-purple-100 text-purple-700 border-purple-200",
   resolved: "bg-emerald-100 text-emerald-700 border-emerald-200",
+  invoiced: "bg-teal-100 text-teal-700 border-teal-200",
+  closed: "bg-slate-200 text-slate-700 border-slate-300",
   dismissed: "bg-slate-100 text-slate-500 border-slate-200",
 };
 
@@ -62,6 +71,7 @@ type Property = { id: string; name: string | null };
 export default function MaintenancePanel() {
   const [tickets, setTickets] = useState<MaintenanceTicket[]>([]);
   const [properties, setProperties] = useState<Property[]>([]);
+  const [vendors, setVendors] = useState<ServiceVendor[]>([]);
   const [loading, setLoading] = useState(true);
   const [filterStatus, setFilterStatus] = useState<MaintenanceStatus | "all">("all");
   const [filterProperty, setFilterProperty] = useState<string>("all");
@@ -96,10 +106,19 @@ export default function MaintenancePanel() {
     } catch {/* silencioso */}
   }, []);
 
+  const loadVendors = useCallback(async () => {
+    try {
+      const res = await fetch("/api/vendors?type=maintenance&active=true", { cache: "no-store" });
+      const data = await res.json();
+      if (Array.isArray(data.vendors)) setVendors(data.vendors);
+    } catch {/* silencioso */}
+  }, []);
+
   useEffect(() => {
     void loadTickets();
     void loadProperties();
-  }, [loadTickets, loadProperties]);
+    void loadVendors();
+  }, [loadTickets, loadProperties, loadVendors]);
 
   const filteredTickets = useMemo(() => {
     return tickets.filter((t) => {
@@ -113,13 +132,26 @@ export default function MaintenancePanel() {
   const counts = useMemo(() => {
     const c: Record<MaintenanceStatus, number> = {
       open: 0,
+      awaiting_response: 0,
+      confirmed: 0,
       in_progress: 0,
+      pending_verification: 0,
       resolved: 0,
+      invoiced: 0,
+      closed: 0,
       dismissed: 0,
     };
     tickets.forEach((t) => { c[t.status]++; });
     return c;
   }, [tickets]);
+  // Agrupaciones visibles: abiertos = open + awaiting + confirmed + in_progress,
+  // resueltos = resolved + invoiced + closed, pendientes = pending_verification.
+  const grouped = useMemo(() => ({
+    openish: counts.open + counts.awaiting_response + counts.confirmed + counts.in_progress,
+    pending: counts.pending_verification,
+    done: counts.resolved + counts.invoiced + counts.closed,
+    dismissed: counts.dismissed,
+  }), [counts]);
 
   const handleUpdate = async (id: string, patch: Partial<MaintenanceTicket>) => {
     const body: Record<string, unknown> = {};
@@ -173,10 +205,10 @@ export default function MaintenancePanel() {
 
       {/* Stats */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-        <StatCard label="Abiertos" count={counts.open} icon={AlertTriangle} color="text-rose-600 bg-rose-50" />
-        <StatCard label="En progreso" count={counts.in_progress} icon={Clock} color="text-sky-600 bg-sky-50" />
-        <StatCard label="Resueltos" count={counts.resolved} icon={CheckCircle2} color="text-emerald-600 bg-emerald-50" />
-        <StatCard label="Descartados" count={counts.dismissed} icon={X} color="text-slate-500 bg-slate-100" />
+        <StatCard label="Activos" count={grouped.openish} icon={AlertTriangle} color="text-rose-600 bg-rose-50" />
+        <StatCard label="Por verificar" count={grouped.pending} icon={Clock} color="text-purple-600 bg-purple-50" />
+        <StatCard label="Cerrados" count={grouped.done} icon={CheckCircle2} color="text-emerald-600 bg-emerald-50" />
+        <StatCard label="Descartados" count={grouped.dismissed} icon={X} color="text-slate-500 bg-slate-100" />
       </div>
 
       {/* Filters */}
@@ -290,8 +322,14 @@ export default function MaintenancePanel() {
           {openTicket && (
             <TicketDetail
               ticket={openTicket}
-              onUpdate={(patch) => handleUpdate(openTicket.id, patch)}
+              vendors={vendors}
+              onUpdate={async (patch) => {
+                await handleUpdate(openTicket.id, patch);
+              }}
               onDelete={() => handleDelete(openTicket.id)}
+              onVendorCreated={() => {
+                void loadVendors();
+              }}
             />
           )}
         </SheetContent>
@@ -339,118 +377,6 @@ function StatCard({
         </div>
       </CardContent>
     </Card>
-  );
-}
-
-function TicketDetail({
-  ticket,
-  onUpdate,
-  onDelete,
-}: {
-  ticket: MaintenanceTicket;
-  onUpdate: (patch: Partial<MaintenanceTicket>) => void;
-  onDelete: () => void;
-}) {
-  const [resolutionNotes, setResolutionNotes] = useState(ticket.resolutionNotes ?? "");
-
-  return (
-    <>
-      <SheetHeader>
-        <SheetTitle className="flex items-center gap-2">
-          <AlertTriangle className="h-5 w-5 text-rose-600" />
-          {ticket.title}
-        </SheetTitle>
-        <SheetDescription>
-          {ticket.propertyName || ticket.propertyId} — creado {new Date(ticket.createdAt).toLocaleString("es-ES")}
-        </SheetDescription>
-      </SheetHeader>
-
-      <div className="mt-6 space-y-5">
-        <div className="flex flex-wrap gap-2">
-          <Badge className={cn("border font-bold", STATUS_COLORS[ticket.status])}>
-            {MAINTENANCE_STATUS_LABELS[ticket.status]}
-          </Badge>
-          <Badge className={cn("border font-bold", SEVERITY_COLORS[ticket.severity])}>
-            {MAINTENANCE_SEVERITY_LABELS[ticket.severity]}
-          </Badge>
-          <Badge variant="outline">{MAINTENANCE_CATEGORY_LABELS[ticket.category]}</Badge>
-        </div>
-
-        {ticket.description && (
-          <div>
-            <Label className="text-xs font-bold text-slate-600 uppercase tracking-wide">Descripción</Label>
-            <p className="text-sm text-slate-700 mt-1 whitespace-pre-wrap">{ticket.description}</p>
-          </div>
-        )}
-
-        {ticket.reportedByName && (
-          <div className="text-xs text-slate-500">
-            Reportado por <strong>{ticket.reportedByName}</strong>
-            {ticket.cleaningTaskId && <> desde tarea de limpieza</>}
-          </div>
-        )}
-
-        {ticket.photos.length > 0 && (
-          <div>
-            <Label className="text-xs font-bold text-slate-600 uppercase tracking-wide mb-2 block">
-              Evidencia ({ticket.photos.length})
-            </Label>
-            <div className="grid grid-cols-3 gap-2">
-              {ticket.photos.map((url, i) => (
-                <img key={i} src={url} alt={`Evidencia ${i + 1}`} className="rounded-xl object-cover aspect-square" />
-              ))}
-            </div>
-          </div>
-        )}
-
-        <div className="space-y-2 pt-2 border-t">
-          <Label className="text-xs font-bold text-slate-600 uppercase tracking-wide">Cambiar estado</Label>
-          <div className="flex gap-2 flex-wrap">
-            {(Object.keys(MAINTENANCE_STATUS_LABELS) as MaintenanceStatus[]).map((s) => (
-              <Button
-                key={s}
-                size="sm"
-                variant={ticket.status === s ? "default" : "outline"}
-                onClick={() => onUpdate({ status: s })}
-              >
-                {MAINTENANCE_STATUS_LABELS[s]}
-              </Button>
-            ))}
-          </div>
-        </div>
-
-        <div>
-          <Label className="text-xs font-bold text-slate-600 uppercase tracking-wide">Asignado a</Label>
-          <Input
-            value={ticket.assigneeName ?? ""}
-            onChange={(e) => onUpdate({ assigneeName: e.target.value })}
-            placeholder="Nombre del técnico o responsable"
-            className="mt-1"
-          />
-        </div>
-
-        <div>
-          <Label className="text-xs font-bold text-slate-600 uppercase tracking-wide">Notas de resolución</Label>
-          <Textarea
-            value={resolutionNotes}
-            onChange={(e) => setResolutionNotes(e.target.value)}
-            onBlur={() => {
-              if (resolutionNotes !== (ticket.resolutionNotes ?? "")) {
-                onUpdate({ resolutionNotes });
-              }
-            }}
-            placeholder="Qué se hizo, costo, proveedor, etc."
-            className="mt-1 min-h-[80px]"
-          />
-        </div>
-
-        <div className="pt-4 border-t flex justify-between">
-          <Button variant="ghost" size="sm" onClick={onDelete} className="text-rose-600 hover:bg-rose-50">
-            <Trash2 className="h-4 w-4 mr-1" /> Eliminar
-          </Button>
-        </div>
-      </div>
-    </>
   );
 }
 

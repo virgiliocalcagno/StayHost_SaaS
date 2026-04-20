@@ -160,7 +160,24 @@ export async function POST(req: NextRequest) {
       .single();
 
     if (error) return NextResponse.json({ error: error.message }, { status: 500 });
-    return NextResponse.json({ ok: true, ticket: rowToTicket(data as TicketRow) });
+
+    // Evento inicial del timeline. Si viene de una tarea de limpieza el
+    // mensaje lo refleja; si es manual, lo indica también.
+    const createdRow = data as TicketRow;
+    const origin = createdRow.cleaning_task_id
+      ? "Reportado desde tarea de limpieza"
+      : "Creado manualmente";
+    await supabase.from("ticket_events").insert({
+      tenant_id: tenantId,
+      ticket_id: createdRow.id,
+      event_type: "created",
+      content: origin,
+      actor_id: reportedById ?? null,
+      actor_name: reportedByName ?? null,
+      metadata: { severity, category },
+    } as never);
+
+    return NextResponse.json({ ok: true, ticket: rowToTicket(createdRow) });
   } catch (err) {
     return NextResponse.json(
       { error: err instanceof Error ? err.message : String(err) },
@@ -170,6 +187,9 @@ export async function POST(req: NextRequest) {
 }
 
 // PATCH /api/maintenance-tickets?id=...
+// Al cambiar status o assignee emitimos un evento en ticket_events para que
+// el timeline del detalle refleje la acción sin requerir que el frontend la
+// registre por separado (source of truth único en el backend).
 export async function PATCH(req: NextRequest) {
   const { tenantId, supabase } = await getAuthenticatedTenant();
   if (!tenantId) {
@@ -192,12 +212,67 @@ export async function PATCH(req: NextRequest) {
     if (body.assigneeName !== undefined) update.assignee_name = body.assigneeName;
     if (body.resolutionNotes !== undefined) update.resolution_notes = body.resolutionNotes;
 
+    // Leemos el estado previo ANTES de actualizar para saber de qué a qué
+    // cambió. Una sola round-trip extra es aceptable por la claridad que
+    // da en el timeline.
+    const { data: prev } = await supabase
+      .from("maintenance_tickets")
+      .select("status, assignee_id, assignee_name")
+      .eq("id", id)
+      .single();
+
     const { error, count } = await supabase
       .from("maintenance_tickets")
       .update(update as never, { count: "exact" })
       .eq("id", id);
     if (error) return NextResponse.json({ error: error.message }, { status: 500 });
     if (!count) return NextResponse.json({ error: "Not found" }, { status: 404 });
+
+    // Emitir eventos de timeline. Best-effort — si el insert falla no
+    // revertimos el PATCH.
+    const prevRow = prev as { status?: string; assignee_id?: string | null; assignee_name?: string | null } | null;
+    const events: Array<Record<string, unknown>> = [];
+    const actorName: string | null = body.actorName ?? null;
+    const actorId: string | null = body.actorId ?? null;
+
+    if (body.status !== undefined && prevRow && prevRow.status !== body.status) {
+      events.push({
+        tenant_id: tenantId,
+        ticket_id: id,
+        event_type: "status_change",
+        content: `Estado: ${prevRow.status} → ${body.status}`,
+        actor_id: actorId,
+        actor_name: actorName,
+        metadata: { from: prevRow.status, to: body.status },
+      });
+    }
+
+    if (
+      body.assigneeId !== undefined &&
+      prevRow &&
+      (prevRow.assignee_id ?? null) !== (body.assigneeId ?? null)
+    ) {
+      const newName = body.assigneeName ?? "sin nombre";
+      events.push({
+        tenant_id: tenantId,
+        ticket_id: id,
+        event_type: "assignment",
+        content: body.assigneeId
+          ? `Asignado a ${newName}`
+          : `Asignación removida (antes: ${prevRow.assignee_name ?? "—"})`,
+        actor_id: actorId,
+        actor_name: actorName,
+        metadata: {
+          vendor_id: body.assigneeId ?? null,
+          vendor_name: body.assigneeName ?? null,
+        },
+      });
+    }
+
+    if (events.length > 0) {
+      await supabase.from("ticket_events").insert(events as never);
+    }
+
     return NextResponse.json({ ok: true });
   } catch (err) {
     return NextResponse.json(
