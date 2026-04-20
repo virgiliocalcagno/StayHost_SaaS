@@ -149,6 +149,17 @@ export async function POST(req: NextRequest): Promise<NextResponse<LookupResult 
 
   if (existingRecords && existingRecords.length > 0) {
     checkinRecordId = (existingRecords[0] as { id: string }).id;
+    // Sincronizar credenciales del record existente con las del lookup.
+    // Si fue creado por autoSync antes de que el booking tuviera
+    // channel_code, su guest_last_name podría no coincidir — el uploadId
+    // fallaría con 401. Actualizamos para dejar auth consistente.
+    await supabaseAdmin
+      .from("checkin_records")
+      .update({
+        guest_last_name: b.channel_code.toLowerCase().trim(),
+        last_four_digits: phoneLast4,
+      } as never)
+      .eq("id", checkinRecordId);
   } else {
     // Crear uno nuevo al vuelo. Usamos channel_code como guest_last_name
     // (soft-token) y phoneLast4 como last_four_digits para que los demás
