@@ -44,11 +44,8 @@ import {
   MAINTENANCE_SEVERITY_LABELS,
   MAINTENANCE_STATUS_LABELS,
 } from "@/types/maintenance";
-import {
-  type ServiceVendor,
-  matchesMaintenanceCategory,
-  coversProperty,
-} from "@/types/vendor";
+import { type ServiceVendor } from "@/types/vendor";
+import { TicketDetail } from "@/components/dashboard/maintenance/TicketDetail";
 
 const SEVERITY_COLORS: Record<MaintenanceSeverity, string> = {
   low: "bg-slate-100 text-slate-700 border-slate-200",
@@ -59,8 +56,13 @@ const SEVERITY_COLORS: Record<MaintenanceSeverity, string> = {
 
 const STATUS_COLORS: Record<MaintenanceStatus, string> = {
   open: "bg-rose-100 text-rose-700 border-rose-200",
-  in_progress: "bg-sky-100 text-sky-700 border-sky-200",
+  awaiting_response: "bg-amber-100 text-amber-700 border-amber-200",
+  confirmed: "bg-sky-100 text-sky-700 border-sky-200",
+  in_progress: "bg-blue-100 text-blue-700 border-blue-200",
+  pending_verification: "bg-purple-100 text-purple-700 border-purple-200",
   resolved: "bg-emerald-100 text-emerald-700 border-emerald-200",
+  invoiced: "bg-teal-100 text-teal-700 border-teal-200",
+  closed: "bg-slate-200 text-slate-700 border-slate-300",
   dismissed: "bg-slate-100 text-slate-500 border-slate-200",
 };
 
@@ -130,13 +132,26 @@ export default function MaintenancePanel() {
   const counts = useMemo(() => {
     const c: Record<MaintenanceStatus, number> = {
       open: 0,
+      awaiting_response: 0,
+      confirmed: 0,
       in_progress: 0,
+      pending_verification: 0,
       resolved: 0,
+      invoiced: 0,
+      closed: 0,
       dismissed: 0,
     };
     tickets.forEach((t) => { c[t.status]++; });
     return c;
   }, [tickets]);
+  // Agrupaciones visibles: abiertos = open + awaiting + confirmed + in_progress,
+  // resueltos = resolved + invoiced + closed, pendientes = pending_verification.
+  const grouped = useMemo(() => ({
+    openish: counts.open + counts.awaiting_response + counts.confirmed + counts.in_progress,
+    pending: counts.pending_verification,
+    done: counts.resolved + counts.invoiced + counts.closed,
+    dismissed: counts.dismissed,
+  }), [counts]);
 
   const handleUpdate = async (id: string, patch: Partial<MaintenanceTicket>) => {
     const body: Record<string, unknown> = {};
@@ -190,10 +205,10 @@ export default function MaintenancePanel() {
 
       {/* Stats */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-        <StatCard label="Abiertos" count={counts.open} icon={AlertTriangle} color="text-rose-600 bg-rose-50" />
-        <StatCard label="En progreso" count={counts.in_progress} icon={Clock} color="text-sky-600 bg-sky-50" />
-        <StatCard label="Resueltos" count={counts.resolved} icon={CheckCircle2} color="text-emerald-600 bg-emerald-50" />
-        <StatCard label="Descartados" count={counts.dismissed} icon={X} color="text-slate-500 bg-slate-100" />
+        <StatCard label="Activos" count={grouped.openish} icon={AlertTriangle} color="text-rose-600 bg-rose-50" />
+        <StatCard label="Por verificar" count={grouped.pending} icon={Clock} color="text-purple-600 bg-purple-50" />
+        <StatCard label="Cerrados" count={grouped.done} icon={CheckCircle2} color="text-emerald-600 bg-emerald-50" />
+        <StatCard label="Descartados" count={grouped.dismissed} icon={X} color="text-slate-500 bg-slate-100" />
       </div>
 
       {/* Filters */}
@@ -308,8 +323,13 @@ export default function MaintenancePanel() {
             <TicketDetail
               ticket={openTicket}
               vendors={vendors}
-              onUpdate={(patch) => handleUpdate(openTicket.id, patch)}
+              onUpdate={async (patch) => {
+                await handleUpdate(openTicket.id, patch);
+              }}
               onDelete={() => handleDelete(openTicket.id)}
+              onVendorCreated={() => {
+                void loadVendors();
+              }}
             />
           )}
         </SheetContent>
@@ -357,226 +377,6 @@ function StatCard({
         </div>
       </CardContent>
     </Card>
-  );
-}
-
-function TicketDetail({
-  ticket,
-  vendors,
-  onUpdate,
-  onDelete,
-}: {
-  ticket: MaintenanceTicket;
-  vendors: ServiceVendor[];
-  onUpdate: (patch: Partial<MaintenanceTicket>) => void;
-  onDelete: () => void;
-}) {
-  const [resolutionNotes, setResolutionNotes] = useState(ticket.resolutionNotes ?? "");
-
-  // Vendors candidatos: matchean categoría del ticket y cubren la propiedad.
-  // Los preferidos aparecen primero (el API ya ordena por is_preferred).
-  const matchingVendors = useMemo(() => {
-    return vendors.filter(
-      (v) => matchesMaintenanceCategory(v, ticket.category) && coversProperty(v, ticket.propertyId)
-    );
-  }, [vendors, ticket.category, ticket.propertyId]);
-
-  const selectedVendor = useMemo(
-    () => (ticket.assigneeId ? vendors.find((v) => v.id === ticket.assigneeId) ?? null : null),
-    [vendors, ticket.assigneeId]
-  );
-
-  const handleAssignVendor = (vendorId: string) => {
-    if (vendorId === "__manual__") return;
-    const v = vendors.find((x) => x.id === vendorId);
-    if (!v) return;
-    onUpdate({ assigneeId: v.id, assigneeName: v.name });
-  };
-
-  const handleSendWhatsApp = (vendor: ServiceVendor) => {
-    if (!vendor.phone) {
-      alert("Este proveedor no tiene teléfono registrado.");
-      return;
-    }
-    const cleanPhone = vendor.phone.replace(/\D/g, "");
-    const lines = [
-      `*Nuevo pedido de mantenimiento — StayHost*`,
-      ``,
-      `🏠 *Propiedad:* ${ticket.propertyName || ticket.propertyId}`,
-      `⚠️ *Problema:* ${ticket.title}`,
-      `📋 *Categoría:* ${MAINTENANCE_CATEGORY_LABELS[ticket.category]}`,
-      `🔥 *Severidad:* ${MAINTENANCE_SEVERITY_LABELS[ticket.severity]}`,
-    ];
-    if (ticket.description) {
-      lines.push(``, `*Detalles:*`, ticket.description);
-    }
-    if (ticket.photos.length > 0) {
-      lines.push(``, `📷 *Fotos:*`);
-      ticket.photos.forEach((url) => lines.push(url));
-    }
-    lines.push(``, `Por favor confirma disponibilidad. ¡Gracias!`);
-    const text = encodeURIComponent(lines.join("\n"));
-    window.open(`https://wa.me/${cleanPhone}?text=${text}`, "_blank");
-
-    // Al enviar, marcar el ticket como in_progress si estaba open y guardar asignación.
-    const patch: Partial<MaintenanceTicket> = {
-      assigneeId: vendor.id,
-      assigneeName: vendor.name,
-    };
-    if (ticket.status === "open") patch.status = "in_progress";
-    onUpdate(patch);
-  };
-
-  return (
-    <>
-      <SheetHeader>
-        <SheetTitle className="flex items-center gap-2">
-          <AlertTriangle className="h-5 w-5 text-rose-600" />
-          {ticket.title}
-        </SheetTitle>
-        <SheetDescription>
-          {ticket.propertyName || ticket.propertyId} — creado {new Date(ticket.createdAt).toLocaleString("es-ES")}
-        </SheetDescription>
-      </SheetHeader>
-
-      <div className="mt-6 space-y-5">
-        <div className="flex flex-wrap gap-2">
-          <Badge className={cn("border font-bold", STATUS_COLORS[ticket.status])}>
-            {MAINTENANCE_STATUS_LABELS[ticket.status]}
-          </Badge>
-          <Badge className={cn("border font-bold", SEVERITY_COLORS[ticket.severity])}>
-            {MAINTENANCE_SEVERITY_LABELS[ticket.severity]}
-          </Badge>
-          <Badge variant="outline">{MAINTENANCE_CATEGORY_LABELS[ticket.category]}</Badge>
-        </div>
-
-        {ticket.description && (
-          <div>
-            <Label className="text-xs font-bold text-slate-600 uppercase tracking-wide">Descripción</Label>
-            <p className="text-sm text-slate-700 mt-1 whitespace-pre-wrap">{ticket.description}</p>
-          </div>
-        )}
-
-        {ticket.reportedByName && (
-          <div className="text-xs text-slate-500">
-            Reportado por <strong>{ticket.reportedByName}</strong>
-            {ticket.cleaningTaskId && <> desde tarea de limpieza</>}
-          </div>
-        )}
-
-        {ticket.photos.length > 0 && (
-          <div>
-            <Label className="text-xs font-bold text-slate-600 uppercase tracking-wide mb-2 block">
-              Evidencia ({ticket.photos.length})
-            </Label>
-            <div className="grid grid-cols-3 gap-2">
-              {ticket.photos.map((url, i) => (
-                <img key={i} src={url} alt={`Evidencia ${i + 1}`} className="rounded-xl object-cover aspect-square" />
-              ))}
-            </div>
-          </div>
-        )}
-
-        {/* ── Escalar a proveedor ─────────────────────────────────────────── */}
-        <div className="space-y-3 pt-2 border-t bg-emerald-50/30 -mx-6 px-6 py-4 rounded-none">
-          <Label className="text-xs font-bold text-emerald-700 uppercase tracking-wide flex items-center gap-1">
-            <MessageCircle className="h-3.5 w-3.5" /> Escalar a proveedor
-          </Label>
-          {matchingVendors.length === 0 ? (
-            <p className="text-xs text-slate-500 italic">
-              No hay proveedores registrados para la categoría {MAINTENANCE_CATEGORY_LABELS[ticket.category]}.
-              Agrégalos desde el panel <strong>Proveedores</strong>.
-            </p>
-          ) : (
-            <>
-              <Select value={selectedVendor?.id ?? ""} onValueChange={handleAssignVendor}>
-                <SelectTrigger><SelectValue placeholder="Elegir proveedor…" /></SelectTrigger>
-                <SelectContent>
-                  {matchingVendors.map((v) => (
-                    <SelectItem key={v.id} value={v.id}>
-                      {v.isPreferred && "⭐ "}{v.name}
-                      {v.phone && ` · ${v.phone}`}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              {selectedVendor && (
-                <div className="flex items-center gap-2 p-3 bg-white rounded-xl border border-emerald-100">
-                  <div className="flex-1 min-w-0">
-                    <p className="text-sm font-bold text-slate-800 flex items-center gap-1">
-                      {selectedVendor.isPreferred && <Star className="h-3.5 w-3.5 text-amber-500 fill-amber-500" />}
-                      {selectedVendor.name}
-                    </p>
-                    {selectedVendor.phone && (
-                      <p className="text-xs text-slate-500">{selectedVendor.phone}</p>
-                    )}
-                  </div>
-                  <Button
-                    size="sm"
-                    onClick={() => handleSendWhatsApp(selectedVendor)}
-                    disabled={!selectedVendor.phone}
-                    className="bg-emerald-600 hover:bg-emerald-700 text-white"
-                  >
-                    <MessageCircle className="h-4 w-4 mr-1" />
-                    Enviar WhatsApp
-                  </Button>
-                </div>
-              )}
-            </>
-          )}
-        </div>
-
-        <div className="space-y-2 pt-2 border-t">
-          <Label className="text-xs font-bold text-slate-600 uppercase tracking-wide">Cambiar estado</Label>
-          <div className="flex gap-2 flex-wrap">
-            {(Object.keys(MAINTENANCE_STATUS_LABELS) as MaintenanceStatus[]).map((s) => (
-              <Button
-                key={s}
-                size="sm"
-                variant={ticket.status === s ? "default" : "outline"}
-                onClick={() => onUpdate({ status: s })}
-              >
-                {MAINTENANCE_STATUS_LABELS[s]}
-              </Button>
-            ))}
-          </div>
-        </div>
-
-        <div>
-          <Label className="text-xs font-bold text-slate-600 uppercase tracking-wide">Asignado a (manual)</Label>
-          <Input
-            value={ticket.assigneeName ?? ""}
-            onChange={(e) => onUpdate({ assigneeName: e.target.value })}
-            placeholder="Nombre del técnico o responsable"
-            className="mt-1"
-          />
-          <p className="text-[11px] text-slate-400 mt-1">
-            Se completa automáticamente al elegir un proveedor arriba, pero puedes editarlo.
-          </p>
-        </div>
-
-        <div>
-          <Label className="text-xs font-bold text-slate-600 uppercase tracking-wide">Notas de resolución</Label>
-          <Textarea
-            value={resolutionNotes}
-            onChange={(e) => setResolutionNotes(e.target.value)}
-            onBlur={() => {
-              if (resolutionNotes !== (ticket.resolutionNotes ?? "")) {
-                onUpdate({ resolutionNotes });
-              }
-            }}
-            placeholder="Qué se hizo, costo, proveedor, etc."
-            className="mt-1 min-h-[80px]"
-          />
-        </div>
-
-        <div className="pt-4 border-t flex justify-between">
-          <Button variant="ghost" size="sm" onClick={onDelete} className="text-rose-600 hover:bg-rose-50">
-            <Trash2 className="h-4 w-4 mr-1" /> Eliminar
-          </Button>
-        </div>
-      </div>
-    </>
   );
 }
 

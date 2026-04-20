@@ -9,7 +9,38 @@ export type MaintenanceCategory =
 
 export type MaintenanceSeverity = "low" | "medium" | "high" | "critical";
 
-export type MaintenanceStatus = "open" | "in_progress" | "resolved" | "dismissed";
+export type MaintenanceStatus =
+  | "open"
+  | "awaiting_response"
+  | "confirmed"
+  | "in_progress"
+  | "pending_verification"
+  | "resolved"
+  | "invoiced"
+  | "closed"
+  | "dismissed";
+
+export type TicketEventType =
+  | "created"
+  | "status_change"
+  | "assignment"
+  | "whatsapp_sent"
+  | "whatsapp_received"
+  | "internal_note"
+  | "photo_request"
+  | "escalation"
+  | "attachment";
+
+export interface TicketEvent {
+  id: string;
+  ticketId: string;
+  eventType: TicketEventType;
+  content: string | null;
+  actorId: string | null;
+  actorName: string | null;
+  metadata: Record<string, unknown>;
+  createdAt: string;
+}
 
 export interface MaintenanceTicket {
   id: string;
@@ -60,7 +91,25 @@ export const MAINTENANCE_SEVERITY_LABELS: Record<MaintenanceSeverity, string> = 
 
 export const MAINTENANCE_STATUS_LABELS: Record<MaintenanceStatus, string> = {
   open: "Abierto",
+  awaiting_response: "Esperando respuesta",
+  confirmed: "Confirmado",
   in_progress: "En progreso",
+  pending_verification: "Pendiente verificar",
   resolved: "Resuelto",
+  invoiced: "Facturado",
+  closed: "Cerrado",
   dismissed: "Descartado",
 };
+
+// Orden del ciclo de vida — usado por la UI para mostrar el progreso del
+// ticket como una barra / pills ordenadas.
+export const MAINTENANCE_STATUS_ORDER: MaintenanceStatus[] = [
+  "open",
+  "awaiting_response",
+  "confirmed",
+  "in_progress",
+  "pending_verification",
+  "resolved",
+  "invoiced",
+  "closed",
+];
