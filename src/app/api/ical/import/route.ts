@@ -152,6 +152,16 @@ export async function POST(req: NextRequest) {
         // "Airbnb (Not available)", "Blocked", "Not available" = manual blocks from platform
         const isBlock = /not available|blocked/i.test(ev.summary);
 
+        // Código de reserva del canal (para login del huésped en /checkin).
+        // Airbnb: HMXXXXXXXX dentro de la URL del DESCRIPTION.
+        // VRBO/Booking: por ahora null (añadir parser cuando tengamos muestras).
+        const channelCode = (() => {
+          if (isBlock || !ev.bookingUrl) return null;
+          const airbnbMatch = ev.bookingUrl.match(/details\/([A-Z0-9]{8,})/i);
+          if (airbnbMatch) return airbnbMatch[1].toUpperCase();
+          return null;
+        })();
+
         const baseRow: Record<string, unknown> = {
           property_id: propertyId,
           tenant_id: tenantId,
@@ -160,6 +170,8 @@ export async function POST(req: NextRequest) {
           guest_name: isBlock ? "Bloqueado" : extractGuestName(ev.summary),
           guest_email: null,
           guest_phone: isBlock ? null : ev.phone,
+          phone_last4: isBlock ? null : ev.phone4,
+          channel_code: channelCode,
           check_in: ev.dtstart,
           check_out: ev.dtend,
           status: isBlock ? "blocked" : "confirmed",
@@ -173,17 +185,25 @@ export async function POST(req: NextRequest) {
             ignoreDuplicates: false,
           });
 
-        // Fallback: if booking_url column missing, retry without it
-        if (error?.message?.includes("booking_url")) {
-          const { booking_url: _drop, ...rowWithout } = baseRow;
-          void _drop;
+        // Fallback: si alguna columna nueva no existe todavía en prod (el
+        // usuario no corrió la migración), reintentar sin ella.
+        const retryWithout = async (cols: string[]) => {
+          const retryRow = { ...baseRow };
+          cols.forEach((c) => { delete retryRow[c]; });
           const res2 = await supabase
             .from("bookings")
-            .upsert(rowWithout as never, {
+            .upsert(retryRow as never, {
               onConflict: "property_id,source_uid",
               ignoreDuplicates: false,
             });
-          error = res2.error;
+          return res2.error;
+        };
+
+        if (error?.message?.includes("booking_url")) {
+          error = await retryWithout(["booking_url"]);
+        }
+        if (error?.message?.includes("channel_code") || error?.message?.includes("phone_last4")) {
+          error = await retryWithout(["channel_code", "phone_last4"]);
         }
 
         if (!error) imported++;
