@@ -27,6 +27,10 @@ import {
   Trash2,
   X,
   Loader2,
+  Copy,
+  Check,
+  MessageCircle,
+  KeyRound,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Textarea } from "@/components/ui/textarea";
@@ -170,6 +174,17 @@ export default function MultiCalendarPanel() {
 
   const [savingBooking, setSavingBooking] = useState(false);
 
+  // Resultado de la creación — se muestra en un modal con el código de check-in
+  // recién generado + acciones de compartir. Null = oculto.
+  const [createdBookingInfo, setCreatedBookingInfo] = useState<{
+    channelCode: string;
+    phoneLast4: string | null;
+    guestName: string;
+    guestPhone: string;
+    propertyName: string;
+  } | null>(null);
+  const [copiedCode, setCopiedCode] = useState(false);
+
   const handleCreateBooking = async () => {
     if (!newBooking.guest || !newBooking.start || !newBooking.end) return;
     setSavingBooking(true);
@@ -193,12 +208,71 @@ export default function MultiCalendarPanel() {
       });
       const data = await res.json();
       if (data.ok) {
+        const prop = properties.find((p) => String(p.id) === String(newBooking.propertyId));
         setIsNewBookingOpen(false);
+        // Solo mostramos el modal de confirmación si la API devolvió
+        // channelCode (reservas directas con la migración corrida). Si no,
+        // cerramos silenciosamente como antes.
+        if (data.channelCode) {
+          setCreatedBookingInfo({
+            channelCode: data.channelCode,
+            phoneLast4: data.phoneLast4 ?? null,
+            guestName: newBooking.guest,
+            guestPhone: newBooking.telefono || "",
+            propertyName: prop?.name ?? "",
+          });
+        }
         setNewBooking({ propertyId: "1", guest: "", docIdentidad: "", nacionalidad: "", telefono: "", numHuespedes: 2, start: "", end: "", channel: "direct", status: "confirmed", price: 0 });
         loadData();
       }
     } catch {}
     setSavingBooking(false);
+  };
+
+  // Arma el link con el código pre-rellenado para compartir con el huésped.
+  const buildCheckinUrl = (code: string) => {
+    if (typeof window === "undefined") return `/checkin?code=${encodeURIComponent(code)}`;
+    return `${window.location.origin}/checkin?code=${encodeURIComponent(code)}`;
+  };
+
+  const shareBookingWhatsApp = (info: NonNullable<typeof createdBookingInfo>) => {
+    const url = buildCheckinUrl(info.channelCode);
+    const lines = [
+      `¡Hola ${info.guestName}! 👋`,
+      ``,
+      `Te doy la bienvenida a *${info.propertyName}*.`,
+      ``,
+      `Para completar tu check-in online, entrá a:`,
+      url,
+      ``,
+      `Tu código de reserva ya viene cargado.`,
+      info.phoneLast4
+        ? `Vas a necesitar los últimos 4 dígitos del teléfono que nos pasaste.`
+        : `Vas a necesitar los últimos 4 dígitos de tu teléfono.`,
+      ``,
+      `¡Cualquier duda, me avisás!`,
+    ];
+    const text = lines.join("\n");
+    const cleanPhone = info.guestPhone.replace(/\D/g, "");
+    if (cleanPhone.length >= 8) {
+      window.open(`https://wa.me/${cleanPhone}?text=${encodeURIComponent(text)}`, "_blank");
+      return;
+    }
+    // Sin teléfono completo → Web Share API o WhatsApp Web sin número
+    type NavigatorWithShare = Navigator & { share?: (data: ShareData) => Promise<void> };
+    const nav = navigator as NavigatorWithShare;
+    if (nav.share) {
+      nav.share({ title: "Check-in StayHost", text }).catch(() => {});
+      return;
+    }
+    window.open(`https://wa.me/?text=${encodeURIComponent(text)}`, "_blank");
+    navigator.clipboard.writeText(text).catch(() => {});
+  };
+
+  const copyChannelCode = (code: string) => {
+    navigator.clipboard.writeText(code).catch(() => {});
+    setCopiedCode(true);
+    setTimeout(() => setCopiedCode(false), 2000);
   };
 
   const handleDeleteBooking = async (bookingId: string) => {
@@ -553,6 +627,105 @@ export default function MultiCalendarPanel() {
           </Sheet>
         </div>
       </div>
+
+      {/* ── Modal post-creación: muestra el código de check-in generado ─── */}
+      <Sheet open={!!createdBookingInfo} onOpenChange={(o) => !o && setCreatedBookingInfo(null)}>
+        <SheetContent className="w-full sm:max-w-lg overflow-y-auto">
+          {createdBookingInfo && (
+            <>
+              <SheetHeader>
+                <SheetTitle className="flex items-center gap-2">
+                  <div className="h-10 w-10 rounded-xl bg-emerald-100 flex items-center justify-center">
+                    <Check className="h-5 w-5 text-emerald-600" />
+                  </div>
+                  ¡Reserva creada!
+                </SheetTitle>
+                <SheetDescription>
+                  Compartile el código con el huésped para que haga su check-in online.
+                </SheetDescription>
+              </SheetHeader>
+
+              <div className="mt-6 space-y-5">
+                {/* Código destacado */}
+                <div className="bg-gradient-to-br from-sky-50 to-emerald-50 rounded-3xl border-2 border-emerald-200 p-6 text-center space-y-3">
+                  <div className="flex items-center justify-center gap-2 text-[11px] font-bold text-emerald-700 uppercase tracking-widest">
+                    <KeyRound className="h-3.5 w-3.5" />
+                    Código de check-in
+                  </div>
+                  <p className="text-3xl font-black font-mono tracking-[0.3em] text-slate-900">
+                    {createdBookingInfo.channelCode}
+                  </p>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => copyChannelCode(createdBookingInfo.channelCode)}
+                    className="gap-1.5"
+                  >
+                    {copiedCode ? (
+                      <><Check className="h-3.5 w-3.5 text-emerald-600" /> Copiado</>
+                    ) : (
+                      <><Copy className="h-3.5 w-3.5" /> Copiar código</>
+                    )}
+                  </Button>
+                </div>
+
+                {/* Info del huésped */}
+                <div className="rounded-2xl border bg-card p-4 space-y-2 text-sm">
+                  <div className="flex justify-between">
+                    <span className="text-muted-foreground">Huésped</span>
+                    <span className="font-semibold">{createdBookingInfo.guestName}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-muted-foreground">Propiedad</span>
+                    <span className="font-semibold truncate max-w-[200px]">{createdBookingInfo.propertyName}</span>
+                  </div>
+                  {createdBookingInfo.phoneLast4 && (
+                    <div className="flex justify-between">
+                      <span className="text-muted-foreground">Auth (4 dígitos)</span>
+                      <span className="font-mono font-semibold">••{createdBookingInfo.phoneLast4}</span>
+                    </div>
+                  )}
+                </div>
+
+                {/* Acciones */}
+                <div className="space-y-2">
+                  <Button
+                    onClick={() => shareBookingWhatsApp(createdBookingInfo)}
+                    className="w-full h-12 bg-emerald-600 hover:bg-emerald-700 text-white font-bold"
+                  >
+                    <MessageCircle className="h-4 w-4 mr-2" />
+                    Enviar por WhatsApp
+                  </Button>
+                  <Button
+                    variant="outline"
+                    onClick={() => {
+                      const url = buildCheckinUrl(createdBookingInfo.channelCode);
+                      navigator.clipboard.writeText(url).catch(() => {});
+                      setCopiedCode(true);
+                      setTimeout(() => setCopiedCode(false), 2000);
+                    }}
+                    className="w-full h-11"
+                  >
+                    <Copy className="h-4 w-4 mr-2" />
+                    Copiar link del check-in
+                  </Button>
+                </div>
+
+                <p className="text-[11px] text-center text-muted-foreground leading-relaxed">
+                  El huésped entrará a <span className="font-mono">stayhost.app/checkin</span> con este código
+                  + los últimos 4 dígitos de su teléfono para acceder al check-in online.
+                </p>
+              </div>
+
+              <SheetFooter className="mt-6">
+                <Button variant="ghost" onClick={() => setCreatedBookingInfo(null)} className="w-full">
+                  Cerrar
+                </Button>
+              </SheetFooter>
+            </>
+          )}
+        </SheetContent>
+      </Sheet>
 
       {/* Calendar Grid */}
       <div className="flex-1 border rounded-2xl bg-card overflow-hidden flex flex-col shadow-soft border-border/60">

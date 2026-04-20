@@ -190,7 +190,12 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    return NextResponse.json({ ok: true, id: bookingId });
+    return NextResponse.json({
+      ok: true,
+      id: bookingId,
+      channelCode,       // para que el UI muestre el codigo generado
+      phoneLast4,
+    });
   } catch (err) {
     return NextResponse.json(
       { error: err instanceof Error ? err.message : String(err) },
