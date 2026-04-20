@@ -14,8 +14,8 @@
  * al flow existente /checkin/[bookingId]?d=... (que ya maneja los 6 pasos).
  */
 
-import { useState } from "react";
-import { useRouter } from "next/navigation";
+import { useEffect, useState, Suspense } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import { Building2, KeyRound, Phone, Loader2, AlertCircle } from "lucide-react";
 
 interface LookupResponse {
@@ -54,11 +54,29 @@ function buildEncodedData(b: NonNullable<LookupResponse["booking"]>, last4: stri
 }
 
 export default function CheckinLandingPage() {
+  return (
+    <Suspense fallback={<div className="min-h-screen flex items-center justify-center">Cargando…</div>}>
+      <CheckinForm />
+    </Suspense>
+  );
+}
+
+function CheckinForm() {
   const router = useRouter();
-  const [code, setCode] = useState("");
+  const searchParams = useSearchParams();
+  const [code, setCode] = useState(() => (searchParams.get("code") ?? "").toUpperCase());
   const [last4, setLast4] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+
+  // Si el huésped llega con ?code= en la URL (desde el WhatsApp del host),
+  // hacemos focus automático en el campo de teléfono para que solo tenga que
+  // tipear 4 números y listo.
+  useEffect(() => {
+    if (searchParams.get("code")) {
+      document.getElementById("last4")?.focus();
+    }
+  }, [searchParams]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();

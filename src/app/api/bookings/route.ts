@@ -96,7 +96,22 @@ export async function POST(req: NextRequest) {
         ? clientSourceUid
         : `manual-${crypto.randomUUID()}`;
 
-    const { data, error } = await supabase.from("bookings").insert({
+    // Código de reserva para login del huésped en /checkin. Para reservas
+    // directas generamos un código corto tipo "D-XXXXXXXX" (8 hex chars)
+    // alfanumérico, fácil de leer y tipear. Las reservas iCal lo reciben
+    // desde el parser (HM... de Airbnb).
+    const channelCode = isBlock
+      ? null
+      : `D-${crypto.randomUUID().replace(/-/g, "").slice(0, 8).toUpperCase()}`;
+
+    // Últimos 4 dígitos del teléfono para auth del huésped.
+    const phoneLast4 = (() => {
+      if (isBlock || !guestPhone) return null;
+      const digits = String(guestPhone).replace(/\D/g, "");
+      return digits.length >= 4 ? digits.slice(-4) : null;
+    })();
+
+    const insertRow: Record<string, unknown> = {
       property_id: propertyId,
       tenant_id: tenantId,
       source_uid: sourceUid,
@@ -111,7 +126,21 @@ export async function POST(req: NextRequest) {
       total_price: totalPrice ?? 0,
       num_guests: numGuests ?? 1,
       note: note ?? null,
-    } as never).select("id").single();
+      channel_code: channelCode,
+      phone_last4: phoneLast4,
+    };
+
+    let insertRes = await supabase.from("bookings").insert(insertRow as never).select("id").single();
+
+    // Fallback: si las columnas nuevas no existen todavía en prod, reintentar
+    // sin ellas. Una vez corrida la migración 20260421 esto es no-op.
+    if (insertRes.error?.message?.includes("channel_code") || insertRes.error?.message?.includes("phone_last4")) {
+      delete insertRow.channel_code;
+      delete insertRow.phone_last4;
+      insertRes = await supabase.from("bookings").insert(insertRow as never).select("id").single();
+    }
+
+    const { data, error } = insertRes;
 
     if (error) {
       // 23505 = unique_violation. If client sent a sourceUid that already

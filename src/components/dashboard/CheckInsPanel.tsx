@@ -32,7 +32,7 @@ import {
   LogIn, Plus, Copy, Check, Eye, EyeOff, Wifi, Zap, ShieldCheck, ShieldX,
   RefreshCw, Trash2, ExternalLink, User, Calendar, Building2, Phone,
   CheckCircle2, Clock, XCircle, AlertTriangle, QrCode, Download,
-  Sparkles, Globe, Repeat, Search,
+  Sparkles, Globe, Repeat, Search, MessageCircle,
 } from "lucide-react";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -753,6 +753,49 @@ export default function CheckInsPanel() {
     setTimeout(() => setCopiedId(null), 2000);
   }
 
+  // Compartir check-in por WhatsApp. Arma el mensaje con la URL genérica
+  // v2 (código pre-rellenado) y abre WhatsApp — si tenemos el número
+  // completo va directo al chat, sino abre el share nativo (Web Share API)
+  // o copia al portapapeles como fallback.
+  function shareWhatsApp(r: LocalCheckIn) {
+    const origin = typeof window !== "undefined" ? window.location.origin : "";
+    const channelCode = r.bookingRef ?? "";
+    const genericUrl = channelCode
+      ? `${origin}/checkin?code=${encodeURIComponent(channelCode)}`
+      : `${origin}/checkin`;
+
+    const lines = [
+      `¡Hola${r.guestName ? ` ${r.guestName}` : ""}! 👋`,
+      ``,
+      `Te doy la bienvenida a *${r.propertyName}*.`,
+      ``,
+      `Para hacer tu check-in online, entrá a:`,
+      genericUrl,
+      ``,
+      channelCode ? `Tu código de reserva ya viene cargado en el link.` : `Usá el código de reserva que recibiste por email.`,
+      `Vas a necesitar los últimos 4 dígitos de tu teléfono.`,
+      ``,
+      `¡Cualquier duda, me avisás!`,
+    ];
+    const text = lines.join("\n");
+
+    // Intento 1: Web Share API (iOS Safari / Android Chrome) — abre el
+    // sheet nativo donde el host elige WhatsApp del contacto.
+    type NavigatorWithShare = Navigator & { share?: (data: ShareData) => Promise<void> };
+    const nav = navigator as NavigatorWithShare;
+    if (typeof window !== "undefined" && nav.share) {
+      nav.share({ title: "Check-in StayHost", text }).catch(() => {});
+      return;
+    }
+
+    // Intento 2: wa.me sin número — abre WhatsApp Web con el mensaje
+    // pre-cargado; el host elige el contacto manualmente.
+    window.open(`https://wa.me/?text=${encodeURIComponent(text)}`, "_blank");
+
+    // Paralelo: copiar al portapapeles por si WhatsApp Web falla.
+    navigator.clipboard.writeText(text).catch(() => {});
+  }
+
   // ─── WiFi ─────────────────────────────────────────────────────────────────
 
   function saveWifi() {
@@ -1083,6 +1126,15 @@ export default function CheckInsPanel() {
                         ? <><Check className="h-3.5 w-3.5 text-emerald-500" />Copiado</>
                         : <><Copy className="h-3.5 w-3.5" />Copiar enlace</>
                       }
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => shareWhatsApp(r)}
+                      disabled={r.missingData}
+                      className="flex-1 h-8 gap-1.5 text-xs text-emerald-700 hover:text-emerald-800 hover:bg-emerald-50"
+                    >
+                      <MessageCircle className="h-3.5 w-3.5" />WhatsApp
                     </Button>
                     <Button variant="ghost" size="sm" asChild disabled={r.missingData} className="flex-1 h-8 gap-1.5 text-xs text-muted-foreground hover:text-foreground">
                       <a href={r.link || buildLink(r.id, r.encodedData)} target={r.missingData ? "_self" : "_blank"} rel="noopener noreferrer" onClick={e => r.missingData && e.preventDefault()}>
