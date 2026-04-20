@@ -19,12 +19,14 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "property.id required" }, { status: 400 });
     }
 
-    // Extract iCal URLs from the channels array
-    const channels: { name?: string; icalUrl?: string }[] = property.channels ?? [];
+    // Extract iCal URLs and direct channel from the channels array
+    const channels: { name?: string; icalUrl?: string; connected?: boolean }[] = property.channels ?? [];
     const ical_airbnb =
       channels.find((c) => c.name?.toLowerCase() === "airbnb")?.icalUrl ?? null;
     const ical_vrbo =
       channels.find((c) => ["vrbo", "homeaway"].includes(c.name?.toLowerCase() ?? ""))?.icalUrl ?? null;
+    const direct_enabled =
+      channels.find((c) => c.name?.toLowerCase() === "directa")?.connected ?? property.directEnabled ?? false;
 
     const { data, error: propErr } = await supabase
       .from("properties")
@@ -44,6 +46,7 @@ export async function POST(req: NextRequest) {
           electricity_rate: property.electricityRate ?? 0,
           check_in_time: property.checkInTime ?? "14:00",
           check_out_time: property.checkOutTime ?? "12:00",
+          direct_enabled,
           ttlock_lock_id: property.ttlockLockId ?? null,
           property_type: property.type ?? "apartment",
           price: property.price ?? 0,

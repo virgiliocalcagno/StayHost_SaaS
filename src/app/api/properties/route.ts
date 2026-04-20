@@ -18,7 +18,7 @@ export async function GET() {
       ical_airbnb, ical_vrbo, ical_token,
       wifi_name, wifi_password,
       electricity_enabled, electricity_rate,
-      check_in_time, check_out_time,
+      check_in_time, check_out_time, direct_enabled,
       ttlock_lock_id, ttlock_account_id,
       property_type, price, currency,
       cleaning_fee_one_day, cleaning_fee_more_days,

@@ -581,7 +581,7 @@ export default function PropertiesPanel() {
             { name: "Airbnb", connected: !!p.ical_airbnb, color: "bg-rose-500", icon: "A", icalUrl: p.ical_airbnb ?? undefined },
             { name: "Booking", connected: false, color: "bg-blue-600", icon: "B" },
             { name: "VRBO", connected: !!p.ical_vrbo, color: "bg-indigo-500", icon: "V", icalUrl: p.ical_vrbo ?? undefined },
-            { name: "Directa", connected: false, color: "bg-emerald-500", icon: "D" },
+            { name: "Directa", connected: p.direct_enabled ?? false, color: "bg-emerald-500", icon: "D" },
           ],
           wifiSsid: p.wifi_name ?? undefined,
           wifiPassword: p.wifi_password ?? undefined,

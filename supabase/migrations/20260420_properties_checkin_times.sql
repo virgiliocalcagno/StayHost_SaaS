@@ -4,4 +4,5 @@
 
 alter table public.properties
   add column if not exists check_in_time  text not null default '14:00',
-  add column if not exists check_out_time text not null default '12:00';
+  add column if not exists check_out_time text not null default '12:00',
+  add column if not exists direct_enabled boolean not null default false;
