@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getAuthenticatedTenant } from "@/lib/supabase/server";
+import { supabaseAdmin } from "@/lib/supabase/admin";
 
 // All three handlers read the tenant_id from the authenticated session
 // cookie. They no longer accept `tenantEmail` in the body or `?email=` in
@@ -123,7 +124,151 @@ export async function POST(req: NextRequest) {
       }
       return NextResponse.json({ error: error.message }, { status: 500 });
     }
-    return NextResponse.json({ ok: true, id: (data as { id: string }).id });
+    const bookingId = (data as { id: string }).id;
+
+    // Auto-create PIN if guest has phone and property has a TTLock lock
+    if (!isBlock && guestPhone) {
+      try {
+        const last4 = String(guestPhone).replace(/\D/g, "").slice(-4);
+        if (last4.length === 4) {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const { data: prop } = await (supabase.from("properties") as any)
+            .select("ttlock_lock_id")
+            .eq("id", propertyId)
+            .single();
+
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          await (supabase.from("access_pins") as any).insert({
+            tenant_id: tenantId,
+            property_id: propertyId,
+            booking_id: bookingId,
+            ttlock_lock_id: prop?.ttlock_lock_id ? String(prop.ttlock_lock_id) : null,
+            guest_name: guestName ?? "Huésped",
+            guest_phone: guestPhone,
+            pin: last4,
+            source: source === "block" ? "manual" : "direct_booking",
+            status: "active",
+            delivery_status: "pending",
+            valid_from: new Date(checkIn + "T14:00:00").toISOString(),
+            valid_to: new Date(checkOut + "T12:00:00").toISOString(),
+          });
+        }
+      } catch (pinErr) {
+        console.error("[bookings/POST] auto-PIN creation failed (non-fatal):", pinErr);
+      }
+    }
+
+    return NextResponse.json({ ok: true, id: bookingId });
+  } catch (err) {
+    return NextResponse.json(
+      { error: err instanceof Error ? err.message : String(err) },
+      { status: 500 }
+    );
+  }
+}
+
+// PATCH /api/bookings — update a booking
+// Allowed fields: guestName, guestPhone, checkIn, checkOut, totalPrice, note,
+// numGuests, status. Validates date overlap if dates change.
+export async function PATCH(req: NextRequest) {
+  const { tenantId, supabase } = await getAuthenticatedTenant();
+  if (!tenantId) {
+    return NextResponse.json({ error: "No tenant linked to this user" }, { status: 403 });
+  }
+
+  try {
+    const body = await req.json();
+    const { bookingId, ...fields } = body;
+    if (!bookingId) {
+      return NextResponse.json({ error: "bookingId required" }, { status: 400 });
+    }
+
+    const allowed: Record<string, string> = {
+      guestName: "guest_name",
+      guestPhone: "guest_phone",
+      guestDoc: "guest_doc",
+      guestNationality: "guest_nationality",
+      checkIn: "check_in",
+      checkOut: "check_out",
+      totalPrice: "total_price",
+      numGuests: "num_guests",
+      note: "note",
+      status: "status",
+    };
+
+    const patch: Record<string, unknown> = {};
+    for (const [key, col] of Object.entries(allowed)) {
+      if (key in fields) patch[col] = fields[key];
+    }
+
+    if (Object.keys(patch).length === 0) {
+      return NextResponse.json({ error: "No valid fields to update" }, { status: 400 });
+    }
+
+    // If dates changed, validate overlap
+    if (patch.check_in || patch.check_out) {
+      // Get current booking to know property and current dates
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const { data: current } = await (supabase.from("bookings") as any)
+        .select("property_id, check_in, check_out")
+        .eq("id", bookingId)
+        .single();
+
+      if (!current) {
+        return NextResponse.json({ error: "Booking not found" }, { status: 404 });
+      }
+
+      const newCheckIn = (patch.check_in ?? current.check_in) as string;
+      const newCheckOut = (patch.check_out ?? current.check_out) as string;
+
+      if (newCheckIn >= newCheckOut) {
+        return NextResponse.json({ error: "checkOut debe ser posterior a checkIn" }, { status: 400 });
+      }
+
+      const { data: overlapping } = await supabase
+        .from("bookings")
+        .select("id")
+        .eq("property_id", current.property_id)
+        .neq("status", "cancelled")
+        .neq("id", bookingId)
+        .lt("check_in", newCheckOut)
+        .gt("check_out", newCheckIn)
+        .limit(1);
+
+      if (overlapping && overlapping.length > 0) {
+        return NextResponse.json({ error: "Las fechas se solapan con otra reserva" }, { status: 409 });
+      }
+
+      // Update associated PIN validity if dates changed
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        await (supabaseAdmin.from("access_pins") as any)
+          .update({
+            valid_from: new Date(newCheckIn + "T14:00:00").toISOString(),
+            valid_to: new Date(newCheckOut + "T12:00:00").toISOString(),
+          })
+          .eq("booking_id", bookingId);
+      } catch {}
+    }
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const { error } = await (supabase.from("bookings") as any)
+      .update(patch)
+      .eq("id", bookingId);
+
+    if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+
+    // If status changed to cancelled, revoke associated PINs
+    if (patch.status === "cancelled") {
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        await (supabaseAdmin.from("access_pins") as any)
+          .update({ status: "revoked" })
+          .eq("booking_id", bookingId);
+      } catch {}
+    }
+
+    return NextResponse.json({ ok: true });
   } catch (err) {
     return NextResponse.json(
       { error: err instanceof Error ? err.message : String(err) },
@@ -144,6 +289,16 @@ export async function DELETE(req: NextRequest) {
 
   const bookingId = req.nextUrl.searchParams.get("bookingId");
   if (!bookingId) return NextResponse.json({ error: "bookingId required" }, { status: 400 });
+
+  // Delete associated PINs first (before the booking disappears)
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await (supabaseAdmin.from("access_pins") as any)
+      .delete()
+      .eq("booking_id", bookingId);
+  } catch (pinErr) {
+    console.error("[bookings/DELETE] PIN cleanup failed (non-fatal):", pinErr);
+  }
 
   const { error, count } = await supabase
     .from("bookings")
