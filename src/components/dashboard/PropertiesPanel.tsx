@@ -70,6 +70,7 @@ import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Textarea } from "@/components/ui/textarea";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { toast } from "sonner";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
@@ -345,6 +346,172 @@ const typeConfig: Record<string, { label: string; icon: React.ReactNode }> = {
 };
 
 // ─── Component ──────────────────────────────────────────────────────────────
+// ─── Devices Tab (lock selector + check-in times + wifi + electricity) ────────
+type LockOption = { lockId: string; name: string; accountId: string; accountLabel: string };
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function DevicesTabContent({ formData, setFormData }: { formData: any; setFormData: any }) {
+  const [locks, setLocks] = useState<LockOption[]>([]);
+  const [loadingLocks, setLoadingLocks] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function load() {
+      setLoadingLocks(true);
+      try {
+        const accRes = await fetch("/api/ttlock/accounts", { credentials: "same-origin" });
+        if (!accRes.ok) { setLoadingLocks(false); return; }
+        const accData = await accRes.json();
+        const accounts = accData.accounts ?? [];
+        const allLocks: LockOption[] = [];
+        for (const acc of accounts) {
+          try {
+            const res = await fetch("/api/ttlock/accounts", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              credentials: "same-origin",
+              body: JSON.stringify({ action: "listLocks", accountId: acc.id }),
+            });
+            if (!res.ok) continue;
+            const data = await res.json();
+            for (const l of data.locks ?? []) {
+              allLocks.push({ lockId: String(l.lockId), name: l.name ?? `Cerradura ${l.lockId}`, accountId: acc.id, accountLabel: acc.label ?? acc.ttlock_username });
+            }
+          } catch {}
+        }
+        if (!cancelled) setLocks(allLocks);
+      } catch {}
+      if (!cancelled) setLoadingLocks(false);
+    }
+    load();
+    return () => { cancelled = true; };
+  }, []);
+
+  return (
+    <div className="space-y-8 animate-in fade-in slide-in-from-bottom-2 duration-300">
+      {/* ── Cerradura Inteligente ────────────────────────────────── */}
+      <div className="space-y-4">
+        <div className="flex items-center justify-between">
+          <h4 className="text-sm font-bold flex items-center gap-2">
+            <Settings className="h-4 w-4 text-primary" /> Cerradura Inteligente
+          </h4>
+        </div>
+        <div className="grid gap-4 p-4 rounded-2xl bg-muted/20 border border-dashed">
+          <div className="space-y-2">
+            <Label className="text-xs font-semibold">Vincular Cerradura</Label>
+            {loadingLocks ? (
+              <div className="flex items-center gap-2 text-xs text-muted-foreground py-2">
+                <RefreshCw className="h-3.5 w-3.5 animate-spin" /> Cargando cerraduras...
+              </div>
+            ) : locks.length > 0 ? (
+              <Select value={formData.ttlockLockId} onValueChange={(v) => setFormData((p: any) => ({ ...p, ttlockLockId: v }))}>
+                <SelectTrigger className="bg-white rounded-xl">
+                  <SelectValue placeholder="Seleccionar cerradura..." />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="">Sin cerradura</SelectItem>
+                  {locks.map((l) => (
+                    <SelectItem key={l.lockId} value={l.lockId}>
+                      {l.name} <span className="text-muted-foreground ml-1">({l.accountLabel})</span>
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            ) : (
+              <div className="space-y-2">
+                <p className="text-xs text-muted-foreground">No hay cerraduras disponibles. Conecta una cuenta TTLock en Dispositivos Inteligentes.</p>
+                <Input
+                  placeholder="O ingresa el Lock ID manualmente"
+                  className="bg-white"
+                  value={formData.ttlockLockId}
+                  onChange={(e) => setFormData((p: any) => ({ ...p, ttlockLockId: e.target.value }))}
+                />
+              </div>
+            )}
+            <p className="text-[10px] text-muted-foreground italic">La cerradura vinculada recibe PINs automáticos al crear reservas con teléfono.</p>
+          </div>
+        </div>
+      </div>
+
+      {/* ── Horarios Check-in / Check-out ─────────────────────── */}
+      <div className="space-y-4">
+        <h4 className="text-sm font-bold flex items-center gap-2">
+          <Clock className="h-4 w-4 text-violet-500" /> Horarios de Check-in / Check-out
+        </h4>
+        <div className="grid grid-cols-2 gap-4">
+          <div className="space-y-2">
+            <Label className="text-xs">Hora de Check-in</Label>
+            <Input type="time" value={formData.checkInTime} onChange={(e) => setFormData((p: any) => ({ ...p, checkInTime: e.target.value }))} />
+          </div>
+          <div className="space-y-2">
+            <Label className="text-xs">Hora de Check-out</Label>
+            <Input type="time" value={formData.checkOutTime} onChange={(e) => setFormData((p: any) => ({ ...p, checkOutTime: e.target.value }))} />
+          </div>
+        </div>
+        <div className="p-3 rounded-xl bg-violet-50 border border-violet-100 flex gap-3">
+          <Info className="h-4 w-4 text-violet-500 shrink-0 mt-0.5" />
+          <p className="text-[10px] text-violet-700 leading-relaxed">El PIN se activa a la hora de check-in y se desactiva a la hora de check-out.</p>
+        </div>
+      </div>
+
+      {/* ── Conectividad WiFi ───────────────────────────────────── */}
+      <div className="space-y-4">
+        <h4 className="text-sm font-bold flex items-center gap-2">
+          <Wifi className="h-4 w-4 text-blue-500" /> Detalles de Conectividad
+        </h4>
+        <div className="grid grid-cols-2 gap-4">
+          <div className="space-y-2">
+            <Label className="text-xs">Nombre de Red (SSID)</Label>
+            <Input placeholder="StayHost_Guest_WiFi" value={formData.wifiSsid} onChange={(e) => setFormData((p: any) => ({ ...p, wifiSsid: e.target.value }))} />
+          </div>
+          <div className="space-y-2">
+            <Label className="text-xs">Contraseña WiFi</Label>
+            <Input type="password" placeholder="********" value={formData.wifiPassword} onChange={(e) => setFormData((p: any) => ({ ...p, wifiPassword: e.target.value }))} />
+          </div>
+        </div>
+        <div className="p-3 rounded-xl bg-blue-50 border border-blue-100 flex gap-3">
+          <Info className="h-4 w-4 text-blue-500 shrink-0 mt-0.5" />
+          <p className="text-[10px] text-blue-700 leading-relaxed">Estos datos se envían al huésped en su mensaje de bienvenida 24h antes del check-in.</p>
+        </div>
+      </div>
+
+      {/* ── Monitoreo de Energía ─────────────────────────────────── */}
+      <div className="space-y-4 pt-2">
+        <div className="flex items-center justify-between">
+          <h4 className="text-sm font-bold flex items-center gap-2">
+            <Zap className="h-4 w-4 text-amber-500 fill-amber-500" /> Monitoreo de Electricidad
+          </h4>
+          <div className="flex items-center gap-2 scale-90 origin-right">
+            <span className="text-xs font-medium text-muted-foreground">{formData.electricityEnabled ? "Activo" : "Inactivo"}</span>
+            <button
+              type="button"
+              onClick={() => setFormData((p: any) => ({ ...p, electricityEnabled: !p.electricityEnabled }))}
+              className={`relative inline-flex h-5 w-10 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2 ${formData.electricityEnabled ? "bg-primary" : "bg-muted"}`}
+            >
+              <span className={`${formData.electricityEnabled ? "translate-x-5" : "translate-x-1"} inline-block h-3.5 w-3.5 transform rounded-full bg-white transition-transform`} />
+            </button>
+          </div>
+        </div>
+        <div className={`transition-all duration-300 ${formData.electricityEnabled ? "opacity-100 max-h-40" : "opacity-40 pointer-events-none grayscale"}`}>
+          <div className="grid grid-cols-2 gap-4 p-4 rounded-2xl bg-amber-50/30 border border-amber-100">
+            <div className="space-y-2">
+              <Label className="text-xs">Costo por kWh</Label>
+              <div className="relative">
+                <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground text-sm">$</span>
+                <Input type="number" step="0.01" className="pl-7 bg-white" placeholder="0.15" value={formData.electricityRate} onChange={(e) => setFormData((p: any) => ({ ...p, electricityRate: e.target.value }))} />
+              </div>
+            </div>
+            <div className="space-y-2">
+              <Label className="text-xs">Unidad de Medida</Label>
+              <div className="h-10 flex items-center px-3 rounded-md bg-white border text-sm text-muted-foreground font-medium">Kilovatios (kWh)</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function PropertiesPanel() {
   const [viewMode, setViewMode] = useState<"grid" | "list">("grid");
   const [searchTerm, setSearchTerm] = useState("");
@@ -2153,134 +2320,7 @@ export default function PropertiesPanel() {
                   </div>
                 </div>
               ) : modalTab === "dispositivos" ? (
-                <div className="space-y-8 animate-in fade-in slide-in-from-bottom-2 duration-300">
-                  {/* ── Cerradura Inteligente ────────────────────────────────── */}
-                  <div className="space-y-4">
-                    <div className="flex items-center justify-between">
-                      <h4 className="text-sm font-bold flex items-center gap-2">
-                        <Settings className="h-4 w-4 text-primary" /> Cerradura Inteligente (IoT)
-                      </h4>
-                      <Badge variant="outline" className="text-[10px] font-bold bg-amber-50 text-amber-700 border-amber-200 uppercase tracking-tight">Beta</Badge>
-                    </div>
-                    <div className="grid gap-4 p-4 rounded-2xl bg-muted/20 border border-dashed">
-                      <div className="space-y-2">
-                        <Label className="text-xs font-semibold">Vincular con TTLock ID</Label>
-                        <div className="flex gap-2">
-                          <Input 
-                            placeholder="Ej: 15482930" 
-                            className="bg-white" 
-                            value={formData.ttlockLockId} 
-                            onChange={(e) => setFormData(p => ({ ...p, ttlockLockId: e.target.value }))}
-                          />
-                          <Button variant="secondary" className="gap-2 text-xs">
-                            <Link2 className="h-3.5 w-3.5" /> Probar
-                          </Button>
-                        </div>
-                        <p className="text-[10px] text-muted-foreground italic">El ID de la cerradura permite generar códigos de acceso únicos para cada reserva automáticamente.</p>
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* ── Horarios Check-in / Check-out ─────────────────────── */}
-                  <div className="space-y-4">
-                    <h4 className="text-sm font-bold flex items-center gap-2">
-                      <Clock className="h-4 w-4 text-violet-500" /> Horarios de Check-in / Check-out
-                    </h4>
-                    <div className="grid grid-cols-2 gap-4">
-                      <div className="space-y-2">
-                        <Label className="text-xs">Hora de Check-in</Label>
-                        <Input
-                          type="time"
-                          value={formData.checkInTime}
-                          onChange={(e) => setFormData(p => ({ ...p, checkInTime: e.target.value }))}
-                        />
-                      </div>
-                      <div className="space-y-2">
-                        <Label className="text-xs">Hora de Check-out</Label>
-                        <Input
-                          type="time"
-                          value={formData.checkOutTime}
-                          onChange={(e) => setFormData(p => ({ ...p, checkOutTime: e.target.value }))}
-                        />
-                      </div>
-                    </div>
-                    <div className="p-3 rounded-xl bg-violet-50 border border-violet-100 flex gap-3">
-                      <Info className="h-4 w-4 text-violet-500 shrink-0 mt-0.5" />
-                      <p className="text-[10px] text-violet-700 leading-relaxed">Estos horarios se usan para los PINs de acceso automático: el PIN se activa a la hora de check-in y se desactiva a la hora de check-out.</p>
-                    </div>
-                  </div>
-
-                  {/* ── Conectividad WiFi ───────────────────────────────────── */}
-                  <div className="space-y-4">
-                    <h4 className="text-sm font-bold flex items-center gap-2">
-                      <Wifi className="h-4 w-4 text-blue-500" /> Detalles de Conectividad
-                    </h4>
-                    <div className="grid grid-cols-2 gap-4">
-                      <div className="space-y-2">
-                        <Label className="text-xs">Nombre de Red (SSID)</Label>
-                        <Input 
-                          placeholder="StayHost_Guest_WiFi" 
-                          value={formData.wifiSsid} 
-                          onChange={(e) => setFormData(p => ({ ...p, wifiSsid: e.target.value }))}
-                        />
-                      </div>
-                      <div className="space-y-2">
-                        <Label className="text-xs">Contraseña WiFi</Label>
-                        <Input 
-                          type="password"
-                          placeholder="********" 
-                          value={formData.wifiPassword} 
-                          onChange={(e) => setFormData(p => ({ ...p, wifiPassword: e.target.value }))}
-                        />
-                      </div>
-                    </div>
-                    <div className="p-3 rounded-xl bg-blue-50 border border-blue-100 flex gap-3">
-                      <Info className="h-4 w-4 text-blue-500 shrink-0 mt-0.5" />
-                      <p className="text-[10px] text-blue-700 leading-relaxed">Estos datos se enviarán automáticamente a los huéspedes en su mensaje de bienvenida 24h antes del check-in.</p>
-                    </div>
-                  </div>
-
-                  {/* ── Monitoreo de Energía ─────────────────────────────────── */}
-                  <div className="space-y-4 pt-2">
-                    <div className="flex items-center justify-between">
-                      <h4 className="text-sm font-bold flex items-center gap-2">
-                        <Zap className="h-4 w-4 text-amber-500 fill-amber-500" /> Monitoreo de Electricidad
-                      </h4>
-                      <div className="flex items-center gap-2 scale-90 origin-right">
-                        <span className="text-xs font-medium text-muted-foreground">{formData.electricityEnabled ? "Activo" : "Inactivo"}</span>
-                        <button 
-                          type="button"
-                          onClick={() => setFormData(p => ({ ...p, electricityEnabled: !p.electricityEnabled }))}
-                          className={`relative inline-flex h-5 w-10 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2 ${formData.electricityEnabled ? 'bg-primary' : 'bg-muted'}`}
-                        >
-                          <span className={`${formData.electricityEnabled ? 'translate-x-5' : 'translate-x-1'} inline-block h-3.5 w-3.5 transform rounded-full bg-white transition-transform`} />
-                        </button>
-                      </div>
-                    </div>
-                    <div className={`transition-all duration-300 ${formData.electricityEnabled ? "opacity-100 max-h-40" : "opacity-40 pointer-events-none grayscale"}`}>
-                      <div className="grid grid-cols-2 gap-4 p-4 rounded-2xl bg-amber-50/30 border border-amber-100">
-                        <div className="space-y-2">
-                          <Label className="text-xs">Costo por kWh</Label>
-                          <div className="relative">
-                            <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground text-sm">$</span>
-                            <Input 
-                              type="number"
-                              step="0.01"
-                              className="pl-7 bg-white" 
-                              placeholder="0.15" 
-                              value={formData.electricityRate} 
-                              onChange={(e) => setFormData(p => ({ ...p, electricityRate: e.target.value }))}
-                            />
-                          </div>
-                        </div>
-                        <div className="space-y-2">
-                          <Label className="text-xs">Unidad de Medida</Label>
-                          <div className="h-10 flex items-center px-3 rounded-md bg-white border text-sm text-muted-foreground font-medium">Kilovatios (kWh)</div>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                </div>
+                <DevicesTabContent formData={formData} setFormData={setFormData} />
               ) : null}
             </div>
 
