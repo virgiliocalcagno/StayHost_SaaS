@@ -7,7 +7,7 @@ import { supabase } from "@/lib/supabase/client";
 // OWNER aun cuando localStorage esté vacío (por ejemplo después de borrar
 // caché). Lo leemos del auth de Supabase, que sí sobrevive al clear-cache
 // del navegador (cookie httpOnly).
-const MASTER_EMAIL = "virgiliocalcagno@gmail.com";
+const MASTER_EMAIL = (process.env.NEXT_PUBLIC_MASTER_EMAIL || "virgiliocalcagno@gmail.com").trim().toLowerCase();
 
 // ─── Core module IDs (built-in) ───────────────────────────────────────────────
 export type ModuleId =

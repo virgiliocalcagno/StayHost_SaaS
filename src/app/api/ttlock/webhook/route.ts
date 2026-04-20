@@ -184,13 +184,15 @@ export async function POST(req: NextRequest) {
     if (row.server_date !== null && row.record_type !== null) {
       const { error } = await supabaseAdmin
         .from("ttlock_events")
-        .upsert(row, {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        .upsert(row as any, {
           onConflict: "lock_id,server_date,record_type",
           ignoreDuplicates: true,
         });
       if (error) console.error("[ttlock/webhook] upsert failed:", error);
     } else {
-      const { error } = await supabaseAdmin.from("ttlock_events").insert(row);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const { error } = await supabaseAdmin.from("ttlock_events").insert(row as any);
       if (error) console.error("[ttlock/webhook] insert failed:", error);
     }
   } catch (err) {

@@ -1,11 +1,9 @@
 "use client";
 
 import { useState, useMemo, useEffect } from "react";
-import { supabase } from "@/lib/supabase/client";
 
-// Email master del SaaS. Debe coincidir con el de ModuleContext. Si llegas
-// a cambiarlo, cámbialo en ambos lados.
-const MASTER_EMAIL = "virgiliocalcagno@gmail.com";
+// Email master del SaaS — ahora leído de env var.
+const MASTER_EMAIL = (process.env.NEXT_PUBLIC_MASTER_EMAIL ?? "").trim().toLowerCase();
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -88,104 +86,6 @@ interface TeamMember {
   documentPhoto?: string;
 }
 
-// ─── Mock Data ──────────────────────────────────────────────────────────────
-const mockTeam: TeamMember[] = [
-  {
-    id: "1",
-    name: "Laura Sánchez",
-    email: "laura@stayhost.com",
-    phone: "+52 998 123 4567",
-    avatar: "https://images.unsplash.com/photo-1580489944761-15a19d654956?w=100&h=100&fit=crop",
-    role: "cleaner",
-    status: "active",
-    available: true,
-    properties: 5,
-    tasksCompleted: 87,
-    tasksToday: 3,
-    rating: 4.8,
-    joinDate: "2025-06-15",
-    lastActive: "Hace 2 horas",
-  },
-  {
-    id: "2",
-    name: "Miguel Torres",
-    email: "miguel@stayhost.com",
-    phone: "+52 998 234 5678",
-    avatar: "https://images.unsplash.com/photo-1500648767791-00dcc994a43e?w=100&h=100&fit=crop",
-    role: "co_host",
-    status: "active",
-    available: true,
-    properties: 8,
-    tasksCompleted: 124,
-    tasksToday: 2,
-    rating: 4.9,
-    joinDate: "2025-03-10",
-    lastActive: "En línea",
-  },
-  {
-    id: "3",
-    name: "Carmen Ruiz",
-    email: "carmen@stayhost.com",
-    phone: "+52 998 345 6789",
-    avatar: "https://images.unsplash.com/photo-1544005313-94ddf0286df2?w=100&h=100&fit=crop",
-    role: "cleaner",
-    status: "active",
-    available: false,
-    properties: 3,
-    tasksCompleted: 56,
-    tasksToday: 0,
-    rating: 4.6,
-    joinDate: "2025-09-01",
-    lastActive: "Hace 1 día",
-  },
-  {
-    id: "4",
-    name: "Roberto Méndez",
-    email: "roberto@stayhost.com",
-    phone: "+52 998 456 7890",
-    role: "maintenance",
-    status: "active",
-    available: true,
-    properties: 10,
-    tasksCompleted: 43,
-    tasksToday: 1,
-    rating: 4.7,
-    joinDate: "2025-07-20",
-    lastActive: "Hace 30 min",
-  },
-  {
-    id: "5",
-    name: "Ana García",
-    email: "ana@stayhost.com",
-    phone: "+52 998 567 8901",
-    avatar: "https://images.unsplash.com/photo-1438761681033-6461ffad8d80?w=100&h=100&fit=crop",
-    role: "manager",
-    status: "active",
-    available: true,
-    properties: 12,
-    tasksCompleted: 210,
-    tasksToday: 5,
-    rating: 4.95,
-    joinDate: "2025-01-05",
-    lastActive: "En línea",
-  },
-  {
-    id: "6",
-    name: "Diego Flores",
-    email: "diego@stayhost.com",
-    phone: "+52 998 678 9012",
-    role: "cleaner",
-    status: "pending",
-    available: false,
-    properties: 0,
-    tasksCompleted: 0,
-    tasksToday: 0,
-    rating: 0,
-    joinDate: "2026-04-05",
-    lastActive: "Invitación enviada",
-  },
-];
-
 // ─── Role Configs ───────────────────────────────────────────────────────────
 const roleConfig: Record<string, { label: string; icon: React.ReactNode; color: string; bgColor: string }> = {
   admin: {
@@ -251,83 +151,105 @@ export default function TeamPanel() {
   
   const [team, setTeam] = useState<TeamMember[]>([]);
 
+  // Fuente de verdad: Supabase via /api/team-members.
+  // localStorage queda sólo como caché de lectura rápida para que el panel
+  // no se vea vacío mientras llega la respuesta del backend.
   useEffect(() => {
     setIsClient(true);
-    const saved = localStorage.getItem("stayhost_team");
-    let initial: TeamMember[] = [];
-    if (saved) {
-      try {
-        const parsed = JSON.parse(saved);
-        if (parsed && Array.isArray(parsed) && parsed.length > 0) {
-          initial = parsed;
-        }
-      } catch { /* fall through */ }
-    }
-    setTeam(initial);
 
-    // Auto-seed del usuario master. Si el usuario autenticado en Supabase es
-    // el SaaS Master (virgilio), garantizamos que su tarjeta exista en el
-    // equipo con rol "owner". Si ya existe (aunque la haya editado), no la
-    // sobrescribimos — solo nos aseguramos de que el rol sea "owner" y el
-    // status "active" para que nunca "desaparezca" del portal.
+    // 1) Pintar caché local si hay, así el UI no parpadea.
+    try {
+      const saved = localStorage.getItem("stayhost_team");
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed)) setTeam(parsed);
+      }
+    } catch {}
+
+    // 2) Cargar del backend y reemplazar.
     (async () => {
       try {
-        const { data } = await supabase.auth.getUser();
-        const email = String(data.user?.email ?? "").trim().toLowerCase();
-        if (email !== MASTER_EMAIL) return;
+        const res = await fetch("/api/team-members", {
+          cache: "no-store",
+          credentials: "include",
+        });
+        if (!res.ok) return; // sin tenant / error → nos quedamos con caché
+        const data = (await res.json()) as { members: TeamMember[] };
+        const remote = data.members ?? [];
+        setTeam(remote);
 
-        const existing = initial.find(
-          (m) => m.email.trim().toLowerCase() === MASTER_EMAIL
-        );
-        if (existing) {
-          // Ya está en el portal — solo garantizamos rol y estatus.
-          if (existing.role !== "owner" || existing.status !== "active") {
-            setTeam((prev) =>
-              prev.map((m) =>
-                m.email.trim().toLowerCase() === MASTER_EMAIL
-                  ? { ...m, role: "owner", status: "active", available: true }
-                  : m
-              )
-            );
+        // 3) Auto-seed del master (Virgilio) si está autenticado y no aparece.
+        try {
+          const authRes = await fetch("/api/me", {
+            cache: "no-store",
+            credentials: "include",
+          });
+          if (!authRes.ok) return;
+          const me = (await authRes.json()) as { email: string | null; isMaster: boolean };
+          if (!me.isMaster || !me.email) return;
+
+          const already = remote.some(
+            (m) => m.email.trim().toLowerCase() === MASTER_EMAIL
+          );
+          if (already) return;
+
+          const today = (() => {
+            const d = new Date();
+            const y = d.getFullYear();
+            const m = String(d.getMonth() + 1).padStart(2, "0");
+            const dd = String(d.getDate()).padStart(2, "0");
+            return `${y}-${m}-${dd}`;
+          })();
+
+          const masterDto: TeamMember = {
+            id: "virgilio-pending",
+            name: "Virgilio Calcagno",
+            email: MASTER_EMAIL,
+            phone: "",
+            role: "owner",
+            status: "active",
+            available: true,
+            properties: 0,
+            tasksCompleted: 0,
+            tasksToday: 0,
+            rating: 5,
+            joinDate: today,
+            lastActive: "En línea",
+            permissions: {
+              canViewAnalytics: true,
+              canManageTasks: true,
+              canMessageGuests: true,
+              canEditProperties: true,
+            },
+            propertyAccess: "all",
+            notificationPrefs: { whatsapp: true, email: true },
+          };
+
+          const postRes = await fetch("/api/team-members", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            credentials: "include",
+            body: JSON.stringify(masterDto),
+          });
+          if (postRes.ok) {
+            const created = (await postRes.json()) as { member: TeamMember };
+            setTeam((prev) => {
+              // Evitar duplicados si el usuario también recibió la lista.
+              const dedup = prev.filter(
+                (m) => m.email.trim().toLowerCase() !== MASTER_EMAIL
+              );
+              return [created.member, ...dedup];
+            });
           }
-          return;
-        }
-
-        // No existía — la creamos al frente de la lista.
-        const today = new Date().toISOString().slice(0, 10);
-        const master: TeamMember = {
-          id: `master-${data.user?.id ?? "virgilio"}`,
-          name: "Virgilio Calcagno",
-          email: MASTER_EMAIL,
-          phone: "",
-          role: "owner",
-          status: "active",
-          available: true,
-          properties: 0,
-          tasksCompleted: 0,
-          tasksToday: 0,
-          rating: 5,
-          joinDate: today,
-          lastActive: "En línea",
-          permissions: {
-            canViewAnalytics: true,
-            canManageTasks: true,
-            canMessageGuests: true,
-            canEditProperties: true,
-          },
-          propertyAccess: "all",
-          notificationPrefs: { whatsapp: true, email: true },
-        };
-        setTeam((prev) => [master, ...prev]);
-      } catch {
-        // Si falla la llamada a auth, no rompemos el render del panel.
-      }
+        } catch { /* noop */ }
+      } catch { /* noop */ }
     })();
   }, []);
 
+  // Mantener un caché local para el próximo arranque rápido.
   useEffect(() => {
     if (isClient) {
-      localStorage.setItem("stayhost_team", JSON.stringify(team));
+      try { localStorage.setItem("stayhost_team", JSON.stringify(team)); } catch {}
     }
   }, [team, isClient]);
 
@@ -474,79 +396,132 @@ export default function TeamPanel() {
     setShowModal(true);
   };
 
-  const handleSave = () => {
+  // Todas las mutaciones van al backend (/api/team-members) y luego
+  // actualizamos el estado local con la respuesta para quedar sincronizados.
+  // Si el backend falla, revertimos y mostramos un alert — sin silencios.
+  const handleSave = async () => {
     if (!formData.name || !formData.email) return;
 
-    if (editingMember) {
-      setTeam((prev) =>
-        prev.map((m) =>
-          m.id === editingMember.id
-            ? {
-                ...m,
-                name: formData.name,
-                email: formData.email,
-                phone: formData.phone,
-                role: formData.role,
-                documentId: formData.documentId,
-                emergencyPhone: formData.emergencyPhone,
-                address: formData.address,
-                references: formData.references,
-                password: formData.password,
-                documentPhoto: formData.documentPhoto,
-                permissions: formData.permissions,
-                propertyAccess: formData.propertyAccess,
-                notificationPrefs: formData.notificationPrefs,
-              }
-            : m
-        )
-      );
-    } else {
-      const newMember: TeamMember = {
-        id: `new-${Date.now()}`,
-        name: formData.name,
-        email: formData.email,
-        phone: formData.phone,
-        role: formData.role,
-        documentId: formData.documentId,
-        emergencyPhone: formData.emergencyPhone,
-        address: formData.address,
-        references: formData.references,
-        password: formData.password,
-        documentPhoto: formData.documentPhoto,
-        permissions: formData.permissions,
-        propertyAccess: formData.propertyAccess,
-        notificationPrefs: formData.notificationPrefs,
-        status: "pending",
-        available: false,
-        avatar: undefined,
-        properties: 0,
-        tasksCompleted: 0,
-        tasksToday: 0,
-        rating: 0,
-        joinDate: (() => {
-          // Local YYYY-MM-DD (not UTC) — so invites created at night in
-          // Chile don't show the next day's date.
-          const d = new Date();
-          const y = d.getFullYear();
-          const m = String(d.getMonth() + 1).padStart(2, "0");
-          const dd = String(d.getDate()).padStart(2, "0");
-          return `${y}-${m}-${dd}`;
-        })(),
-        lastActive: "Invitación enviada",
-      };
-      setTeam((prev) => [...prev, newMember]);
+    // Construye el payload que entiende la API (camelCase DTO).
+    const payload = {
+      name: formData.name,
+      email: formData.email,
+      phone: formData.phone,
+      role: formData.role,
+      documentId: formData.documentId,
+      emergencyPhone: formData.emergencyPhone,
+      address: formData.address,
+      references: formData.references,
+      documentPhoto: formData.documentPhoto,
+      permissions: formData.permissions,
+      propertyAccess: formData.propertyAccess,
+      notificationPrefs: formData.notificationPrefs,
+    };
+
+    try {
+      if (editingMember) {
+        const res = await fetch(
+          `/api/team-members?id=${encodeURIComponent(editingMember.id)}`,
+          {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            credentials: "include",
+            body: JSON.stringify(payload),
+          }
+        );
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          alert(err.error || "No se pudo guardar el miembro");
+          return;
+        }
+        const data = (await res.json()) as { member: TeamMember };
+        setTeam((prev) =>
+          prev.map((m) => (m.id === editingMember.id ? data.member : m))
+        );
+      } else {
+        // Defaults para un miembro nuevo: queda como pending hasta su 1er login.
+        const createPayload = {
+          ...payload,
+          status: "pending",
+          available: false,
+        };
+        const res = await fetch("/api/team-members", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          credentials: "include",
+          body: JSON.stringify(createPayload),
+        });
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          alert(err.error || "No se pudo crear el miembro");
+          return;
+        }
+        const data = (await res.json()) as { member: TeamMember };
+        setTeam((prev) => [data.member, ...prev]);
+      }
+      setShowModal(false);
+    } catch (e) {
+      alert("Error de red al guardar el miembro");
+      console.error(e);
     }
-    setShowModal(false);
   };
 
-  const handleToggleAvailability = (id: string) => {
+  const handleToggleAvailability = async (id: string) => {
+    const current = team.find((m) => m.id === id);
+    if (!current) return;
+    const next = !current.available;
+
+    // Optimista: actualizamos primero la UI, después sincronizamos.
     setTeam((prev) =>
-      prev.map((m) => (m.id === id ? { ...m, available: !m.available } : m))
+      prev.map((m) => (m.id === id ? { ...m, available: next } : m))
     );
+
+    try {
+      const res = await fetch(
+        `/api/team-members?id=${encodeURIComponent(id)}`,
+        {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          credentials: "include",
+          body: JSON.stringify({ available: next }),
+        }
+      );
+      if (!res.ok) {
+        // Revertir si la API rechazó el cambio.
+        setTeam((prev) =>
+          prev.map((m) => (m.id === id ? { ...m, available: current.available } : m))
+        );
+      }
+    } catch {
+      setTeam((prev) =>
+        prev.map((m) => (m.id === id ? { ...m, available: current.available } : m))
+      );
+    }
   };
 
-  const handleDelete = (id: string) => {
+  const handleDelete = async (id: string) => {
+    if (!confirm("¿Eliminar este miembro del equipo? Esta acción no se puede deshacer.")) {
+      return;
+    }
+
+    const prevTeam = team;
+    // Optimista: sacamos al miembro de la UI de inmediato.
     setTeam((prev) => prev.filter((m) => m.id !== id));
+
+    try {
+      const res = await fetch(
+        `/api/team-members?id=${encodeURIComponent(id)}`,
+        { method: "DELETE", credentials: "include" }
+      );
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        alert(err.error || "No se pudo eliminar el miembro");
+        setTeam(prevTeam); // revertir
+      }
+    } catch {
+      alert("Error de red al eliminar el miembro");
+      setTeam(prevTeam);
+    }
   };
 
   const getRoleBadge = (role: string) => {
@@ -689,8 +664,8 @@ export default function TeamPanel() {
             <p className="text-muted-foreground text-sm mb-6">
               Ajusta los filtros o invita a alguien nuevo al equipo.
             </p>
-            <Button variant="outline" onClick={() => setTeam(mockTeam)} className="gap-2 mx-auto">
-              <RefreshCw className="h-4 w-4" /> Restaurar Miembros de Prueba
+            <Button onClick={handleOpenAdd} className="gradient-gold text-primary-foreground gap-2 mx-auto">
+              <UserPlus className="h-4 w-4" /> Invitar Nuevo Miembro
             </Button>
           </CardContent>
         </Card>

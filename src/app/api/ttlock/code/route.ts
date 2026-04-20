@@ -19,27 +19,30 @@ type TTLockConfig = {
 // needs to read client_secret regardless of RLS). We still validate that the
 // tenantId comes from the authenticated session — callers cannot read other
 // tenants' locks.
-async function getTTLockToken(tenantId: string): Promise<string | null> {
-  const { data: config } = await supabaseAdmin
-    .from("ttlock_config")
+async function getTTLockConfig(tenantId: string): Promise<{ token: string; clientId: string } | null> {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- no generated DB types yet
+  const { data: config } = await (supabaseAdmin.from("ttlock_config") as any)
     .select("tenant_id, client_id, client_secret, username, password, access_token, refresh_token, token_expires_at")
     .eq("tenant_id", tenantId)
-    .single<TTLockConfig>();
+    .single();
 
   if (!config) return null;
+  const cfg = config as TTLockConfig;
 
   // Reuse token if still valid (5 min buffer)
-  if (config.access_token && config.token_expires_at) {
-    const expiresAt = new Date(config.token_expires_at).getTime();
-    if (Date.now() < expiresAt - 5 * 60 * 1000) return config.access_token;
+  if (cfg.access_token && cfg.token_expires_at) {
+    const expiresAt = new Date(cfg.token_expires_at).getTime();
+    if (Date.now() < expiresAt - 5 * 60 * 1000) {
+      return { token: cfg.access_token, clientId: cfg.client_id };
+    }
   }
 
   // Request new token
   const body = new URLSearchParams({
-    clientId: config.client_id,
-    clientSecret: config.client_secret,
-    username: config.username,
-    password: config.password ?? "",
+    clientId: cfg.client_id,
+    clientSecret: cfg.client_secret,
+    username: cfg.username,
+    password: cfg.password ?? "",
     grant_type: "password",
   });
 
@@ -59,16 +62,16 @@ async function getTTLockToken(tenantId: string): Promise<string | null> {
   if (!json.access_token) return null;
 
   // Persist new token
-  await supabaseAdmin
-    .from("ttlock_config")
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- no generated DB types yet
+  await (supabaseAdmin.from("ttlock_config") as any)
     .update({
       access_token: json.access_token,
       refresh_token: json.refresh_token ?? null,
       token_expires_at: new Date(Date.now() + (json.expires_in ?? 0) * 1000).toISOString(),
-    } as never)
+    })
     .eq("tenant_id", tenantId);
 
-  return json.access_token;
+  return { token: json.access_token, clientId: cfg.client_id };
 }
 
 // Generate a random 6-digit PIN — TTLock accepts 4-9 digits for keyboardPwd
@@ -79,7 +82,7 @@ function randomPin(): string {
 // POST /api/ttlock/code
 // Body: { lockId, checkIn, checkOut, guestName }
 // Tenant comes from the session.
-// Returns: { code, startDate, endDate }
+// Returns: { code, keyboardPwdId, startDate, endDate }
 //
 // FIX: previous version called `/v3/keyboardPwd/get` which asks the cloud to
 // generate a PIN and only works for certain lock types. Switched to
@@ -97,18 +100,15 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Missing required fields" }, { status: 400 });
     }
 
-    const token = await getTTLockToken(tenantId);
-    if (!token) {
+    const cfg = await getTTLockConfig(tenantId);
+    if (!cfg) {
       return NextResponse.json(
         { error: "TTLock not configured or auth failed" },
         { status: 503 }
       );
     }
 
-    const clientId = process.env.TTLOCK_CLIENT_ID;
-    if (!clientId) {
-      return NextResponse.json({ error: "TTLOCK_CLIENT_ID not configured" }, { status: 503 });
-    }
+    const { token, clientId } = cfg;
 
     // Convert dates to timestamps (ms) — TTLock expects ms
     const startDate = new Date(checkIn).setHours(14, 0, 0, 0); // 2pm check-in

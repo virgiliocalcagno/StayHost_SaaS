@@ -6,8 +6,8 @@ import { getAuthenticatedTenant } from "@/lib/supabase/server";
 //
 // This endpoint is gated by middleware (only authenticated tenants can hit
 // it) and additionally re-checks the session here. It NEVER accepts TTLock
-// API credentials from the request body anymore — credentials come either
-// from environment variables or from the tenant's ttlock_config row.
+// API credentials from the request body anymore — credentials come from
+// the tenant's ttlock_config row in the database.
 
 const TTLOCK_BASE = process.env.TTLOCK_API_URL ?? "https://euapi.ttlock.com";
 

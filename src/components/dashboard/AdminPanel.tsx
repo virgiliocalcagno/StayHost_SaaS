@@ -1,6 +1,10 @@
 "use client";
 
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect, useCallback } from "react";
+import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import {
+  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
+} from "@/components/ui/select";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -21,18 +25,65 @@ import {
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 type Plan = "Trial" | "Starter" | "Growth" | "Master";
+type PlanLower = "trial" | "starter" | "growth" | "master";
 type TenantStatus = "active" | "trial" | "suspended" | "churned";
 
 interface Tenant {
   id: string; name: string; email: string; company?: string;
   plan: Plan; mrr: number; properties: number;
   status: TenantStatus; lastLogin: string;
+  planExpiresAt?: string | null;
 }
 
-// ─── Static mock data ─────────────────────────────────────────────────────────
+// Respuesta cruda del endpoint /api/admin/tenants.
+interface TenantRow {
+  id: string;
+  email: string;
+  name: string;
+  company: string | null;
+  plan: PlanLower;
+  planExpiresAt: string | null;
+  status: TenantStatus;
+  lastLoginAt: string | null;
+  createdAt: string;
+  properties: number;
+}
 
-const MOCK_TENANTS: Tenant[] = [
-];
+// MRR por plan — simplificado hasta que tengamos pricing real en DB.
+// Se usa sólo para mostrar métricas agregadas; el MRR real va a vivir en
+// Stripe/PayPal cuando se integre.
+const PLAN_MRR: Record<PlanLower, number> = {
+  trial: 0, starter: 29, growth: 79, master: 199,
+};
+
+function capitalize(s: string): Plan {
+  return (s.charAt(0).toUpperCase() + s.slice(1)) as Plan;
+}
+
+function toUiTenant(r: TenantRow): Tenant {
+  // "hace X" style del último login — evita depender de una lib de dates.
+  let lastLogin = "Nunca";
+  if (r.lastLoginAt) {
+    const diffMs = Date.now() - new Date(r.lastLoginAt).getTime();
+    const mins = Math.floor(diffMs / 60_000);
+    if (mins < 1) lastLogin = "Ahora";
+    else if (mins < 60) lastLogin = `hace ${mins}m`;
+    else if (mins < 60 * 24) lastLogin = `hace ${Math.floor(mins / 60)}h`;
+    else lastLogin = `hace ${Math.floor(mins / (60 * 24))}d`;
+  }
+  return {
+    id: r.id,
+    name: r.name,
+    email: r.email,
+    company: r.company ?? undefined,
+    plan: capitalize(r.plan),
+    mrr: PLAN_MRR[r.plan] ?? 0,
+    properties: r.properties,
+    status: r.status,
+    lastLogin,
+    planExpiresAt: r.planExpiresAt,
+  };
+}
 
 const MRR_TREND = [
   { month:"Sep", value:8400  }, { month:"Oct", value:11200 }, { month:"Nov", value:13900 },
@@ -204,26 +255,132 @@ export default function AdminPanel() {
     planTier:"addon", category:"integrations", version:"1.0", enabled:true, builtIn:false,
   });
 
+  // ── Tenants (reales, desde /api/admin/tenants) ─────────────────────────────
+  const [tenants, setTenants] = useState<Tenant[]>([]);
+  const [tenantsLoading, setTenantsLoading] = useState(true);
+  const [tenantsError, setTenantsError] = useState<string | null>(null);
+
+  // Form para "Nuevo cliente" — state local del modal, no parte de la lista.
+  const [newClientOpen, setNewClientOpen] = useState(false);
+  const [newClientSaving, setNewClientSaving] = useState(false);
+  const [newClientError, setNewClientError] = useState<string | null>(null);
+  const [newClientForm, setNewClientForm] = useState({
+    email: "", name: "", company: "",
+    plan: "trial" as PlanLower,
+    planMonths: 0,
+  });
+
+  const loadTenants = useCallback(async () => {
+    setTenantsLoading(true);
+    setTenantsError(null);
+    try {
+      const res = await fetch("/api/admin/tenants", { credentials: "include" });
+      if (!res.ok) {
+        const j = (await res.json().catch(() => ({}))) as { error?: string };
+        throw new Error(j.error ?? `HTTP ${res.status}`);
+      }
+      const j = (await res.json()) as { tenants?: TenantRow[] };
+      setTenants((j.tenants ?? []).map(toUiTenant));
+    } catch (e) {
+      setTenantsError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setTenantsLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadTenants();
+  }, [loadTenants]);
+
+  const handleCreateTenant = useCallback(async () => {
+    setNewClientError(null);
+    const email = newClientForm.email.trim();
+    const name = newClientForm.name.trim();
+    if (!email || !name) {
+      setNewClientError("Email y nombre son obligatorios");
+      return;
+    }
+    setNewClientSaving(true);
+    try {
+      const res = await fetch("/api/admin/tenants", {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          email,
+          name,
+          company: newClientForm.company.trim() || null,
+          plan: newClientForm.plan,
+          planMonths: newClientForm.planMonths,
+        }),
+      });
+      const j = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string };
+      if (!res.ok || !j.ok) {
+        throw new Error(j.error ?? `HTTP ${res.status}`);
+      }
+      setNewClientForm({ email: "", name: "", company: "", plan: "trial", planMonths: 0 });
+      setNewClientOpen(false);
+      await loadTenants();
+    } catch (e) {
+      setNewClientError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setNewClientSaving(false);
+    }
+  }, [newClientForm, loadTenants]);
+
+  const handleChangePlan = useCallback(async (tenantId: string, plan: PlanLower) => {
+    try {
+      const res = await fetch("/api/admin/tenants", {
+        method: "PATCH",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: tenantId, plan, status: plan === "trial" ? "trial" : "active" }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      await loadTenants();
+    } catch (e) {
+      alert(`No se pudo cambiar el plan: ${e instanceof Error ? e.message : e}`);
+    }
+  }, [loadTenants]);
+
+  const handleSuspendTenant = useCallback(async (tenantId: string) => {
+    if (!confirm("¿Suspender este cliente? Perderá acceso hasta reactivarlo.")) return;
+    try {
+      const res = await fetch("/api/admin/tenants", {
+        method: "PATCH",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: tenantId, status: "suspended" }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      await loadTenants();
+    } catch (e) {
+      alert(`No se pudo suspender: ${e instanceof Error ? e.message : e}`);
+    }
+  }, [loadTenants]);
+
   // ── Metrics ────────────────────────────────────────────────────────────────
   const metrics = useMemo(() => {
-    const active = MOCK_TENANTS.filter(t => t.status === "active");
+    const active = tenants.filter(t => t.status === "active");
     const mrr = active.reduce((s,t) => s + t.mrr, 0);
     const avgMrr = active.length > 0 ? Math.round(mrr / active.length) : 0;
     const prevMrr = MRR_TREND[MRR_TREND.length - 2].value;
-    const mrrGrowth = (((mrr) - prevMrr) / prevMrr * 100).toFixed(1);
+    const mrrGrowth = prevMrr > 0
+      ? (((mrr) - prevMrr) / prevMrr * 100).toFixed(1)
+      : "0.0";
     return {
       mrr, arr: mrr * 12, active: active.length,
-      trial: MOCK_TENANTS.filter(t => t.status === "trial").length,
-      totalProps: MOCK_TENANTS.reduce((s,t) => s + t.properties, 0),
+      trial: tenants.filter(t => t.status === "trial").length,
+      totalProps: tenants.reduce((s,t) => s + t.properties, 0),
       avgMrr, mrrGrowth,
     };
-  }, []);
+  }, [tenants]);
 
-  const filtered = useMemo(() => MOCK_TENANTS.filter(t => {
+  const filtered = useMemo(() => tenants.filter(t => {
     const ms = !search || t.name.toLowerCase().includes(search.toLowerCase()) || t.email.toLowerCase().includes(search.toLowerCase());
     const mp = planFilter === "all" || t.plan === planFilter;
     return ms && mp;
-  }), [search, planFilter]);
+  }), [search, planFilter, tenants]);
 
   const allPlugins: PluginManifest[] = useMemo(() =>
     [...BUILTIN_PLUGINS.map(p => ({ ...p, enabled: isModuleEnabled(p.id) })), ...plugins],
@@ -340,8 +497,8 @@ export default function AdminPanel() {
               <CardHeader className="pb-2"><CardTitle className="text-base">Distribución de Planes</CardTitle></CardHeader>
               <CardContent className="space-y-3">
                 {(["Master","Growth","Starter","Trial"] as Plan[]).map(plan => {
-                  const count = MOCK_TENANTS.filter(t => t.plan === plan).length;
-                  const pct = Math.round((count / MOCK_TENANTS.length) * 100);
+                  const count = tenants.filter(t => t.plan === plan).length;
+                  const pct = tenants.length > 0 ? Math.round((count / tenants.length) * 100) : 0;
                   const bar: Record<Plan,string> = { Master:"bg-amber-500", Growth:"bg-violet-500", Starter:"bg-blue-500", Trial:"bg-slate-300" };
                   return (
                     <div key={plan}>
@@ -461,16 +618,16 @@ export default function AdminPanel() {
                               <Package className="h-3.5 w-3.5"/>Plan<ChevronDown className="h-3 w-3"/>
                             </Button>
                             {tenantMenuOpen === t.id && (
-                              <div className="absolute right-0 top-9 z-20 bg-card border rounded-xl shadow-xl p-1 w-36 space-y-0.5">
-                                {(["starter","growth","master"] as const).map(p => (
+                              <div className="absolute right-0 top-9 z-20 bg-card border rounded-xl shadow-xl p-1 w-40 space-y-0.5">
+                                {(["trial","starter","growth","master"] as const).map(p => (
                                   <button type="button" key={p} className="w-full text-left text-xs px-3 py-2 rounded-lg hover:bg-muted capitalize font-medium"
-                                    onClick={() => { applyPlan(p); setTenantMenuOpen(null); }}>
+                                    onClick={() => { void handleChangePlan(t.id, p); setTenantMenuOpen(null); }}>
                                     Cambiar a {p.charAt(0).toUpperCase()+p.slice(1)}
                                   </button>
                                 ))}
                                 <div className="border-t my-1"/>
                                 <button type="button" className="w-full text-left text-xs px-3 py-2 rounded-lg hover:bg-red-50 text-red-600 font-medium"
-                                  onClick={() => setTenantMenuOpen(null)}>
+                                  onClick={() => { void handleSuspendTenant(t.id); setTenantMenuOpen(null); }}>
                                   Suspender
                                 </button>
                               </div>
@@ -488,10 +645,27 @@ export default function AdminPanel() {
               </table>
             </div>
             <div className="px-5 py-3 border-t bg-muted/20 flex items-center justify-between">
-              <p className="text-xs text-muted-foreground">{filtered.length} de {MOCK_TENANTS.length} clientes</p>
-              <Button size="sm" className="h-8 gap-1.5 gradient-gold text-primary-foreground">
-                <Plus className="h-3.5 w-3.5"/>Nuevo cliente
-              </Button>
+              <p className="text-xs text-muted-foreground">
+                {tenantsLoading
+                  ? "Cargando..."
+                  : tenantsError
+                    ? <span className="text-red-600">Error: {tenantsError}</span>
+                    : `${filtered.length} de ${tenants.length} clientes`}
+              </p>
+              <div className="flex items-center gap-2">
+                <Button size="sm" variant="outline" className="h-8 gap-1.5"
+                  onClick={() => void loadTenants()} disabled={tenantsLoading}>
+                  <RefreshCw className={`h-3.5 w-3.5 ${tenantsLoading ? "animate-spin" : ""}`}/>
+                  Actualizar
+                </Button>
+                <Button size="sm" className="h-8 gap-1.5 gradient-gold text-primary-foreground"
+                  onClick={() => {
+                    setNewClientError(null);
+                    setNewClientOpen(true);
+                  }}>
+                  <Plus className="h-3.5 w-3.5"/>Nuevo cliente
+                </Button>
+              </div>
             </div>
           </Card>
         </TabsContent>
@@ -772,6 +946,99 @@ export default function AdminPanel() {
           </div>
         </TabsContent>
       </Tabs>
+
+      {/* ════════════════════ DIALOG: NUEVO CLIENTE ═══════════════════════════ */}
+      <Dialog open={newClientOpen} onOpenChange={setNewClientOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Plus className="h-5 w-5 text-primary"/>Nuevo cliente SaaS
+            </DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4 py-2">
+            <p className="text-xs text-muted-foreground">
+              Crea un tenant nuevo y le envía un email de invitación con un link
+              para fijar su contraseña. Al entrar por primera vez su panel está vacío.
+            </p>
+
+            <div className="space-y-1.5">
+              <Label htmlFor="nc-email" className="text-xs">Email del cliente *</Label>
+              <Input id="nc-email" type="email"
+                placeholder="maria@hotel-laspalmas.com"
+                value={newClientForm.email}
+                onChange={(e) => setNewClientForm(f => ({ ...f, email: e.target.value }))}
+                disabled={newClientSaving}
+              />
+            </div>
+
+            <div className="space-y-1.5">
+              <Label htmlFor="nc-name" className="text-xs">Nombre de la persona *</Label>
+              <Input id="nc-name"
+                placeholder="María Sánchez"
+                value={newClientForm.name}
+                onChange={(e) => setNewClientForm(f => ({ ...f, name: e.target.value }))}
+                disabled={newClientSaving}
+              />
+            </div>
+
+            <div className="space-y-1.5">
+              <Label htmlFor="nc-company" className="text-xs">Empresa / Nombre comercial (opcional)</Label>
+              <Input id="nc-company"
+                placeholder="Hotel Las Palmas"
+                value={newClientForm.company}
+                onChange={(e) => setNewClientForm(f => ({ ...f, company: e.target.value }))}
+                disabled={newClientSaving}
+              />
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1.5">
+                <Label htmlFor="nc-plan" className="text-xs">Plan inicial</Label>
+                <Select
+                  value={newClientForm.plan}
+                  onValueChange={(v) => setNewClientForm(f => ({ ...f, plan: v as PlanLower }))}
+                  disabled={newClientSaving}
+                >
+                  <SelectTrigger id="nc-plan">
+                    <SelectValue/>
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="trial">Trial (14 días)</SelectItem>
+                    <SelectItem value="starter">Starter</SelectItem>
+                    <SelectItem value="growth">Growth</SelectItem>
+                    <SelectItem value="master">Master</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="nc-months" className="text-xs">
+                  Meses pagados {newClientForm.plan === "trial" ? "(ignorado)" : ""}
+                </Label>
+                <Input id="nc-months" type="number" min={0} max={36}
+                  placeholder="0 = sin vencimiento"
+                  value={newClientForm.planMonths || ""}
+                  onChange={(e) => setNewClientForm(f => ({ ...f, planMonths: Number(e.target.value) || 0 }))}
+                  disabled={newClientSaving || newClientForm.plan === "trial"}
+                />
+              </div>
+            </div>
+
+            {newClientError && (
+              <div className="text-xs text-red-600 bg-red-50 border border-red-200 rounded-lg p-2.5">
+                {newClientError}
+              </div>
+            )}
+          </div>
+          <DialogFooter className="gap-2">
+            <Button variant="outline" onClick={() => setNewClientOpen(false)} disabled={newClientSaving}>
+              Cancelar
+            </Button>
+            <Button onClick={() => void handleCreateTenant()} disabled={newClientSaving} className="gradient-gold text-primary-foreground">
+              {newClientSaving ? "Creando..." : "Crear cliente"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

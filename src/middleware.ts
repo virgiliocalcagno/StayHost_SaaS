@@ -32,10 +32,12 @@ const PROTECTED_PREFIXES = [
   "/api/bookings",
   "/api/properties",
   "/api/cleaning-tasks",
+  "/api/team-members",
   "/api/tuya",
   "/api/ttlock",          // /api/ttlock and /api/ttlock/code — webhook is carved out below
   "/api/ical/export",
   "/api/ical/import",
+  "/api/admin",           // panel de SaaS — el propio endpoint verifica MASTER_EMAIL
 ];
 
 /**

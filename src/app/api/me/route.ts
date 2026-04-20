@@ -15,7 +15,7 @@
 import { NextResponse } from "next/server";
 import { getAuthenticatedTenant } from "@/lib/supabase/server";
 
-const MASTER_EMAIL = "virgiliocalcagno@gmail.com";
+const MASTER_EMAIL = (process.env.NEXT_PUBLIC_MASTER_EMAIL || "virgiliocalcagno@gmail.com").trim().toLowerCase();
 
 export async function GET() {
   const { user, tenantId } = await getAuthenticatedTenant();

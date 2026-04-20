@@ -22,8 +22,14 @@ import {
   Sparkles,
   CreditCard,
   Globe,
-  Phone
+  Phone,
+  Edit3,
+  Trash2,
+  X,
+  Loader2,
 } from "lucide-react";
+import { Badge } from "@/components/ui/badge";
+import { Textarea } from "@/components/ui/textarea";
 import { useState, useMemo, useEffect } from "react";
 import { cn } from "@/lib/utils";
 import { Sheet, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
@@ -51,27 +57,25 @@ const generateMockBookings = () => {
 
   return [
     { id: 1, name: "Pool + Free Shuttle to Beach", channel: "airbnb", price: 125, bookings: [
-      { id: "b1", guest: "Maria Lopez", start: getDateStr(-5), end: getDateStr(-1), status: "confirmed", channel: "airbnb" },
-      { id: "b2", guest: "Carlos Mendez", start: getDateStr(2), end: getDateStr(6), status: "pending", channel: "direct" },
-      { id: "b3", guest: "Ana Rodriguez", start: getDateStr(9), end: getDateStr(14), status: "confirmed", channel: "airbnb" },
+      { id: "b1", guest: "Maria Lopez", phone: null as string | null, phone4: null as string | null, numGuests: 2, totalPrice: 625, note: "" as string | null, start: getDateStr(-5), end: getDateStr(-1), status: "confirmed", channel: "airbnb" },
+      { id: "b2", guest: "Carlos Mendez", phone: null, phone4: null, numGuests: 2, totalPrice: 500, note: null, start: getDateStr(2), end: getDateStr(6), status: "pending", channel: "direct" },
+      { id: "b3", guest: "Ana Rodriguez", phone: null, phone4: null, numGuests: 2, totalPrice: 625, note: null, start: getDateStr(9), end: getDateStr(14), status: "confirmed", channel: "airbnb" },
     ]},
     { id: 2, name: "Apartamento Centro", channel: "booking", price: 89, bookings: [
-      // BACK-TO-BACK DEMO 1: Luisa hace Check-in el mismo dia que sale Pedro (Dia 3)
-      { id: "b4", guest: "Pedro Sanchez", start: getDateStr(0), end: getDateStr(3), status: "confirmed", channel: "booking" },
-      { id: "b5", guest: "Luisa Gomez", start: getDateStr(3), end: getDateStr(6), status: "confirmed", channel: "direct" },
+      { id: "b4", guest: "Pedro Sanchez", phone: null, phone4: null, numGuests: 2, totalPrice: 267, note: null, start: getDateStr(0), end: getDateStr(3), status: "confirmed", channel: "booking" },
+      { id: "b5", guest: "Luisa Gomez", phone: null, phone4: null, numGuests: 2, totalPrice: 267, note: null, start: getDateStr(3), end: getDateStr(6), status: "confirmed", channel: "direct" },
     ]},
     { id: 3, name: "Casa de Playa Sunset", channel: "vrbo", price: 210, bookings: [
-      // BACK-TO-BACK DEMO 2: Jorge entra el mismo dia que sale Sofia (Dia 1)
-      { id: "b6", guest: "Sofia Castro", start: getDateStr(-2), end: getDateStr(1), status: "confirmed", channel: "vrbo" },
-      { id: "b7", guest: "Jorge Diaz", start: getDateStr(1), end: getDateStr(5), status: "confirmed", channel: "airbnb" },
-      { id: "b7b", guest: "Mariano Suarez", start: getDateStr(5), end: getDateStr(9), status: "pending", channel: "booking" }, // Triple back-to-back!
+      { id: "b6", guest: "Sofia Castro", phone: null, phone4: null, numGuests: 2, totalPrice: 630, note: null, start: getDateStr(-2), end: getDateStr(1), status: "confirmed", channel: "vrbo" },
+      { id: "b7", guest: "Jorge Diaz", phone: null, phone4: null, numGuests: 2, totalPrice: 840, note: null, start: getDateStr(1), end: getDateStr(5), status: "confirmed", channel: "airbnb" },
+      { id: "b7b", guest: "Mariano Suarez", phone: null, phone4: null, numGuests: 2, totalPrice: 840, note: null, start: getDateStr(5), end: getDateStr(9), status: "pending", channel: "booking" },
     ]},
     { id: 4, name: "Loft Moderno CDMX", channel: "airbnb", price: 145, bookings: [
-      { id: "b8", guest: "Roberto Jimenez", start: getDateStr(4), end: getDateStr(9), status: "pending", channel: "airbnb" },
+      { id: "b8", guest: "Roberto Jimenez", phone: null, phone4: null, numGuests: 2, totalPrice: 725, note: null, start: getDateStr(4), end: getDateStr(9), status: "pending", channel: "airbnb" },
     ]},
     { id: 5, name: "Cabana en el Bosque", channel: "direct", price: 180, bookings: [] },
     { id: 6, name: "Penthouse Vista al Mar", channel: "booking", price: 450, bookings: [
-      { id: "b9", guest: "Fernanda Torres", start: getDateStr(-1), end: getDateStr(8), status: "confirmed", channel: "booking" },
+      { id: "b9", guest: "Fernanda Torres", phone: null, phone4: null, numGuests: 2, totalPrice: 4050, note: null, start: getDateStr(-1), end: getDateStr(8), status: "confirmed", channel: "booking" },
     ]},
   ];
 };
@@ -198,8 +202,72 @@ export default function MultiCalendarPanel() {
   };
 
   const handleDeleteBooking = async (bookingId: string) => {
+    if (!confirm("¿Eliminar esta reserva? Los PINs asociados también se eliminarán.")) return;
     await fetch(`/api/bookings?bookingId=${bookingId}`, { method: "DELETE" });
     loadData();
+  };
+
+  const handleCancelBooking = async (bookingId: string) => {
+    if (!confirm("¿Cancelar esta reserva? Los PINs asociados serán revocados.")) return;
+    await fetch("/api/bookings", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      credentials: "same-origin",
+      body: JSON.stringify({ bookingId, status: "cancelled" }),
+    });
+    loadData();
+  };
+
+  // Edit booking state
+  const [editingBooking, setEditingBooking] = useState<{
+    id: string; guest: string; phone: string; start: string; end: string;
+    numGuests: number; totalPrice: number; note: string;
+  } | null>(null);
+  const [savingEdit, setSavingEdit] = useState(false);
+
+  const handleOpenEdit = (booking: Record<string, unknown>) => {
+    setEditingBooking({
+      id: String(booking.id),
+      guest: String(booking.guest ?? ""),
+      phone: String(booking.phone ?? ""),
+      start: String(booking.start ?? ""),
+      end: String(booking.end ?? ""),
+      numGuests: Number(booking.numGuests ?? 1),
+      totalPrice: Number(booking.totalPrice ?? 0),
+      note: String(booking.note ?? ""),
+    });
+  };
+
+  const handleSaveEdit = async () => {
+    if (!editingBooking) return;
+    setSavingEdit(true);
+    try {
+      const res = await fetch("/api/bookings", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        credentials: "same-origin",
+        body: JSON.stringify({
+          bookingId: editingBooking.id,
+          guestName: editingBooking.guest,
+          guestPhone: editingBooking.phone || null,
+          checkIn: editingBooking.start,
+          checkOut: editingBooking.end,
+          numGuests: editingBooking.numGuests,
+          totalPrice: editingBooking.totalPrice,
+          note: editingBooking.note || null,
+        }),
+      });
+      const data = await res.json();
+      if (data.ok) {
+        setEditingBooking(null);
+        loadData();
+      } else {
+        alert(data.error ?? "Error al actualizar");
+      }
+    } catch {
+      alert("Error de conexión");
+    }
+    setSavingEdit(false);
   };
   const daysToShow = 21; // Mostrar 3 semanas
 
@@ -648,21 +716,41 @@ export default function MultiCalendarPanel() {
                             <span className="text-emerald-600 dark:text-emerald-400">${property.price * Math.max(1, Math.ceil((new Date(booking.end).getTime() - new Date(booking.start).getTime()) / (1000 * 3600 * 24)))}</span>
                           </div>
 
-                          <div className="flex gap-2">
+                          {booking.phone && (
+                            <div className="flex items-center gap-2 text-xs mb-3 p-2 rounded-lg bg-muted/30 border border-border/50">
+                              <Phone className="w-3 h-3 text-muted-foreground" />
+                              <span>{booking.phone}</span>
+                              {booking.phone4 && <Badge variant="outline" className="text-[9px] ml-auto">PIN: {booking.phone4}</Badge>}
+                            </div>
+                          )}
+
+                          <div className="grid grid-cols-3 gap-1.5">
                             <Button
-                              className="flex-1 bg-[#635BFF] hover:bg-[#524be3] text-white text-[11px] font-black h-9 rounded-xl gap-2 shadow-lg shadow-blue-500/10"
-                              onClick={() => openChargeDrawer(booking, property.name)}
+                              size="sm"
+                              variant="outline"
+                              className="h-8 rounded-xl text-[10px] font-bold gap-1"
+                              onClick={() => { handleOpenEdit(booking); }}
                             >
-                              <DollarSign className="w-3.5 h-3.5" />
-                              COBRAR EXTRA
+                              <Edit3 className="w-3 h-3" />
+                              Editar
                             </Button>
                             <Button
-                              variant="outline"
                               size="sm"
-                              className="h-9 px-3 rounded-xl border-red-200 text-red-500 hover:bg-red-50 hover:text-red-600 text-[11px] font-black"
+                              variant="outline"
+                              className="h-8 rounded-xl text-[10px] font-bold border-amber-200 text-amber-600 hover:bg-amber-50 gap-1"
+                              onClick={() => handleCancelBooking(booking.id)}
+                            >
+                              <X className="w-3 h-3" />
+                              Cancelar
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              className="h-8 rounded-xl text-[10px] font-bold border-red-200 text-red-500 hover:bg-red-50 gap-1"
                               onClick={() => handleDeleteBooking(booking.id)}
                             >
-                              Eliminar
+                              <Trash2 className="w-3 h-3" />
+                              Borrar
                             </Button>
                           </div>
                         </PopoverContent>
@@ -700,11 +788,65 @@ export default function MultiCalendarPanel() {
           <span>Pendiente / Bloqueo</span>
         </div>
       </div>
-      <ChargeServiceDrawer 
-        isOpen={isChargeOpen} 
-        onClose={() => setIsChargeOpen(false)} 
-        bookingData={selectedBookingForCharge} 
+      <ChargeServiceDrawer
+        isOpen={isChargeOpen}
+        onClose={() => setIsChargeOpen(false)}
+        bookingData={selectedBookingForCharge}
       />
+
+      {/* Edit Booking Sheet */}
+      <Sheet open={!!editingBooking} onOpenChange={(open) => { if (!open) setEditingBooking(null); }}>
+        <SheetContent className="sm:max-w-md w-full border-l-0 shadow-2xl flex flex-col p-0">
+          <SheetHeader className="px-6 py-6 pb-2 border-b">
+            <SheetTitle className="text-xl font-black">Editar Reserva</SheetTitle>
+            <SheetDescription>Modifica los datos de la reserva. Los PINs se actualizarán automáticamente.</SheetDescription>
+          </SheetHeader>
+          {editingBooking && (
+            <div className="flex-1 overflow-y-auto px-6 py-4 space-y-4">
+              <div className="space-y-2">
+                <Label className="text-xs font-bold">Huésped</Label>
+                <Input value={editingBooking.guest} onChange={(e) => setEditingBooking((p) => p ? { ...p, guest: e.target.value } : p)} />
+              </div>
+              <div className="space-y-2">
+                <Label className="text-xs font-bold">Teléfono</Label>
+                <Input value={editingBooking.phone} onChange={(e) => setEditingBooking((p) => p ? { ...p, phone: e.target.value } : p)} placeholder="+1 787 555 1234" />
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-2">
+                  <Label className="text-xs font-bold">Check-in</Label>
+                  <Input type="date" value={editingBooking.start} onChange={(e) => setEditingBooking((p) => p ? { ...p, start: e.target.value } : p)} />
+                </div>
+                <div className="space-y-2">
+                  <Label className="text-xs font-bold">Check-out</Label>
+                  <Input type="date" value={editingBooking.end} onChange={(e) => setEditingBooking((p) => p ? { ...p, end: e.target.value } : p)} />
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-2">
+                  <Label className="text-xs font-bold">Huéspedes</Label>
+                  <Input type="number" min={1} value={editingBooking.numGuests} onChange={(e) => setEditingBooking((p) => p ? { ...p, numGuests: Number(e.target.value) || 1 } : p)} />
+                </div>
+                <div className="space-y-2">
+                  <Label className="text-xs font-bold">Precio Total</Label>
+                  <Input type="number" min={0} step="0.01" value={editingBooking.totalPrice} onChange={(e) => setEditingBooking((p) => p ? { ...p, totalPrice: Number(e.target.value) || 0 } : p)} />
+                </div>
+              </div>
+              <div className="space-y-2">
+                <Label className="text-xs font-bold">Nota</Label>
+                <Textarea value={editingBooking.note} onChange={(e) => setEditingBooking((p) => p ? { ...p, note: e.target.value } : p)} placeholder="Notas internas..." rows={3} />
+              </div>
+            </div>
+          )}
+          <SheetFooter className="px-6 py-4 border-t">
+            <div className="flex gap-2 w-full">
+              <Button variant="outline" className="flex-1" onClick={() => setEditingBooking(null)}>Cancelar</Button>
+              <Button className="flex-1 gradient-gold text-primary-foreground" onClick={handleSaveEdit} disabled={savingEdit}>
+                {savingEdit ? <Loader2 className="h-4 w-4 animate-spin" /> : "Guardar Cambios"}
+              </Button>
+            </div>
+          </SheetFooter>
+        </SheetContent>
+      </Sheet>
     </div>
   );
 }
