@@ -36,9 +36,13 @@ interface LookupResponse {
 }
 
 function buildEncodedData(b: NonNullable<LookupResponse["booking"]>, last4: string): string {
+  // `l` (lastName) es el soft-token del backend para auth del huésped. Como
+  // Airbnb no trae apellido, usamos el channel_code como pseudo-apellido
+  // interno. Al Source 3 del autoSync guarda el checkin_record con ese mismo
+  // valor, así el match funciona sin que el huésped tipee nada raro.
   const payload = {
     n: b.guestName ?? "Huésped",
-    l: "",                  // lastName — se captura en el flow
+    l: b.channelCode,             // pseudo-apellido = código de reserva
     d4: last4,
     ci: b.checkIn,
     co: b.checkOut,

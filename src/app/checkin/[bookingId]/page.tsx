@@ -15,7 +15,7 @@
  * Steps: 0 Bienvenida → 1 Verificación → 2 Documento → 3 Extras → 4 Electricidad → 5 Acceso
  */
 
-import { useState, useRef, use, Suspense } from "react";
+import { useState, useRef, use, Suspense, useEffect } from "react";
 import { useSearchParams } from "next/navigation";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -67,13 +67,24 @@ function CheckInInner({ bookingId }: { bookingId: string }) {
   const sp = useSearchParams();
   const booking = decodeBooking(sp.get("d") ?? "");
 
+  // v=2 indica que el huésped viene del landing genérico /checkin donde ya
+  // validó (código + últimos 4 dígitos). No tiene que pasar por el paso 1
+  // (apellido+4dig) — usamos el código como pseudo-apellido interno para
+  // que el backend autentique sin pedir nada más.
+  const isV2 = sp.get("v") === "2";
+
   const [step, setStep] = useState<Step>(0);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
 
-  // Step 1
-  const [lastName, setLastName] = useState("");
-  const [last4, setLast4] = useState("");
+  // Step 1 — precargado desde el landing si viene v=2
+  const [lastName, setLastName] = useState(() => (isV2 ? (booking?.l ?? "") : ""));
+  const [last4, setLast4] = useState(() => (isV2 ? (booking?.d4 ?? "") : ""));
+
+  // v=2 → saltamos bienvenida y auth, vamos directo a subir documento
+  useEffect(() => {
+    if (isV2 && booking) setStep(2);
+  }, [isV2, booking]);
 
   // Step 2
   const [idPreview, setIdPreview] = useState<string | null>(null);

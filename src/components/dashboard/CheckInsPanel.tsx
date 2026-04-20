@@ -679,8 +679,18 @@ export default function CheckInsPanel() {
 
               const nameParts = (b.guest || "").trim().split(/\s+/);
               const firstName = nameParts[0] ?? "";
-              const lastName = nameParts.length > 1 ? nameParts.slice(1).join(" ") : "";
-              const isMissingName = !lastName;
+              const lastNameFromGuest = nameParts.length > 1 ? nameParts.slice(1).join(" ") : "";
+              // Para Airbnb nunca viene el apellido (SUMMARY = "Reserved").
+              // Usamos el channel_code como pseudo-apellido INTERNO: el auth
+              // del backend sigue siendo (lastName + last4) pero el huesped
+              // nunca lo escribe — el /checkin landing lo valida con codigo
+              // +4digitos y redirige con el flag v=2 que skip-ea la pantalla
+              // de login. Para legacy links sin v=2 el flujo sigue igual.
+              const channelCode = b.channelCode ?? null;
+              const lastNameForAuth =
+                lastNameFromGuest ||
+                (channelCode ? channelCode : "");  // fallback al codigo
+              const isMissingName = !lastNameForAuth;
               const missingData = isMissingPhone || isMissingName;
 
               const elec = ec.enabled ? calcElectricity(nights, ec.rate, ec.paypal) : 0;
@@ -690,8 +700,8 @@ export default function CheckInsPanel() {
               candidates.push(buildCandidate({
                 source: sourceKind,
                 channel: (b.channel as "airbnb" | "vrbo" | "booking" | "direct") ?? "direct",
-                guestName: missingData ? "Pendiente" : (firstName || b.guest),
-                guestLastName: missingData ? "de Datos" : lastName,
+                guestName: firstName || b.guest || "Huésped",
+                guestLastName: lastNameForAuth,  // apellido real o code
                 lastFourDigits: isMissingPhone ? "0000" : last4,
                 checkin: b.start, checkout: b.end, nights,
                 propertyId: prop.id, propertyName: propInfo?.name ?? prop.name,
