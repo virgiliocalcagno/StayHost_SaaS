@@ -18,6 +18,7 @@ type PropertyRow = {
   max_guests: number | null;
   standard_instructions: string | null;
   bed_configuration: unknown;
+  ical_token: string | null;
 };
 
 type TaskRow = {
@@ -43,19 +44,28 @@ type BookingRow = {
 export async function GET(req: NextRequest) {
   const propertyId = req.nextUrl.searchParams.get("id");
   const type = req.nextUrl.searchParams.get("type") || "bookings";
+  const token = req.nextUrl.searchParams.get("token");
 
   if (!propertyId) {
     return new NextResponse("id required", { status: 400 });
   }
 
-  // Fetch property details
+  // Fetch property details + token de seguridad. Sin token este endpoint
+  // expondria todas las reservas a cualquiera con el property_id.
   const { data: property, error: propErr } = await supabaseAdmin
     .from("properties")
-    .select("id, name, address, city, max_guests, standard_instructions, bed_configuration")
+    .select("id, name, address, city, max_guests, standard_instructions, bed_configuration, ical_token")
     .eq("id", propertyId)
     .single<PropertyRow>();
 
   if (!property || propErr) {
+    return new NextResponse("Property not found", { status: 404 });
+  }
+
+  // Capability URL: si la propiedad tiene token (post-migracion 20260421),
+  // requerimos match exacto. Devolvemos 404 (no 401/403) para no filtrar
+  // que el property_id existe a un atacante que no conoce el token.
+  if (property.ical_token && property.ical_token !== token) {
     return new NextResponse("Property not found", { status: 404 });
   }
 
