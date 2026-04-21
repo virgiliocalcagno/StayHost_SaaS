@@ -42,6 +42,7 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import ChargeServiceDrawer from "./ChargeServiceDrawer";
 import PropertyFullCalendarModal from "./PropertyFullCalendarModal";
+import DocumentScanButton, { type ScannedDoc } from "./DocumentScanButton";
 
 // Returns YYYY-MM-DD in the USER's local timezone — never UTC.
 // toISOString() was the old bug: past ~8pm in Chile (UTC-4), UTC already
@@ -543,10 +544,16 @@ export default function MultiCalendarPanel() {
                      </div>
                      <p className="text-[11px] text-blue-600/70 font-medium">Escanea el ID/Pasaporte para auto-completar</p>
                   </div>
-                  <Button size="sm" className="bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-[11px] font-extrabold uppercase tracking-wider flex items-center gap-2 h-9 shadow-lg shadow-blue-500/20">
-                    <Camera className="w-4 h-4" />
-                    ESCANEAR
-                  </Button>
+                  <DocumentScanButton
+                    onScanned={(doc: ScannedDoc) => {
+                      setNewBooking((prev) => ({
+                        ...prev,
+                        guest: doc.guestName ?? prev.guest,
+                        docIdentidad: doc.docNumber ?? prev.docIdentidad,
+                        nacionalidad: doc.nationality ?? prev.nacionalidad,
+                      }));
+                    }}
+                  />
                 </div>
               </div>
 
