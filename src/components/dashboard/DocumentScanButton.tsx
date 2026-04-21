@@ -13,7 +13,7 @@ export type ScannedDoc = {
   nationality?: string;
   dateOfBirth?: string;
   expirationDate?: string;
-  source: "passport-mrz" | "dominican-cedula" | "loose-text";
+  source: "gemini";
   rawText: string;
 };
 
@@ -123,17 +123,11 @@ export default function DocumentScanButton({ onScanned, className }: Props) {
         const natLabel = doc.nationality
           ? COUNTRY_NAMES[doc.nationality] ?? doc.nationality
           : "?";
-        const docType =
-          doc.source === "passport-mrz"
-            ? "Pasaporte"
-            : doc.source === "dominican-cedula"
-              ? "Cédula DOM"
-              : "texto";
         toast.success(
-          `${docType}: ${filled}/3 campos.${doc.guestName ? ` ${doc.guestName}.` : ""} Nac: ${natLabel}`,
+          `${filled}/3 campos.${doc.guestName ? ` ${doc.guestName}.` : ""} Nac: ${natLabel}`,
           {
             duration: 8000,
-            action: { label: "Ver OCR", onClick: openRawWindow },
+            action: { label: "Ver respuesta", onClick: openRawWindow },
           },
         );
       }
