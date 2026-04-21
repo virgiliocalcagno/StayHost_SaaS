@@ -94,13 +94,10 @@ export async function ensureCleaningTasksForProperty(args: {
     const isBackToBack = !!arriving;
     const isVacant = !isBackToBack;
 
-    const outDate = new Date(b.check_out);
-    const inDate = new Date(b.check_in);
-    const nights = Math.max(
-      1,
-      Math.ceil((outDate.getTime() - inDate.getTime()) / (1000 * 60 * 60 * 24)),
-    );
-
+    // Solo columnas que SI existen en la tabla. El endpoint viejo incluia
+    // `stay_duration`, `arriving_guest_name` y `arriving_guest_count` pero
+    // esas columnas no existen en prod — el INSERT devolvia error y toda
+    // la auto-creacion quedaba rota en silencio.
     toCreate.push({
       id: `booking-${b.id}`,
       property_id: b.property_id,
@@ -114,9 +111,6 @@ export async function ensureCleaningTasksForProperty(args: {
       is_vacant: isVacant,
       guest_name: b.guest_name ?? "Huésped",
       guest_count: b.num_guests ?? null,
-      stay_duration: nights,
-      arriving_guest_name: arriving?.guest_name ?? null,
-      arriving_guest_count: arriving?.num_guests ?? null,
       checklist_items: DEFAULT_CHECKLIST,
     });
   }
