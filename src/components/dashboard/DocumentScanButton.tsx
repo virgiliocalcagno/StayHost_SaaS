@@ -77,66 +77,153 @@ function mrzNameToReadable(field: string): string {
     .replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
+// Normaliza ruido comun del OCR en la zona MRZ. Tesseract a veces lee
+// '<' como '(' '{' '[' '|' '«' etc. El ICAO solo permite A-Z, 0-9, y '<'
+// asi que todo lo que no sea eso lo convertimos a '<' si estamos en una
+// linea larga con estructura de MRZ.
+function normalizeMrzLine(line: string): string {
+  return line
+    .replace(/[«»{}()\[\]|¦\\/]/g, "<")
+    .replace(/[^A-Z0-9<]/g, "<")
+    .replace(/\s/g, "");
+}
+
 // Intenta parsear MRZ (pasaporte ICAO 9303). Devuelve campos si reconoce.
 async function tryMrz(text: string): Promise<Partial<ScannedDoc> | null> {
-  // Busca 2 o 3 lineas consecutivas de ~44 chars con muchos '<'.
-  const lines = text
+  // Detectar candidatas: lineas largas (>=30 chars despues de quitar
+  // espacios) que contengan al menos un caracter parecido a '<' o que
+  // empiecen con tipos conocidos de MRZ (P<, I<, ID, etc).
+  const rawLines = text
     .split(/\r?\n/)
     .map((l) => l.replace(/\s/g, ""))
-    .filter((l) => l.length >= 30 && l.length <= 50 && l.includes("<"));
+    .filter((l) => l.length >= 28);
 
-  if (lines.length < 2) return null;
+  // Candidatas "con pinta de MRZ": probamos pares consecutivos.
+  const candidatesPairs: string[][] = [];
+  for (let i = 0; i < rawLines.length - 1; i++) {
+    const a = normalizeMrzLine(rawLines[i].toUpperCase());
+    const b = normalizeMrzLine(rawLines[i + 1].toUpperCase());
+    // Descartar si ambas son puros '<' (ruido puro).
+    if (a.replace(/</g, "").length < 5 || b.replace(/</g, "").length < 5) continue;
+    // Probamos con longitudes 44 (tipo 3 = pasaporte) y 36 (tipo 2 = visa/id).
+    const padTo = (s: string, n: number) =>
+      s.length >= n ? s.slice(0, n) : s + "<".repeat(n - s.length);
+    candidatesPairs.push([padTo(a, 44), padTo(b, 44)]);
+    candidatesPairs.push([padTo(a, 36), padTo(b, 36)]);
+  }
+  // Tambien probamos 3 lineas consecutivas (IDs estilo TD1: 3x30 chars).
+  const candidatesTriples: string[][] = [];
+  for (let i = 0; i < rawLines.length - 2; i++) {
+    const a = normalizeMrzLine(rawLines[i].toUpperCase());
+    const b = normalizeMrzLine(rawLines[i + 1].toUpperCase());
+    const c = normalizeMrzLine(rawLines[i + 2].toUpperCase());
+    if ([a, b, c].every((s) => s.replace(/</g, "").length >= 5)) {
+      const pad = (s: string) => (s.length >= 30 ? s.slice(0, 30) : s + "<".repeat(30 - s.length));
+      candidatesTriples.push([pad(a), pad(b), pad(c)]);
+    }
+  }
 
-  // Algunas veces Tesseract mete ruido adelante. Tomamos las ultimas dos.
-  const candidate = lines.slice(-2);
+  if (candidatesPairs.length === 0 && candidatesTriples.length === 0) return null;
 
   try {
     const mrzLib = await import("mrz");
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const parsed = (mrzLib as any).parse(candidate);
-    if (!parsed?.valid && !parsed?.fields) return null;
-    const f = parsed.fields;
-    const firstName = f.firstName ?? "";
-    const lastName = f.lastName ?? "";
-    const fullName = `${firstName} ${lastName}`.trim().replace(/\s+/g, " ");
-    const readableName = fullName
-      ? fullName.toLowerCase().replace(/\b\w/g, (c: string) => c.toUpperCase())
-      : undefined;
+    const parseFn = (mrzLib as any).parse as (input: string[]) => { valid?: boolean; fields?: Record<string, unknown> };
 
-    return {
-      guestName: readableName,
-      docNumber: f.documentNumber ?? undefined,
-      nationality: f.nationality ?? undefined,
-      dateOfBirth: f.birthDate ? mrzDateToIso(f.birthDate) : undefined,
-      expirationDate: f.expirationDate ? mrzDateToIso(f.expirationDate) : undefined,
-      source: "passport-mrz",
-    };
+    const allCandidates = [...candidatesTriples, ...candidatesPairs];
+    for (const cand of allCandidates) {
+      try {
+        const parsed = parseFn(cand);
+        const fields = parsed?.fields;
+        if (!fields) continue;
+        // Requerimos al menos documentNumber para aceptar el parseo.
+        if (!fields.documentNumber) continue;
+        const firstName = (fields.firstName as string) ?? "";
+        const lastName = (fields.lastName as string) ?? "";
+        const fullName = `${firstName} ${lastName}`.trim().replace(/\s+/g, " ");
+        const readableName = fullName
+          ? fullName.toLowerCase().replace(/\b\w/g, (c) => c.toUpperCase())
+          : undefined;
+        return {
+          guestName: readableName,
+          docNumber: (fields.documentNumber as string) ?? undefined,
+          nationality: (fields.nationality as string) ?? undefined,
+          dateOfBirth: fields.birthDate ? mrzDateToIso(fields.birthDate as string) : undefined,
+          expirationDate: fields.expirationDate
+            ? mrzDateToIso(fields.expirationDate as string)
+            : undefined,
+          source: "passport-mrz",
+        };
+      } catch {
+        // Intento con la proxima candidata.
+        continue;
+      }
+    }
+    return null;
   } catch {
     return null;
   }
 }
 
-// Intenta cedula dominicana: formato "001-1234567-1" o "001 1234567 1" o
-// "00112345671" (sin separadores). Ademas busca un nombre en las proximas
-// lineas.
-function tryDominicanCedula(text: string): Partial<ScannedDoc> | null {
-  const cedulaRegex = /\b(\d{3})[-\s]?(\d{7})[-\s]?(\d{1})\b/;
-  const m = text.match(cedulaRegex);
-  if (!m) return null;
-  const docNumber = `${m[1]}-${m[2]}-${m[3]}`;
+// Corrige misreads tipicos del OCR en contextos donde esperamos digitos.
+// Ej: "O" → "0", "I"/"l" → "1", "S" → "5", "B" → "8", "Z" → "2", "G" → "6".
+// Lo aplicamos SOLO en secuencias que parecen ser el numero (rodeadas de
+// otros digitos) para no destruir nombres.
+function digitify(s: string): string {
+  return s
+    .replace(/O/gi, "0")
+    .replace(/[Il|]/g, "1")
+    .replace(/S/g, "5")
+    .replace(/B/g, "8")
+    .replace(/Z/g, "2")
+    .replace(/G/g, "6")
+    .replace(/[^0-9]/g, "");
+}
 
-  // El nombre suele estar en mayusculas despues de la palabra "NOMBRES" o
-  // en una linea cercana. Tomamos la primera linea con >1 palabra en
-  // mayusculas que no tenga digitos.
-  const lines = text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
-  const nameLine = lines.find((l) =>
-    !/\d/.test(l) &&
-    /^[A-ZÁÉÍÓÚÑ ]{5,}$/.test(l) &&
-    l.split(/\s+/).length >= 2,
-  );
-  const guestName = nameLine
-    ? nameLine.toLowerCase().replace(/\b\w/g, (c) => c.toUpperCase())
-    : undefined;
+// Intenta cedula dominicana. Formato oficial: "001-1234567-1" (3-7-1 digitos).
+// Tolera:
+//   - cualquier separador entre los grupos (.,-_·espacio)
+//   - sin separador ("00112345671")
+//   - digitos mal leidos (OCR: O→0, I→1, S→5, etc.) mientras la longitud
+//     total cuadre a 11 digitos
+function tryDominicanCedula(text: string): Partial<ScannedDoc> | null {
+  // Busca primero con separadores flexibles.
+  const withSepRegex = /(\d{3})[^\dA-Za-z]{0,3}(\d{7})[^\dA-Za-z]{0,3}(\d{1})(?!\d)/;
+  let m = text.match(withSepRegex);
+  let docNumber: string | null = null;
+  if (m) {
+    docNumber = `${m[1]}-${m[2]}-${m[3]}`;
+  }
+
+  // Fallback: 11 digitos pegados (se acepta con ruido alrededor).
+  if (!docNumber) {
+    const stickyRegex = /(?<![A-Za-z\d])(\d{11})(?![A-Za-z\d])/;
+    m = text.match(stickyRegex);
+    if (m) {
+      docNumber = `${m[1].slice(0, 3)}-${m[1].slice(3, 10)}-${m[1].slice(10)}`;
+    }
+  }
+
+  // Fallback mas agresivo: buscamos sub-cadenas de 11+ chars donde al
+  // aplicar digitify(queden exactamente 11 digitos). Solo si no encontramos
+  // antes, para no producir falsos positivos.
+  if (!docNumber) {
+    const tokens = text.split(/\s+/);
+    for (const tok of tokens) {
+      const d = digitify(tok);
+      if (d.length === 11 && /^\d{11}$/.test(d)) {
+        docNumber = `${d.slice(0, 3)}-${d.slice(3, 10)}-${d.slice(10)}`;
+        break;
+      }
+    }
+  }
+
+  if (!docNumber) return null;
+
+  // Buscamos nombre. En cedulas dominicanas aparece en mayusculas debajo
+  // de "NOMBRES" o "APELLIDOS". Tomamos cualquier linea con 2+ palabras
+  // todas en mayusculas.
+  const guestName = extractCapsName(text);
 
   return {
     guestName,
@@ -146,10 +233,59 @@ function tryDominicanCedula(text: string): Partial<ScannedDoc> | null {
   };
 }
 
-// Ultimo recurso: si no identificamos estructura, devolvemos el texto crudo
-// para que el host lo use de referencia visual. Los campos quedan vacios.
+// Busca un nombre en texto OCR genérico. Heuristica:
+//   1. Lineas con 2+ palabras ALL CAPS (>=3 chars cada una) y sin digitos.
+//   2. Si no, lineas Title Case con 2+ palabras.
+//   3. Filtramos palabras tipicas de header (NOMBRES, APELLIDOS, CEDULA, etc.)
+function extractCapsName(text: string): string | undefined {
+  const blacklist = new Set([
+    "NOMBRES", "APELLIDOS", "CEDULA", "CÉDULA", "IDENTIDAD",
+    "NACIONALIDAD", "SEXO", "FECHA", "NACIMIENTO", "PASAPORTE",
+    "PASSPORT", "REPUBLICA", "REPÚBLICA", "DOMINICANA", "ESTADOS",
+    "UNIDOS", "TYPE", "CODE", "ISSUING", "COUNTRY", "NAME",
+    "SURNAME", "GIVEN", "NAMES", "DATE", "BIRTH", "SEX",
+    "JUNTA", "CENTRAL", "ELECTORAL", "DOCUMENTO", "DOCUMENT",
+  ]);
+
+  const lines = text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+
+  // Intento 1: linea con 2+ palabras ALL CAPS, sin digitos.
+  for (const line of lines) {
+    if (/\d/.test(line)) continue;
+    const words = line.split(/\s+/).filter((w) => w.length >= 3);
+    if (words.length < 2) continue;
+    // Todas en mayusculas (permitimos acentos y ñ).
+    const allCaps = words.every((w) => /^[A-ZÁÉÍÓÚÜÑ]+$/.test(w));
+    if (!allCaps) continue;
+    // Que no sea todo blacklist.
+    const meaningful = words.filter((w) => !blacklist.has(w));
+    if (meaningful.length < 2) continue;
+    return meaningful
+      .join(" ")
+      .toLowerCase()
+      .replace(/\b\w/g, (c) => c.toUpperCase());
+  }
+
+  // Intento 2: Title Case con 2+ palabras.
+  for (const line of lines) {
+    if (/\d/.test(line)) continue;
+    const words = line.split(/\s+/).filter((w) => w.length >= 3);
+    if (words.length < 2) continue;
+    const titleCase = words.every((w) => /^[A-ZÁÉÍÓÚÜÑ][a-záéíóúüñ]+$/.test(w));
+    if (titleCase) {
+      return words.join(" ");
+    }
+  }
+
+  return undefined;
+}
+
+// Ultimo recurso: al menos intenta extraer un nombre con la heuristica de
+// mayusculas. Si encuentra algo, el host ve lo que pudimos leer y completa
+// el resto a mano.
 function looseText(text: string): Partial<ScannedDoc> {
-  return { source: "loose-text" };
+  const guestName = extractCapsName(text);
+  return { guestName, source: "loose-text" };
 }
 
 async function preprocessImage(file: File): Promise<HTMLCanvasElement> {
@@ -159,9 +295,10 @@ async function preprocessImage(file: File): Promise<HTMLCanvasElement> {
     i.onerror = reject;
     i.src = URL.createObjectURL(file);
   });
-  // Limitar tamaño max 1600px para que Tesseract no se quede quieto con
-  // fotos de 4000x3000.
-  const maxDim = 1600;
+  // Resolucion mas alta (2200px) mejora MRZ significativamente — los '<'
+  // son chars angostos que Tesseract confunde facil en baja resolucion.
+  // Manejable por CPU de movil mid-range (3-8s para 2200x1600).
+  const maxDim = 2200;
   const scale = Math.min(1, maxDim / Math.max(img.width, img.height));
   const canvas = document.createElement("canvas");
   canvas.width = Math.round(img.width * scale);
@@ -170,14 +307,18 @@ async function preprocessImage(file: File): Promise<HTMLCanvasElement> {
   if (!ctx) throw new Error("No 2D canvas context");
   ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
 
-  // Aumentar contraste + B&N para mejorar accuracy del OCR.
+  // B&N + contraste moderado. Evitamos binarizar porque destruye los
+  // caracteres finos como '<' del MRZ.
   const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
   const data = imgData.data;
   for (let i = 0; i < data.length; i += 4) {
     const gray = data[i] * 0.299 + data[i + 1] * 0.587 + data[i + 2] * 0.114;
-    // Simple threshold con rango suave (no binario, para que MRZ mantenga
-    // los '<' legibles).
-    const adjusted = gray < 120 ? Math.max(0, gray - 20) : Math.min(255, gray + 30);
+    // Contraste tipo S-curve: oscurece lo oscuro, clarea lo claro, deja
+    // los tonos medios intactos.
+    let adjusted: number;
+    if (gray < 80) adjusted = Math.max(0, gray * 0.5);
+    else if (gray > 180) adjusted = Math.min(255, gray * 1.15);
+    else adjusted = gray;
     data[i] = data[i + 1] = data[i + 2] = adjusted;
   }
   ctx.putImageData(imgData, 0, 0);
@@ -198,25 +339,54 @@ export default function DocumentScanButton({ onScanned, className }: Props) {
       // Tesseract se importa dinamico (≈2MB + ≈10MB de datos spa/eng). Solo
       // se descarga la primera vez que el host aprieta "Escanear".
       const Tesseract = (await import("tesseract.js")).default;
-      const { data } = await Tesseract.recognize(canvas, "spa+eng", {
+
+      // Primera pasada: espanol general — mejor para cedulas con nombre
+      // en espanol y campos tipo "NOMBRES", "APELLIDOS".
+      const { data: dataGeneral } = await Tesseract.recognize(canvas, "spa", {
         logger: (m) => {
           if (m.status === "recognizing text" && typeof m.progress === "number") {
-            setProgress(Math.round(m.progress * 100));
+            setProgress(Math.round(m.progress * 50)); // 0-50%
           }
         },
       });
+      const textGeneral = dataGeneral.text ?? "";
 
-      const text = data.text ?? "";
+      // Segunda pasada: MRZ-mode. Tesseract con whitelist de chars ICAO
+      // y PSM 6 (bloque unico de texto) da mucho mejor accuracy en la
+      // zona MRZ al pie del pasaporte. Si la foto no tiene MRZ (ej.
+      // cedula), esta pasada devuelve basura pero no molesta — solo la
+      // usamos para el parser MRZ.
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const { data: dataMrz } = await (Tesseract as any).recognize(canvas, "eng", {
+        tessedit_char_whitelist: "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789<",
+        tessedit_pageseg_mode: "6",
+        logger: (m: { status?: string; progress?: number }) => {
+          if (m.status === "recognizing text" && typeof m.progress === "number") {
+            setProgress(50 + Math.round(m.progress * 50)); // 50-100%
+          }
+        },
+      });
+      const textMrz = (dataMrz as { text?: string }).text ?? "";
 
-      // Probamos parsers en orden de confianza.
-      const mrz = await tryMrz(text);
-      const cedula = !mrz ? tryDominicanCedula(text) : null;
-      const loose = !mrz && !cedula ? looseText(text) : null;
+      // Combinamos el texto para parsers genericos (el MRZ-only tiene
+      // menos contexto para nombres). Probamos MRZ sobre la version
+      // MRZ-mode primero; si falla, fallback a cedula sobre general.
+      const combinedText = `${textGeneral}\n---\n${textMrz}`;
+
+      const mrz = (await tryMrz(textMrz)) ?? (await tryMrz(textGeneral));
+      const cedula = !mrz ? tryDominicanCedula(textGeneral) : null;
+      const loose = !mrz && !cedula ? looseText(textGeneral) : null;
+
+      const source: ScannedDoc["source"] = mrz
+        ? "passport-mrz"
+        : cedula
+          ? "dominican-cedula"
+          : "loose-text";
 
       const result: ScannedDoc = {
         ...(mrz ?? cedula ?? loose!),
-        rawText: text,
-        source: (mrz ? "passport-mrz" : cedula ? "dominican-cedula" : "loose-text") as ScannedDoc["source"],
+        rawText: combinedText,
+        source,
       };
 
       const filledCount = [
@@ -226,16 +396,27 @@ export default function DocumentScanButton({ onScanned, className }: Props) {
       ].filter(Boolean).length;
 
       if (filledCount === 0) {
+        // Mostramos las primeras 120 chars del OCR para que el host vea
+        // que Tesseract SI leyo texto pero los parsers no reconocieron
+        // estructura — ayuda a debuggear si el problema es angulo, luz
+        // o que mi parser es muy estricto.
+        const preview = textGeneral.trim().slice(0, 120).replace(/\s+/g, " ");
         toast.warning(
-          "No pude reconocer el documento. Intenta con mejor luz, sin reflejos, y que la foto no este movida.",
-          { duration: 6000 },
+          `No pude reconocer campos. OCR leyo: "${preview || "(vacio)"}". Intenta con mas luz o acerca mas el documento.`,
+          { duration: 10000 },
         );
       } else {
         const natLabel = result.nationality
           ? COUNTRY_NAMES[result.nationality] ?? result.nationality
           : "?";
+        const docType =
+          result.source === "passport-mrz"
+            ? "Pasaporte"
+            : result.source === "dominican-cedula"
+              ? "Cédula DOM"
+              : "texto";
         toast.success(
-          `Documento leido (${result.source === "passport-mrz" ? "Pasaporte" : result.source === "dominican-cedula" ? "Cédula DOM" : "texto"}). ${filledCount}/3 campos, nacionalidad: ${natLabel}.`,
+          `${docType}: ${filledCount}/3 campos, nacionalidad ${natLabel}.${result.guestName ? ` ${result.guestName}` : ""}`,
           { duration: 5000 },
         );
       }
