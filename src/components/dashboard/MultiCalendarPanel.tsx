@@ -35,6 +35,7 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Textarea } from "@/components/ui/textarea";
 import { useState, useMemo, useEffect } from "react";
+import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { Sheet, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
 import { Label } from "@/components/ui/label";
@@ -173,8 +174,18 @@ export default function MultiCalendarPanel() {
         setIsBlockOpen(false);
         setBlockForm({ propertyId: "", start: "", end: "", note: "" });
         loadData();
+        // Toast persistente — el host debe ir a Airbnb a forzar el refresh
+        // o esperar 2-4h. Sin esta accion entran reservas en la ventana.
+        toast.warning(
+          "Bloqueo guardado. Acordate de entrar a Airbnb → Calendario → Importar ahora para evitar overbooking.",
+          { duration: 10000 }
+        );
+      } else {
+        toast.error(data.error ?? "No se pudo guardar el bloqueo.");
       }
-    } catch {}
+    } catch {
+      toast.error("Error de conexión al guardar el bloqueo.");
+    }
     setSavingBlock(false);
   };
 
@@ -457,6 +468,19 @@ export default function MultiCalendarPanel() {
                 <SheetDescription>Las fechas bloqueadas se sincronizan automáticamente a Airbnb y VRBO vía tu iCal propio.</SheetDescription>
               </SheetHeader>
               <div className="flex-1 overflow-y-auto px-6 py-4 space-y-4">
+                {/* Aviso critico de lag iCal — Airbnb hace pull cada 2-4h.
+                    Sin esto el host se confia y puede sufrir overbooking real. */}
+                <div className="rounded-xl border-2 border-amber-400 bg-amber-50 p-3 flex gap-2.5">
+                  <span className="text-xl leading-none mt-0.5">⚠️</span>
+                  <div className="flex-1 text-[12px] leading-snug text-amber-900">
+                    <p className="font-black mb-1">Importante — riesgo de doble reserva</p>
+                    <p className="font-medium">
+                      Airbnb puede tardar <span className="font-black">hasta 4 horas</span> en leer este bloqueo.
+                      Para evitar reservas dobles, después de guardar acá entrá a{" "}
+                      <span className="font-black">Airbnb → Calendario → tu propiedad → Importar calendario → "Importar ahora"</span>.
+                    </p>
+                  </div>
+                </div>
                 <div className="space-y-2">
                   <Label className="text-[11px] font-bold text-muted-foreground uppercase tracking-[0.05em]">Propiedad</Label>
                   <Select value={blockForm.propertyId} onValueChange={v => setBlockForm(f => ({ ...f, propertyId: v }))}>
