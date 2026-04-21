@@ -203,6 +203,15 @@ export default function PropertyFullCalendarModal({
   const [rangeEnd, setRangeEnd] = useState<string | null>(null);
   const [blockNote, setBlockNote] = useState("");
   const [saving, setSaving] = useState(false);
+  // Drag-to-select: cuando el usuario apreta el mouse en un dia libre y
+  // lo arrastra sobre otras celdas, el rango se va actualizando en vivo.
+  // Si suelta sin moverse, es un click normal (primera click de range,
+  // luego click-click sigue funcionando como siempre).
+  // `dragAnchor` guarda el dia donde empezo el drag — usado para calcular
+  // el rango [min(anchor, pointer)..max(anchor, pointer)] asi el usuario
+  // puede arrastrar tanto a la derecha como a la izquierda sin confusiones.
+  const [isDragging, setIsDragging] = useState(false);
+  const [dragAnchor, setDragAnchor] = useState<string | null>(null);
 
   // Tareas de limpieza de ESTA propiedad. Se cargan al abrir el modal y
   // se refrescan cuando llega el evento "stayhost:bookings-updated" o
@@ -216,9 +225,25 @@ export default function PropertyFullCalendarModal({
       setSelectedTaskId(null);
       setRangeStart(null);
       setRangeEnd(null);
+      setDragAnchor(null);
+      setIsDragging(false);
       setBlockNote("");
     }
   }, [open, property?.id]);
+
+  // Soltar el mouse en cualquier lado termina el drag. Pongo listener
+  // global porque el usuario puede soltar fuera del modal (ej. sobre el
+  // side panel o scrollbar).
+  useEffect(() => {
+    if (!isDragging) return;
+    const onUp = () => setIsDragging(false);
+    window.addEventListener("mouseup", onUp);
+    window.addEventListener("touchend", onUp);
+    return () => {
+      window.removeEventListener("mouseup", onUp);
+      window.removeEventListener("touchend", onUp);
+    };
+  }, [isDragging]);
 
   // Al abrir, scrollear a la celda de HOY centrada en el viewport.
   // Uso timeout minimo porque el Dialog tarda 1 frame en pintar el contenido.
@@ -310,35 +335,50 @@ export default function PropertyFullCalendarModal({
     if (el) el.scrollIntoView({ block: "center", behavior: "smooth" });
   };
 
-  const handleDayClick = useCallback(
+  // mousedown: inicia drag O segundo click del click-click (si ya hay start).
+  const handleDayMouseDown = useCallback(
     (dayStr: string, bookingsOnDay: Booking[]) => {
-      // Si el dia tiene una reserva (no bloqueo), seleccionamos esa al primer click.
       const firstBooking = bookingsOnDay[0];
       if (firstBooking) {
         setSelectedBookingId(String(firstBooking.id));
+        setSelectedTaskId(null);
         setRangeStart(null);
         setRangeEnd(null);
         return;
       }
-      // Dia libre: primera vez setea start, segunda vez setea end.
       setSelectedBookingId(null);
-      if (!rangeStart || (rangeStart && rangeEnd)) {
-        setRangeStart(dayStr);
-        setRangeEnd(null);
-      } else {
-        // rangeStart existe, rangeEnd null → seteamos end (ordenado).
+      setSelectedTaskId(null);
+      // Si ya hay un start seleccionado (pero sin end), este click es el
+      // segundo click-click → lo usamos como end del rango actual.
+      if (rangeStart && !rangeEnd) {
         if (dayStr < rangeStart) {
           setRangeEnd(rangeStart);
           setRangeStart(dayStr);
-        } else if (dayStr === rangeStart) {
-          // mismo dia clickeado → range = 1 dia (start..start+1 cuando apliquemos)
-          setRangeEnd(dayStr);
         } else {
           setRangeEnd(dayStr);
         }
+        return;
       }
+      // Nuevo rango: seteamos start y activamos drag. Si el usuario suelta
+      // sin moverse, queda en modo "click-click" esperando el segundo click.
+      setRangeStart(dayStr);
+      setRangeEnd(null);
+      setDragAnchor(dayStr);
+      setIsDragging(true);
     },
     [rangeStart, rangeEnd],
+  );
+
+  // mouseenter: si estoy draggeando, recalcula rango desde el anchor.
+  const handleDayMouseEnter = useCallback(
+    (dayStr: string) => {
+      if (!isDragging || !dragAnchor) return;
+      const lo = dayStr < dragAnchor ? dayStr : dragAnchor;
+      const hi = dayStr < dragAnchor ? dragAnchor : dayStr;
+      setRangeStart(lo);
+      setRangeEnd(hi);
+    },
+    [isDragging, dragAnchor],
   );
 
   const handleSaveBlock = async () => {
@@ -370,6 +410,7 @@ export default function PropertyFullCalendarModal({
         );
         setRangeStart(null);
         setRangeEnd(null);
+        setDragAnchor(null);
         setBlockNote("");
         // Dispara el refresh en el panel padre.
         window.dispatchEvent(new CustomEvent("stayhost:bookings-updated"));
@@ -496,7 +537,8 @@ export default function PropertyFullCalendarModal({
                     rangeEnd={rangeEnd}
                     selectedBookingId={selectedBookingId}
                     selectedTaskId={selectedTaskId}
-                    onDayClick={handleDayClick}
+                    onDayMouseDown={handleDayMouseDown}
+                    onDayMouseEnter={handleDayMouseEnter}
                     onBookingClick={(b) => {
                       setSelectedBookingId(String(b.id));
                       setSelectedTaskId(null);
@@ -533,6 +575,7 @@ export default function PropertyFullCalendarModal({
                 onClear={() => {
                   setRangeStart(null);
                   setRangeEnd(null);
+                  setDragAnchor(null);
                   setBlockNote("");
                 }}
               />
@@ -566,7 +609,8 @@ type MonthBlockProps = {
   rangeEnd: string | null;
   selectedBookingId: string | null;
   selectedTaskId: string | null;
-  onDayClick: (dayStr: string, bookingsOnDay: Booking[]) => void;
+  onDayMouseDown: (dayStr: string, bookingsOnDay: Booking[]) => void;
+  onDayMouseEnter: (dayStr: string) => void;
   onBookingClick: (b: Booking) => void;
   onTaskClick: (t: CleaningTask) => void;
 };
@@ -581,7 +625,8 @@ function MonthBlock({
   rangeEnd,
   selectedBookingId,
   selectedTaskId,
-  onDayClick,
+  onDayMouseDown,
+  onDayMouseEnter,
   onBookingClick,
   onTaskClick,
 }: MonthBlockProps) {
@@ -634,10 +679,16 @@ function MonthBlock({
             <div
               key={d.str}
               ref={d.isToday ? setTodayRef : undefined}
-              onClick={() => onDayClick(d.str, onDay)}
+              onMouseDown={(e) => {
+                // Click izquierdo solamente (0). Derecho o rueda: ignorar.
+                if (e.button !== 0) return;
+                e.preventDefault(); // evita seleccion de texto al drag
+                onDayMouseDown(d.str, onDay);
+              }}
+              onMouseEnter={() => onDayMouseEnter(d.str)}
               style={idx === 0 ? { gridColumnStart: startCol } : undefined}
               className={cn(
-                "min-h-[90px] p-1.5 flex flex-col gap-1 cursor-pointer transition-colors relative group hover:bg-primary/[0.04]",
+                "min-h-[90px] p-1.5 flex flex-col gap-1 cursor-pointer transition-colors relative group hover:bg-primary/[0.04] select-none",
                 isInRange && "bg-primary/10 ring-1 ring-inset ring-primary/40",
                 (isRangeStart || isRangeEnd) && "bg-primary/20",
               )}
@@ -662,6 +713,7 @@ function MonthBlock({
                 {onDay.slice(0, 2).map((b) => (
                   <div
                     key={b.id}
+                    onMouseDown={(e) => e.stopPropagation()}
                     onClick={(e) => {
                       e.stopPropagation();
                       onBookingClick(b);
@@ -679,6 +731,7 @@ function MonthBlock({
                 {tasksDay.slice(0, Math.max(0, 2 - onDay.length)).map((t) => (
                   <div
                     key={t.id}
+                    onMouseDown={(e) => e.stopPropagation()}
                     onClick={(e) => {
                       e.stopPropagation();
                       onTaskClick(t);
