@@ -97,13 +97,14 @@ export async function POST(req: NextRequest) {
         ? clientSourceUid
         : `manual-${crypto.randomUUID()}`;
 
-    // Código de reserva para login del huésped en /checkin. Para reservas
-    // directas generamos un código corto tipo "D-XXXXXXXX" (8 hex chars)
-    // alfanumérico, fácil de leer y tipear. Las reservas iCal lo reciben
-    // desde el parser (HM... de Airbnb).
+    // Código de reserva para login del huésped en /checkin. Formato
+    // "SHXXXXXXXX" — 2 letras prefijo (StayHost) + 8 hex, mismo largo
+    // que Airbnb (HM........) y VRBO. Sin guion porque es mas natural
+    // de tipear y compartir por whatsapp. Las reservas iCal reciben su
+    // codigo desde el parser (HM... de Airbnb).
     const channelCode = isBlock
       ? null
-      : `D-${crypto.randomUUID().replace(/-/g, "").slice(0, 8).toUpperCase()}`;
+      : `SH${crypto.randomUUID().replace(/-/g, "").slice(0, 8).toUpperCase()}`;
 
     // Últimos 4 dígitos del teléfono para auth del huésped.
     const phoneLast4 = (() => {
