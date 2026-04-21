@@ -20,6 +20,9 @@ import {
   FileText,
   LogIn,
   LogOut,
+  Sparkles,
+  Clock,
+  AlertTriangle,
 } from "lucide-react";
 
 // Local date helpers — nunca UTC para evitar shift nocturno.
@@ -56,6 +59,21 @@ type Booking = {
   channelCode?: string | null;
   totalPrice?: number | null;
   sourceUid?: string | null;
+};
+
+// CleaningTask — coincide con el shape devuelto por /api/cleaning-tasks.
+type CleaningTask = {
+  id: string;
+  propertyId: string;
+  dueDate: string;            // YYYY-MM-DD
+  dueTime?: string | null;    // HH:MM
+  status: string;             // pending | assigned | in_progress | accepted | declined | completed | ...
+  priority: string;           // low | medium | high | critical
+  guestName?: string | null;
+  guestCount?: number | null;
+  assigneeName?: string | null;
+  isBackToBack?: boolean;
+  arrivingGuestName?: string | null;
 };
 
 type Property = {
@@ -126,6 +144,25 @@ const pillLabel = (b: Booking) => {
   return b.guest;
 };
 
+// Estilo de pill para una tarea de limpieza, color segun prioridad.
+// Critical = back-to-back (check-out y check-in mismo dia) → rojo.
+// High/medium/low → cyan, violeta, slate. Completadas → desaturadas.
+const taskPillClass = (t: CleaningTask) => {
+  const done = t.status === "completed" || t.status === "accepted";
+  if (done) return "bg-slate-200 text-slate-600 border border-slate-300 line-through";
+  if (t.priority === "critical" || t.isBackToBack) {
+    return "bg-red-500 text-white border border-red-600";
+  }
+  if (t.priority === "high") return "bg-orange-500 text-white border border-orange-600";
+  return "bg-cyan-500 text-white border border-cyan-600";
+};
+
+const taskPillLabel = (t: CleaningTask) => {
+  const time = t.dueTime ?? "";
+  const who = t.assigneeName ? ` · ${t.assigneeName}` : "";
+  return `${time} Limpieza${who}`;
+};
+
 export default function PropertyFullCalendarModal({
   open,
   onOpenChange,
@@ -141,6 +178,7 @@ export default function PropertyFullCalendarModal({
   });
 
   const [selectedBookingId, setSelectedBookingId] = useState<string | null>(null);
+  const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
   // Rango seleccionado por clicks en celdas libres: start (requerido),
   // end (opcional — si null, el range es 1 dia).
   const [rangeStart, setRangeStart] = useState<string | null>(null);
@@ -148,15 +186,51 @@ export default function PropertyFullCalendarModal({
   const [blockNote, setBlockNote] = useState("");
   const [saving, setSaving] = useState(false);
 
+  // Tareas de limpieza de ESTA propiedad. Se cargan al abrir el modal y
+  // se refrescan cuando llega el evento "stayhost:bookings-updated" o
+  // "stayhost:cleaning-updated" (por si otro panel cambio algo).
+  const [tasks, setTasks] = useState<CleaningTask[]>([]);
+
   // Al abrir el modal, resetear seleccion.
   useEffect(() => {
     if (open) {
       setSelectedBookingId(null);
+      setSelectedTaskId(null);
       setRangeStart(null);
       setRangeEnd(null);
       setBlockNote("");
     }
   }, [open, property?.id]);
+
+  // Fetch de tareas de limpieza de la propiedad actual.
+  useEffect(() => {
+    if (!open || !property) {
+      setTasks([]);
+      return;
+    }
+    let cancelled = false;
+    const propId = String(property.id);
+    const load = async () => {
+      try {
+        const res = await fetch("/api/cleaning-tasks", { credentials: "same-origin" });
+        const data = await res.json();
+        if (cancelled) return;
+        const all: CleaningTask[] = Array.isArray(data.tasks) ? data.tasks : [];
+        setTasks(all.filter((t) => String(t.propertyId) === propId));
+      } catch {
+        if (!cancelled) setTasks([]);
+      }
+    };
+    load();
+    const onUpdated = () => load();
+    window.addEventListener("stayhost:bookings-updated", onUpdated);
+    window.addEventListener("stayhost:cleaning-updated", onUpdated);
+    return () => {
+      cancelled = true;
+      window.removeEventListener("stayhost:bookings-updated", onUpdated);
+      window.removeEventListener("stayhost:cleaning-updated", onUpdated);
+    };
+  }, [open, property?.id, property]);
 
   const weekdays = useMemo(() => ["Lun", "Mar", "Mie", "Jue", "Vie", "Sab", "Dom"], []);
 
@@ -187,6 +261,9 @@ export default function PropertyFullCalendarModal({
   const bookings = property?.bookings ?? [];
   const selectedBooking = selectedBookingId
     ? bookings.find((b) => String(b.id) === selectedBookingId) ?? null
+    : null;
+  const selectedTask = selectedTaskId
+    ? tasks.find((t) => t.id === selectedTaskId) ?? null
     : null;
 
   const rangeLabel = (() => {
@@ -307,8 +384,12 @@ export default function PropertyFullCalendarModal({
       if (ov > 0) nightsBooked += ov;
     }
     const occupancy = Math.round((nightsBooked / daysInMonth) * 100);
-    return { reservas, bloqueos, nightsBooked, daysInMonth, occupancy };
-  }, [bookings, cursor]);
+    // Tareas de limpieza del mes (por dueDate).
+    const tasksMonth = tasks.filter(
+      (t) => t.dueDate >= monthStartStr && t.dueDate < monthEndStr,
+    ).length;
+    return { reservas, bloqueos, nightsBooked, daysInMonth, occupancy, tasks: tasksMonth };
+  }, [bookings, tasks, cursor]);
 
   if (!property) return null;
 
@@ -376,6 +457,7 @@ export default function PropertyFullCalendarModal({
                 const onDay = bookings.filter(
                   (b) => b.status !== "cancelled" && bookingOnDay(b, d.str),
                 );
+                const tasksDay = tasks.filter((t) => t.dueDate === d.str);
                 const isInRange = (() => {
                   if (!rangeStart) return false;
                   const end = rangeEnd ?? rangeStart;
@@ -408,9 +490,9 @@ export default function PropertyFullCalendarModal({
                       >
                         {d.date.getDate()}
                       </span>
-                      {onDay.length > 1 && (
+                      {onDay.length + tasksDay.length > 2 && (
                         <span className="text-[9px] text-muted-foreground font-bold">
-                          +{onDay.length - 1}
+                          +{onDay.length + tasksDay.length - 2}
                         </span>
                       )}
                     </div>
@@ -421,6 +503,7 @@ export default function PropertyFullCalendarModal({
                           onClick={(e) => {
                             e.stopPropagation();
                             setSelectedBookingId(String(b.id));
+                            setSelectedTaskId(null);
                             setRangeStart(null);
                             setRangeEnd(null);
                           }}
@@ -434,6 +517,26 @@ export default function PropertyFullCalendarModal({
                           <span className="truncate">{pillLabel(b)}</span>
                         </div>
                       ))}
+                      {tasksDay.slice(0, Math.max(0, 2 - onDay.length)).map((t) => (
+                        <div
+                          key={t.id}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setSelectedTaskId(t.id);
+                            setSelectedBookingId(null);
+                            setRangeStart(null);
+                            setRangeEnd(null);
+                          }}
+                          className={cn(
+                            "h-5 px-1.5 rounded text-[10px] font-bold truncate flex items-center gap-1 shadow-sm",
+                            taskPillClass(t),
+                            selectedTaskId === t.id && "ring-2 ring-foreground/80",
+                          )}
+                        >
+                          <Sparkles className="h-2.5 w-2.5 shrink-0" />
+                          <span className="truncate">{taskPillLabel(t)}</span>
+                        </div>
+                      ))}
                     </div>
                   </div>
                 );
@@ -445,6 +548,8 @@ export default function PropertyFullCalendarModal({
           <aside className="w-[340px] border-l bg-muted/20 shrink-0 overflow-y-auto">
             {selectedBooking ? (
               <BookingDetailPanel booking={selectedBooking} onClose={() => setSelectedBookingId(null)} />
+            ) : selectedTask ? (
+              <TaskDetailPanel task={selectedTask} onClose={() => setSelectedTaskId(null)} />
             ) : rangeStart ? (
               <RangeActionPanel
                 start={rangeStart}
@@ -672,7 +777,7 @@ function MonthSummaryPanel({
   stats,
   monthText,
 }: {
-  stats: { reservas: number; bloqueos: number; nightsBooked: number; daysInMonth: number; occupancy: number };
+  stats: { reservas: number; bloqueos: number; nightsBooked: number; daysInMonth: number; occupancy: number; tasks: number };
   monthText: string;
 }) {
   return (
@@ -684,7 +789,7 @@ function MonthSummaryPanel({
         <p className="text-lg font-black capitalize">{monthText}</p>
       </div>
 
-      <div className="grid grid-cols-2 gap-2">
+      <div className="grid grid-cols-3 gap-2">
         <div className="rounded-xl bg-background p-3 border">
           <p className="text-[9px] uppercase tracking-wider text-muted-foreground font-black mb-1">
             Reservas
@@ -696,6 +801,12 @@ function MonthSummaryPanel({
             Bloqueos
           </p>
           <p className="text-2xl font-black">{stats.bloqueos}</p>
+        </div>
+        <div className="rounded-xl bg-cyan-50 p-3 border border-cyan-200">
+          <p className="text-[9px] uppercase tracking-wider text-cyan-700 font-black mb-1 flex items-center gap-1">
+            <Sparkles className="h-2.5 w-2.5" /> Limp.
+          </p>
+          <p className="text-2xl font-black text-cyan-700">{stats.tasks}</p>
         </div>
       </div>
 
@@ -720,7 +831,119 @@ function MonthSummaryPanel({
       <div className="rounded-xl bg-primary/5 border border-primary/20 p-3 text-[11px] text-primary/80 leading-relaxed">
         💡 Haz <strong>click en un dia libre</strong> para bloquearlo o crear una reserva directa.
         <br />
-        Haz <strong>click en una reserva</strong> para ver los detalles.
+        Haz <strong>click en una reserva o limpieza</strong> para ver los detalles.
+      </div>
+    </div>
+  );
+}
+
+function TaskDetailPanel({ task, onClose }: { task: CleaningTask; onClose: () => void }) {
+  const done = task.status === "completed" || task.status === "accepted";
+  const critical = task.priority === "critical" || task.isBackToBack;
+  const statusLabel = (() => {
+    switch (task.status) {
+      case "pending": return "Pendiente";
+      case "unassigned": return "Sin asignar";
+      case "assigned": return "Asignada";
+      case "accepted": return "Aceptada";
+      case "declined": return "Rechazada";
+      case "in_progress": return "En curso";
+      case "completed": return "Completada";
+      default: return task.status;
+    }
+  })();
+  return (
+    <div className="p-5 space-y-4">
+      <div className="flex items-start justify-between gap-2">
+        <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full text-[10px] font-black uppercase tracking-wider bg-cyan-100 text-cyan-900 border border-cyan-300">
+          <Sparkles className="h-3 w-3" /> Limpieza
+        </div>
+        <Button variant="ghost" size="icon" className="h-7 w-7" onClick={onClose}>
+          <X className="h-4 w-4" />
+        </Button>
+      </div>
+
+      <div>
+        <p className="text-[10px] uppercase tracking-wider text-muted-foreground font-bold mb-1">
+          Fecha y hora
+        </p>
+        <div className="flex items-baseline gap-2">
+          <p className="text-lg font-black">{task.dueDate}</p>
+          {task.dueTime && (
+            <p className="text-sm text-muted-foreground font-bold flex items-center gap-1">
+              <Clock className="h-3 w-3" /> {task.dueTime}
+            </p>
+          )}
+        </div>
+      </div>
+
+      {critical && (
+        <div className="rounded-lg bg-red-50 border border-red-300 p-2.5 flex items-start gap-2 text-[11px] text-red-800 leading-relaxed">
+          <AlertTriangle className="h-4 w-4 shrink-0 mt-0.5" />
+          <div>
+            <p className="font-black uppercase tracking-wide">Back-to-back</p>
+            <p>Check-out y check-in el mismo dia. La limpieza tiene ventana cerrada.</p>
+          </div>
+        </div>
+      )}
+
+      <div className="grid grid-cols-2 gap-2">
+        <div className="rounded-xl bg-background p-3 border">
+          <p className="text-[9px] uppercase tracking-wider text-muted-foreground font-black mb-1">
+            Estado
+          </p>
+          <p className={cn("text-sm font-bold", done && "text-emerald-700")}>
+            {statusLabel}
+          </p>
+        </div>
+        <div className="rounded-xl bg-background p-3 border">
+          <p className="text-[9px] uppercase tracking-wider text-muted-foreground font-black mb-1">
+            Prioridad
+          </p>
+          <p className={cn(
+            "text-sm font-bold capitalize",
+            critical && "text-red-700",
+            task.priority === "high" && "text-orange-700",
+          )}>
+            {task.priority}
+          </p>
+        </div>
+      </div>
+
+      {task.assigneeName && (
+        <div className="flex items-center gap-2 text-sm">
+          <User className="h-4 w-4 text-muted-foreground" />
+          <span className="font-bold">{task.assigneeName}</span>
+        </div>
+      )}
+
+      {task.guestName && (
+        <div>
+          <p className="text-[10px] uppercase tracking-wider text-muted-foreground font-bold mb-1">
+            Huesped que se va
+          </p>
+          <p className="text-sm font-bold">
+            {task.guestName}
+            {task.guestCount ? ` · ${task.guestCount} huespedes` : ""}
+          </p>
+        </div>
+      )}
+
+      {task.arrivingGuestName && (
+        <div>
+          <p className="text-[10px] uppercase tracking-wider text-muted-foreground font-bold mb-1">
+            Huesped que llega (mismo dia)
+          </p>
+          <p className="text-sm font-bold">
+            {task.arrivingGuestName}
+            {task.arrivingGuestCount ? ` · ${task.arrivingGuestCount} huespedes` : ""}
+          </p>
+        </div>
+      )}
+
+      <div className="rounded-xl bg-muted/40 border border-border/60 p-3 text-[11px] text-muted-foreground leading-relaxed">
+        Para gestionar el checklist, asignar o validar fotos, entra al modulo
+        <strong> Limpiezas</strong>. Aca se muestra solo el resumen.
       </div>
     </div>
   );
