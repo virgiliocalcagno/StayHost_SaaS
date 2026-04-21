@@ -121,7 +121,26 @@ export async function GET(req: NextRequest) {
       .neq("status", "cancelled")
       .returns<BookingRow[]>();
 
-    events = (bookings || [])
+    // CRITICO: NO re-exportar reservas/bloqueos importados de canales
+    // externos. Airbnb (y otros) detectan sus propios UIDs en el feed
+    // entrante y rechazan TODO el calendario para prevenir un loop
+    // (mismo evento yendo y viniendo entre plataformas).
+    //
+    // Solo exportamos lo que se origino en StayHost:
+    //   - reservas directas (source = 'direct' o 'manual')
+    //   - bloqueos manuales del host (source = 'block' AND source_uid empieza con 'manual-')
+    //
+    // Las reservas/bloqueos que vinieron de Airbnb/VRBO/Booking ya estan
+    // en esos canales — no tiene sentido re-enviarlas.
+    const externalChannels = new Set(["airbnb", "vrbo", "booking"]);
+    const ownEvents = (bookings || []).filter((b) => {
+      if (b.source && externalChannels.has(b.source)) return false;
+      // Bloqueos importados de iCal: source='block' con UID externo (@ en source_uid)
+      if (b.source === "block" && b.source_uid && b.source_uid.includes("@")) return false;
+      return true;
+    });
+
+    events = ownEvents
       .map((b) => {
         const isBlock = b.source === "block" || b.status === "blocked";
         // Para Airbnb/VRBO no exponemos el nombre del huesped ni el canal de
