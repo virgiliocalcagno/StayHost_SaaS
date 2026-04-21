@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState, useCallback, useEffect } from "react";
+import { useMemo, useState, useCallback, useEffect, useRef, type RefObject } from "react";
 import { Dialog, DialogContent } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -169,13 +169,32 @@ export default function PropertyFullCalendarModal({
   property,
   onCreateBookingForRange,
 }: Props) {
-  // Mes visible (siempre primer dia del mes a las 00:00 local).
-  const [cursor, setCursor] = useState<Date>(() => {
+  // Mes que el usuario esta viendo en el scroll — actualizado en vivo por
+  // el IntersectionObserver sobre cada bloque de mes. Refleja el mes cuyo
+  // titulo esta mas arriba en el viewport (mismo comportamiento que Airbnb).
+  const [visibleMonth, setVisibleMonth] = useState<Date>(() => {
     const d = new Date();
     d.setDate(1);
     d.setHours(0, 0, 0, 0);
     return d;
   });
+
+  // Rango de meses apilados verticalmente: 6 atras, 18 adelante (2 años
+  // totales). Cubre planificacion tipica sin renderizar demasiado.
+  const months = useMemo(() => {
+    const now = new Date();
+    now.setDate(1);
+    now.setHours(0, 0, 0, 0);
+    const out: Date[] = [];
+    for (let i = -6; i <= 18; i++) {
+      out.push(new Date(now.getFullYear(), now.getMonth() + i, 1));
+    }
+    return out;
+  }, []);
+
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+  const todayCellRef = useRef<HTMLDivElement | null>(null);
+  const monthRefs = useRef<Map<string, HTMLElement>>(new Map());
 
   const [selectedBookingId, setSelectedBookingId] = useState<string | null>(null);
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
@@ -201,6 +220,43 @@ export default function PropertyFullCalendarModal({
       setBlockNote("");
     }
   }, [open, property?.id]);
+
+  // Al abrir, scrollear a la celda de HOY centrada en el viewport.
+  // Uso timeout minimo porque el Dialog tarda 1 frame en pintar el contenido.
+  useEffect(() => {
+    if (!open) return;
+    const t = setTimeout(() => {
+      const el = todayCellRef.current;
+      if (!el) return;
+      el.scrollIntoView({ block: "center", behavior: "auto" });
+    }, 80);
+    return () => clearTimeout(t);
+  }, [open, property?.id]);
+
+  // IntersectionObserver para saber que mes esta visible y actualizar
+  // el titulo del header. Observa cada bloque de mes y elige el que mas
+  // intersecta con el viewport.
+  useEffect(() => {
+    if (!open) return;
+    const root = scrollRef.current;
+    if (!root) return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        // Tomamos el que mas visible este.
+        const best = entries
+          .filter((e) => e.isIntersecting)
+          .sort((a, b) => b.intersectionRatio - a.intersectionRatio)[0];
+        if (!best) return;
+        const key = (best.target as HTMLElement).dataset.monthKey;
+        if (!key) return;
+        const [y, m] = key.split("-").map(Number);
+        setVisibleMonth(new Date(y, m - 1, 1));
+      },
+      { root, threshold: [0.2, 0.5, 0.8] },
+    );
+    monthRefs.current.forEach((el) => observer.observe(el));
+    return () => observer.disconnect();
+  }, [open, months]);
 
   // Fetch de tareas de limpieza de la propiedad actual.
   useEffect(() => {
@@ -234,30 +290,6 @@ export default function PropertyFullCalendarModal({
 
   const weekdays = useMemo(() => ["Lun", "Mar", "Mie", "Jue", "Vie", "Sab", "Dom"], []);
 
-  // Grid de 42 celdas (6 semanas) empezando desde el Lunes de la semana
-  // que contiene el dia 1 del mes. Algunas celdas seran del mes anterior
-  // o siguiente — las renderizamos apagadas.
-  const gridDays = useMemo(() => {
-    const first = new Date(cursor);
-    // getDay: 0=Dom, 1=Lun ... 6=Sab. Queremos que Lun sea el inicio.
-    const dow = first.getDay();
-    const offsetToMonday = dow === 0 ? 6 : dow - 1;
-    const start = addDays(first, -offsetToMonday);
-    const days: { date: Date; str: string; inMonth: boolean; isToday: boolean }[] = [];
-    const today = todayStr();
-    for (let i = 0; i < 42; i++) {
-      const d = addDays(start, i);
-      const str = toLocalDateStr(d);
-      days.push({
-        date: d,
-        str,
-        inMonth: d.getMonth() === cursor.getMonth(),
-        isToday: str === today,
-      });
-    }
-    return days;
-  }, [cursor]);
-
   const bookings = property?.bookings ?? [];
   const selectedBooking = selectedBookingId
     ? bookings.find((b) => String(b.id) === selectedBookingId) ?? null
@@ -266,19 +298,17 @@ export default function PropertyFullCalendarModal({
     ? tasks.find((t) => t.id === selectedTaskId) ?? null
     : null;
 
-  const rangeLabel = (() => {
-    if (!rangeStart) return null;
-    const end = rangeEnd ?? rangeStart;
-    return { start: rangeStart, end };
-  })();
+  const scrollToMonth = (d: Date) => {
+    const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+    const el = monthRefs.current.get(key);
+    if (el) el.scrollIntoView({ block: "start", behavior: "smooth" });
+  };
 
-  const goPrevMonth = () => setCursor((c) => new Date(c.getFullYear(), c.getMonth() - 1, 1));
-  const goNextMonth = () => setCursor((c) => new Date(c.getFullYear(), c.getMonth() + 1, 1));
+  const goPrevMonth = () => scrollToMonth(new Date(visibleMonth.getFullYear(), visibleMonth.getMonth() - 1, 1));
+  const goNextMonth = () => scrollToMonth(new Date(visibleMonth.getFullYear(), visibleMonth.getMonth() + 1, 1));
   const goToday = () => {
-    const d = new Date();
-    d.setDate(1);
-    d.setHours(0, 0, 0, 0);
-    setCursor(d);
+    const el = todayCellRef.current;
+    if (el) el.scrollIntoView({ block: "center", behavior: "smooth" });
   };
 
   const handleDayClick = useCallback(
@@ -361,21 +391,19 @@ export default function PropertyFullCalendarModal({
     onOpenChange(false);
   };
 
-  // Stats del mes actual (para el panel cuando no hay seleccion).
+  // Stats del mes visible (para el panel cuando no hay seleccion).
   const monthStats = useMemo(() => {
-    const monthStartStr = toLocalDateStr(new Date(cursor.getFullYear(), cursor.getMonth(), 1));
-    const monthEndStr = toLocalDateStr(new Date(cursor.getFullYear(), cursor.getMonth() + 1, 1));
+    const monthStartStr = toLocalDateStr(new Date(visibleMonth.getFullYear(), visibleMonth.getMonth(), 1));
+    const monthEndStr = toLocalDateStr(new Date(visibleMonth.getFullYear(), visibleMonth.getMonth() + 1, 1));
     let reservas = 0;
     let bloqueos = 0;
     let nightsBooked = 0;
-    const daysInMonth = new Date(cursor.getFullYear(), cursor.getMonth() + 1, 0).getDate();
+    const daysInMonth = new Date(visibleMonth.getFullYear(), visibleMonth.getMonth() + 1, 0).getDate();
     for (const b of bookings) {
-      // Solape con el mes actual.
       if (b.end <= monthStartStr || b.start >= monthEndStr) continue;
       if (b.status === "cancelled") continue;
       if (isBlockBooking(b)) bloqueos++;
       else reservas++;
-      // Contamos noches dentro del mes.
       const ovStart = b.start > monthStartStr ? b.start : monthStartStr;
       const ovEnd = b.end < monthEndStr ? b.end : monthEndStr;
       const ov = Math.round(
@@ -384,19 +412,18 @@ export default function PropertyFullCalendarModal({
       if (ov > 0) nightsBooked += ov;
     }
     const occupancy = Math.round((nightsBooked / daysInMonth) * 100);
-    // Tareas de limpieza del mes (por dueDate).
     const tasksMonth = tasks.filter(
       (t) => t.dueDate >= monthStartStr && t.dueDate < monthEndStr,
     ).length;
     return { reservas, bloqueos, nightsBooked, daysInMonth, occupancy, tasks: tasksMonth };
-  }, [bookings, tasks, cursor]);
+  }, [bookings, tasks, visibleMonth]);
 
   if (!property) return null;
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
-        className="max-w-[min(1400px,95vw)] w-[95vw] h-[92vh] p-0 rounded-2xl overflow-hidden flex flex-col bg-card"
+        className="max-w-[min(1400px,95vw)] w-[95vw] h-[92vh] p-0 rounded-2xl overflow-hidden flex flex-col bg-card [&>button.absolute]:hidden"
       >
         {/* Header */}
         <div className="h-16 px-6 border-b flex items-center gap-4 shrink-0 bg-background/80 backdrop-blur">
@@ -413,13 +440,13 @@ export default function PropertyFullCalendarModal({
           </div>
 
           <div className="flex items-center gap-1 ml-auto">
-            <Button variant="ghost" size="icon" className="h-9 w-9" onClick={goPrevMonth}>
+            <Button variant="ghost" size="icon" className="h-9 w-9" onClick={goPrevMonth} aria-label="Mes anterior">
               <ChevronLeft className="h-4 w-4" />
             </Button>
             <div className="min-w-[180px] text-center">
-              <p className="font-black capitalize">{monthLabel(cursor)}</p>
+              <p className="font-black capitalize">{monthLabel(visibleMonth)}</p>
             </div>
-            <Button variant="ghost" size="icon" className="h-9 w-9" onClick={goNextMonth}>
+            <Button variant="ghost" size="icon" className="h-9 w-9" onClick={goNextMonth} aria-label="Mes siguiente">
               <ChevronRight className="h-4 w-4" />
             </Button>
             <Button variant="outline" size="sm" className="h-9 ml-2 rounded-xl" onClick={goToday}>
@@ -430,7 +457,7 @@ export default function PropertyFullCalendarModal({
           <Button
             variant="ghost"
             size="icon"
-            className="h-9 w-9"
+            className="h-9 w-9 ml-2"
             onClick={() => onOpenChange(false)}
             aria-label="Cerrar"
           >
@@ -440,9 +467,9 @@ export default function PropertyFullCalendarModal({
 
         {/* Body */}
         <div className="flex flex-1 min-h-0">
-          {/* Grid */}
+          {/* Scroll container con todos los meses apilados */}
           <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
-            {/* Weekday header */}
+            {/* Weekday header — sticky arriba del scroll */}
             <div className="grid grid-cols-7 border-b bg-muted/30">
               {weekdays.map((w) => (
                 <div key={w} className="h-9 flex items-center justify-center text-[10px] uppercase tracking-widest font-black text-muted-foreground">
@@ -451,94 +478,39 @@ export default function PropertyFullCalendarModal({
               ))}
             </div>
 
-            {/* Day cells */}
-            <div className="grid grid-cols-7 grid-rows-6 flex-1 overflow-auto divide-x divide-y divide-border/40 border-t-0">
-              {gridDays.map((d) => {
-                const onDay = bookings.filter(
-                  (b) => b.status !== "cancelled" && bookingOnDay(b, d.str),
-                );
-                const tasksDay = tasks.filter((t) => t.dueDate === d.str);
-                const isInRange = (() => {
-                  if (!rangeStart) return false;
-                  const end = rangeEnd ?? rangeStart;
-                  const lo = rangeStart < end ? rangeStart : end;
-                  const hi = rangeStart < end ? end : rangeStart;
-                  return d.str >= lo && d.str <= hi;
-                })();
-                const isRangeStart = d.str === rangeStart;
-                const isRangeEnd = d.str === (rangeEnd ?? rangeStart) && rangeStart !== null;
-
+            {/* Meses apilados verticalmente, scroll libre */}
+            <div ref={scrollRef} className="flex-1 overflow-y-auto">
+              {months.map((m) => {
+                const key = `${m.getFullYear()}-${String(m.getMonth() + 1).padStart(2, "0")}`;
                 return (
-                  <div
-                    key={d.str}
-                    onClick={() => handleDayClick(d.str, onDay)}
-                    className={cn(
-                      "min-h-[90px] p-1.5 flex flex-col gap-1 cursor-pointer transition-colors relative group",
-                      !d.inMonth && "bg-muted/10 text-muted-foreground/60",
-                      d.inMonth && "hover:bg-primary/[0.04]",
-                      isInRange && "bg-primary/10 ring-1 ring-inset ring-primary/40",
-                      (isRangeStart || isRangeEnd) && "bg-primary/20",
-                    )}
-                  >
-                    <div className="flex items-center justify-between">
-                      <span
-                        className={cn(
-                          "text-[11px] font-black w-6 h-6 flex items-center justify-center rounded-full",
-                          d.isToday && "bg-rose-600 text-white",
-                          !d.isToday && d.inMonth && "text-foreground/80",
-                        )}
-                      >
-                        {d.date.getDate()}
-                      </span>
-                      {onDay.length + tasksDay.length > 2 && (
-                        <span className="text-[9px] text-muted-foreground font-bold">
-                          +{onDay.length + tasksDay.length - 2}
-                        </span>
-                      )}
-                    </div>
-                    <div className="flex flex-col gap-0.5 overflow-hidden">
-                      {onDay.slice(0, 2).map((b) => (
-                        <div
-                          key={b.id}
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            setSelectedBookingId(String(b.id));
-                            setSelectedTaskId(null);
-                            setRangeStart(null);
-                            setRangeEnd(null);
-                          }}
-                          className={cn(
-                            "h-5 px-1.5 rounded text-[10px] font-bold truncate flex items-center gap-1 shadow-sm",
-                            pillClass(b),
-                            selectedBookingId === String(b.id) && "ring-2 ring-foreground/80",
-                          )}
-                        >
-                          {isBlockBooking(b) && <Lock className="h-2.5 w-2.5 shrink-0" />}
-                          <span className="truncate">{pillLabel(b)}</span>
-                        </div>
-                      ))}
-                      {tasksDay.slice(0, Math.max(0, 2 - onDay.length)).map((t) => (
-                        <div
-                          key={t.id}
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            setSelectedTaskId(t.id);
-                            setSelectedBookingId(null);
-                            setRangeStart(null);
-                            setRangeEnd(null);
-                          }}
-                          className={cn(
-                            "h-5 px-1.5 rounded text-[10px] font-bold truncate flex items-center gap-1 shadow-sm",
-                            taskPillClass(t),
-                            selectedTaskId === t.id && "ring-2 ring-foreground/80",
-                          )}
-                        >
-                          <Sparkles className="h-2.5 w-2.5 shrink-0" />
-                          <span className="truncate">{taskPillLabel(t)}</span>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
+                  <MonthBlock
+                    key={key}
+                    monthDate={m}
+                    setRef={(el) => {
+                      if (el) monthRefs.current.set(key, el);
+                      else monthRefs.current.delete(key);
+                    }}
+                    todayRef={todayCellRef}
+                    bookings={bookings}
+                    tasks={tasks}
+                    rangeStart={rangeStart}
+                    rangeEnd={rangeEnd}
+                    selectedBookingId={selectedBookingId}
+                    selectedTaskId={selectedTaskId}
+                    onDayClick={handleDayClick}
+                    onBookingClick={(b) => {
+                      setSelectedBookingId(String(b.id));
+                      setSelectedTaskId(null);
+                      setRangeStart(null);
+                      setRangeEnd(null);
+                    }}
+                    onTaskClick={(t) => {
+                      setSelectedTaskId(t.id);
+                      setSelectedBookingId(null);
+                      setRangeStart(null);
+                      setRangeEnd(null);
+                    }}
+                  />
                 );
               })}
             </div>
@@ -579,6 +551,157 @@ export default function PropertyFullCalendarModal({
 }
 
 // ───────────── sub-panels ─────────────
+
+// MonthBlock — renderiza un mes con su titulo y grid de dias. Usa
+// gridColumnStart para posicionar el dia 1 en la columna correcta
+// (Lun-Dom) sin duplicar celdas de meses adyacentes como hacia el grid
+// anterior. Titulo sticky al top del mes para que el usuario sepa en
+// que mes esta aunque scrollee rapido.
+type MonthBlockProps = {
+  monthDate: Date;
+  setRef: (el: HTMLElement | null) => void;
+  todayRef: RefObject<HTMLDivElement | null>;
+  bookings: Booking[];
+  tasks: CleaningTask[];
+  rangeStart: string | null;
+  rangeEnd: string | null;
+  selectedBookingId: string | null;
+  selectedTaskId: string | null;
+  onDayClick: (dayStr: string, bookingsOnDay: Booking[]) => void;
+  onBookingClick: (b: Booking) => void;
+  onTaskClick: (t: CleaningTask) => void;
+};
+
+function MonthBlock({
+  monthDate,
+  setRef,
+  todayRef,
+  bookings,
+  tasks,
+  rangeStart,
+  rangeEnd,
+  selectedBookingId,
+  selectedTaskId,
+  onDayClick,
+  onBookingClick,
+  onTaskClick,
+}: MonthBlockProps) {
+  const monthKey = `${monthDate.getFullYear()}-${String(monthDate.getMonth() + 1).padStart(2, "0")}`;
+  const today = todayStr();
+
+  // Dias solo del mes (no incluyo adyacentes — uso grid-column-start
+  // para posicionar el primer dia en la columna correcta).
+  const days = useMemo(() => {
+    const totalDays = new Date(monthDate.getFullYear(), monthDate.getMonth() + 1, 0).getDate();
+    const out: { date: Date; str: string; isToday: boolean }[] = [];
+    for (let d = 1; d <= totalDays; d++) {
+      const date = new Date(monthDate.getFullYear(), monthDate.getMonth(), d);
+      const str = toLocalDateStr(date);
+      out.push({ date, str, isToday: str === today });
+    }
+    return out;
+  }, [monthDate, today]);
+
+  // getDay: 0=Dom, 1=Lun ... 6=Sab. Para Lun como inicio, offset = dow-1 (Dom → 6).
+  const firstDow = days[0].date.getDay();
+  const startCol = firstDow === 0 ? 7 : firstDow; // 1..7 (Lun=1, Dom=7)
+
+  return (
+    <section
+      ref={setRef as (el: HTMLElement | null) => void}
+      data-month-key={monthKey}
+      className="border-b"
+    >
+      <h3 className="sticky top-0 bg-card/95 backdrop-blur px-4 py-2.5 z-10 text-sm font-black capitalize border-b">
+        {monthLabel(monthDate)}
+      </h3>
+      <div className="grid grid-cols-7 divide-x divide-y divide-border/40">
+        {days.map((d, idx) => {
+          const onDay = bookings.filter(
+            (b) => b.status !== "cancelled" && bookingOnDay(b, d.str),
+          );
+          const tasksDay = tasks.filter((t) => t.dueDate === d.str);
+          const isInRange = (() => {
+            if (!rangeStart) return false;
+            const end = rangeEnd ?? rangeStart;
+            const lo = rangeStart < end ? rangeStart : end;
+            const hi = rangeStart < end ? end : rangeStart;
+            return d.str >= lo && d.str <= hi;
+          })();
+          const isRangeStart = d.str === rangeStart;
+          const isRangeEnd = d.str === (rangeEnd ?? rangeStart) && rangeStart !== null;
+
+          return (
+            <div
+              key={d.str}
+              ref={d.isToday ? todayRef : undefined}
+              onClick={() => onDayClick(d.str, onDay)}
+              style={idx === 0 ? { gridColumnStart: startCol } : undefined}
+              className={cn(
+                "min-h-[90px] p-1.5 flex flex-col gap-1 cursor-pointer transition-colors relative group hover:bg-primary/[0.04]",
+                isInRange && "bg-primary/10 ring-1 ring-inset ring-primary/40",
+                (isRangeStart || isRangeEnd) && "bg-primary/20",
+              )}
+            >
+              <div className="flex items-center justify-between">
+                <span
+                  className={cn(
+                    "text-[11px] font-black w-6 h-6 flex items-center justify-center rounded-full",
+                    d.isToday && "bg-rose-600 text-white",
+                    !d.isToday && "text-foreground/80",
+                  )}
+                >
+                  {d.date.getDate()}
+                </span>
+                {onDay.length + tasksDay.length > 2 && (
+                  <span className="text-[9px] text-muted-foreground font-bold">
+                    +{onDay.length + tasksDay.length - 2}
+                  </span>
+                )}
+              </div>
+              <div className="flex flex-col gap-0.5 overflow-hidden">
+                {onDay.slice(0, 2).map((b) => (
+                  <div
+                    key={b.id}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onBookingClick(b);
+                    }}
+                    className={cn(
+                      "h-5 px-1.5 rounded text-[10px] font-bold truncate flex items-center gap-1 shadow-sm",
+                      pillClass(b),
+                      selectedBookingId === String(b.id) && "ring-2 ring-foreground/80",
+                    )}
+                  >
+                    {isBlockBooking(b) && <Lock className="h-2.5 w-2.5 shrink-0" />}
+                    <span className="truncate">{pillLabel(b)}</span>
+                  </div>
+                ))}
+                {tasksDay.slice(0, Math.max(0, 2 - onDay.length)).map((t) => (
+                  <div
+                    key={t.id}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onTaskClick(t);
+                    }}
+                    className={cn(
+                      "h-5 px-1.5 rounded text-[10px] font-bold truncate flex items-center gap-1 shadow-sm",
+                      taskPillClass(t),
+                      selectedTaskId === t.id && "ring-2 ring-foreground/80",
+                    )}
+                  >
+                    <Sparkles className="h-2.5 w-2.5 shrink-0" />
+                    <span className="truncate">{taskPillLabel(t)}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
 
 function BookingDetailPanel({ booking, onClose }: { booking: Booking; onClose: () => void }) {
   const block = isBlockBooking(booking);
