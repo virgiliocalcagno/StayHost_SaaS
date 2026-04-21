@@ -872,8 +872,8 @@ export default function MultiCalendarPanel() {
                               "absolute top-1/2 -translate-y-1/2 h-8 flex items-center px-2 rounded-lg text-[10px] font-black shadow-soft cursor-pointer hover:brightness-110 transition-all border select-none",
                               isBlock
                                 ? isManualBlock
-                                  // Manual StayHost: rayas amarillo oscuro + gris claro
-                                  ? "text-amber-950 border-amber-700/50 bg-[repeating-linear-gradient(45deg,#a16207,#a16207_6px,#cbd5e1_6px,#cbd5e1_12px)]"
+                                  // Manual StayHost: cinta de obra (amarillo señalizacion + negro)
+                                  ? "text-black border-yellow-600 bg-[repeating-linear-gradient(45deg,#facc15,#facc15_8px,#1f2937_8px,#1f2937_16px)]"
                                   // Importado del canal: rayas gris oscuro + gris claro (como antes)
                                   : "text-white border-slate-300 bg-[repeating-linear-gradient(45deg,#64748b,#64748b_6px,#94a3b8_6px,#94a3b8_12px)]"
                                 : booking.status === "confirmed"
@@ -894,17 +894,48 @@ export default function MultiCalendarPanel() {
                         </PopoverTrigger>
                         <PopoverPrimitive.Portal>
                           <PopoverContent className="w-64 p-3 rounded-xl bg-card border border-border/50 text-sm shadow-2xl z-[100]" sideOffset={5}>
-                            <div className="flex items-start justify-between mb-2">
-                            <div className="flex items-center gap-2">
-                              <ChannelIcon channel={booking.channel} />
-                              <span className="font-bold text-foreground capitalize">{booking.channel}</span>
-                            </div>
-                            <span className={cn("text-[10px] font-black px-2 py-0.5 rounded-full uppercase tracking-wider", booking.status === "confirmed" ? "bg-emerald-100 text-emerald-700" : "bg-amber-100 text-amber-700")}>
-                              {booking.status}
-                            </span>
-                          </div>
-                          <h4 className="font-black text-base">{booking.guest}</h4>
-                          <p className="text-xs text-muted-foreground mb-3">{property.name}</p>
+                          {isBlock ? (
+                            <>
+                              {/* Banner que distingue origen del bloqueo: el host
+                                  necesita saber si lo edita aca o en el canal */}
+                              <div className={cn(
+                                "rounded-lg p-2 mb-3 border-2 flex items-center gap-2",
+                                isManualBlock
+                                  ? "bg-yellow-100 border-yellow-500 text-yellow-900"
+                                  : "bg-slate-100 border-slate-400 text-slate-800"
+                              )}>
+                                <span className="text-lg">🔒</span>
+                                <div className="flex-1 min-w-0">
+                                  <p className="text-[10px] uppercase tracking-wider font-black opacity-70">
+                                    {isManualBlock ? "Bloqueo creado en StayHost" : `Bloqueo importado de ${blockOrigin}`}
+                                  </p>
+                                  <p className="font-black text-sm leading-tight">
+                                    {isManualBlock ? "Bloqueo manual" : `Bloqueo ${blockOrigin}`}
+                                  </p>
+                                </div>
+                              </div>
+                              <p className="text-xs text-muted-foreground mb-3">{property.name}</p>
+                              {!isManualBlock && (
+                                <p className="text-[10px] text-muted-foreground mb-3 italic leading-snug">
+                                  Para editarlo o quitarlo, hacelo desde {blockOrigin}. Aca solo se sincroniza.
+                                </p>
+                              )}
+                            </>
+                          ) : (
+                            <>
+                              <div className="flex items-start justify-between mb-2">
+                                <div className="flex items-center gap-2">
+                                  <ChannelIcon channel={booking.channel} />
+                                  <span className="font-bold text-foreground capitalize">{booking.channel}</span>
+                                </div>
+                                <span className={cn("text-[10px] font-black px-2 py-0.5 rounded-full uppercase tracking-wider", booking.status === "confirmed" ? "bg-emerald-100 text-emerald-700" : "bg-amber-100 text-amber-700")}>
+                                  {booking.status}
+                                </span>
+                              </div>
+                              <h4 className="font-black text-base">{booking.guest}</h4>
+                              <p className="text-xs text-muted-foreground mb-3">{property.name}</p>
+                            </>
+                          )}
                           
                           <div className="flex justify-between items-center text-xs font-medium bg-muted/30 rounded-lg p-2 mb-3 border border-border/50">
                             <div className="flex flex-col">
@@ -1046,8 +1077,8 @@ export default function MultiCalendarPanel() {
         </div>
         <div className="flex items-center gap-1.5">
           <div
-            className="w-3 h-2 rounded-sm border border-amber-700/50"
-            style={{ background: "repeating-linear-gradient(45deg,#a16207 0,#a16207 2px,#cbd5e1 2px,#cbd5e1 4px)" }}
+            className="w-3 h-2 rounded-sm border border-yellow-600"
+            style={{ background: "repeating-linear-gradient(45deg,#facc15 0,#facc15 2px,#1f2937 2px,#1f2937 4px)" }}
           />
           <span>Bloqueo manual</span>
         </div>
