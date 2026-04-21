@@ -101,15 +101,23 @@ export default function DocumentScanButton({ onScanned, className }: Props) {
       const { doc } = (await res.json()) as { doc: ScannedDoc };
       const filled = [doc.guestName, doc.docNumber, doc.nationality].filter(Boolean).length;
 
+      // Abrimos una ventana con el raw text siempre que pidamos diagnostico.
+      // Asi podemos copiarlo y pegarlo en el chat para que yo ajuste parsers.
+      const openRawWindow = () => {
+        const w = window.open("", "_blank", "width=600,height=700");
+        if (!w) return;
+        w.document.write(
+          `<pre style="font:12px monospace;padding:16px;white-space:pre-wrap">${(doc.rawText ?? "(vacio)").replace(/[<>&]/g, (c) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;" }[c]!))}</pre>`,
+        );
+      };
+
       if (filled === 0) {
-        // Si no reconocimos nada pero OCR si leyo algo, mostramos las primeras
-        // 120 chars del raw — ayuda a diagnosticar si es la foto o el parser.
-        const preview = (doc.rawText ?? "").trim().slice(0, 120).replace(/\s+/g, " ");
+        const preview = (doc.rawText ?? "").trim().slice(0, 150).replace(/\s+/g, " ");
         toast.warning(
           preview
-            ? `OCR leyó pero no pude parsear campos. Texto: "${preview}..."`
+            ? `OCR no pudo parsear campos. Leyó: "${preview}..." — Click aca para ver texto completo`
             : "OCR no detectó texto. Intentá con mejor luz/foco.",
-          { duration: 10000 },
+          { duration: 15000, action: { label: "Ver OCR", onClick: openRawWindow } },
         );
       } else {
         const natLabel = doc.nationality
@@ -123,7 +131,10 @@ export default function DocumentScanButton({ onScanned, className }: Props) {
               : "texto";
         toast.success(
           `${docType}: ${filled}/3 campos.${doc.guestName ? ` ${doc.guestName}.` : ""} Nac: ${natLabel}`,
-          { duration: 5000 },
+          {
+            duration: 8000,
+            action: { label: "Ver OCR", onClick: openRawWindow },
+          },
         );
       }
 

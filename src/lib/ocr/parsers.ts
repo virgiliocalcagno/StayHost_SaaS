@@ -170,25 +170,34 @@ const NAME_BLACKLIST = new Set([
   "ISSUED", "GENDER", "SIGNATURE", "FIRMA",
 ]);
 
+// Nombres reales tienen palabras de 2-15 chars. Mas largo = OCR pegando
+// palabras sin espacios o texto de instrucciones de la pagina.
+const MIN_WORD = 2;
+const MAX_WORD = 15;
+
+function isValidNameWord(w: string): boolean {
+  if (w.length < MIN_WORD || w.length > MAX_WORD) return false;
+  if (NAME_BLACKLIST.has(w.toUpperCase())) return false;
+  return true;
+}
+
 export function extractCapsName(text: string): string | undefined {
   const lines = text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
 
-  // Pasada 1: linea ALL CAPS con 2+ palabras significativas.
+  // Pasada 1: linea ALL CAPS con 2+ palabras significativas (2-15 chars).
   for (const line of lines) {
     if (/\d/.test(line)) continue;
-    const words = line.split(/\s+/).filter((w) => w.length >= 3);
+    const words = line.split(/\s+/).filter(isValidNameWord);
     if (words.length < 2) continue;
     const allCaps = words.every((w) => /^[A-ZÁÉÍÓÚÜÑ]+$/.test(w));
     if (!allCaps) continue;
-    const meaningful = words.filter((w) => !NAME_BLACKLIST.has(w));
-    if (meaningful.length < 2) continue;
-    return toReadableName(meaningful.join(" "));
+    return toReadableName(words.join(" "));
   }
 
-  // Pasada 2: Title Case.
+  // Pasada 2: Title Case. Misma logica de tamanio.
   for (const line of lines) {
     if (/\d/.test(line)) continue;
-    const words = line.split(/\s+/).filter((w) => w.length >= 3);
+    const words = line.split(/\s+/).filter(isValidNameWord);
     if (words.length < 2) continue;
     if (words.every((w) => /^[A-ZÁÉÍÓÚÜÑ][a-záéíóúüñ]+$/.test(w))) {
       return words.join(" ");
