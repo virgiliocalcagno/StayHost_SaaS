@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getAuthenticatedTenant } from "@/lib/supabase/server";
+import { ensureCleaningTasksForProperty } from "@/lib/cleaning/ensure-tasks";
 
 // All handlers resolve the tenant from the authenticated session. Callers no
 // longer pass `email` or `tenantEmail`. RLS ensures the tenant can only
@@ -14,16 +15,6 @@ type Property = {
   bed_configuration: unknown;
   standard_instructions: string | null;
   evidence_criteria: unknown;
-};
-
-type Booking = {
-  id: string;
-  property_id: string;
-  guest_name: string | null;
-  check_in: string;
-  check_out: string;
-  source: string | null;
-  guests_count: number | null;
 };
 
 type CleaningTaskRow = {
@@ -74,85 +65,17 @@ export async function GET() {
   const propIds = Object.keys(propMap);
   if (!propIds.length) return NextResponse.json({ tasks: [] });
 
-  // Load existing cleaning tasks
-  const { data: storedTasks } = await supabase
-    .from("cleaning_tasks")
-    .select("id, booking_id")
-    .eq("tenant_id", tenantId);
-
-  const existingBookingIds = new Set(
-    ((storedTasks ?? []) as { booking_id: string | null }[])
-      .map((t) => t.booking_id)
-      .filter((v): v is string => !!v)
-  );
-
-  // Load bookings (wider range for duration calcs)
-  const today = new Date();
-  today.setDate(today.getDate() - 14);
-  const cutoff = today.toISOString().split("T")[0];
-
-  const { data: bookings } = await supabase
-    .from("bookings")
-    .select("id, property_id, guest_name, check_in, check_out, source, guests_count")
-    .in("property_id", propIds)
-    .gte("check_out", cutoff)
-    .neq("status", "cancelled")
-    .neq("source", "block");
-
-  const bookingList = (bookings ?? []) as Booking[];
-
-  // Map bookings by property for fast lookup
-  const bookingsByProp: Record<string, Booking[]> = {};
-  for (const b of bookingList) {
-    if (!bookingsByProp[b.property_id]) bookingsByProp[b.property_id] = [];
-    bookingsByProp[b.property_id].push(b);
-  }
-
-  // Auto-create tasks for bookings that don't have one yet
-  const newTasks: Record<string, unknown>[] = [];
-  for (const b of bookingList) {
-    const taskId = `booking-${b.id}`;
-    if (existingBookingIds.has(b.id)) continue;
-
-    const propBookings = bookingsByProp[b.property_id] ?? [];
-    const arrivingBooking = propBookings.find((o) => o.id !== b.id && o.check_in === b.check_out);
-    const isBackToBack = !!arrivingBooking;
-    const isVacant = !isBackToBack;
-
-    const outDate = new Date(b.check_out);
-    const inDate = new Date(b.check_in);
-    const nights = Math.ceil((outDate.getTime() - inDate.getTime()) / (1000 * 60 * 60 * 24));
-
-    newTasks.push({
-      id: taskId,
-      property_id: b.property_id,
-      tenant_id: tenantId,
-      booking_id: b.id,
-      due_date: b.check_out,
-      due_time: "11:00",
-      status: "pending",
-      priority: isBackToBack ? "critical" : "medium",
-      is_back_to_back: isBackToBack,
-      is_vacant: isVacant,
-      guest_name: b.guest_name ?? "Huésped",
-      guest_count: b.guests_count ?? null,
-      stay_duration: nights,
-      arriving_guest_name: arrivingBooking?.guest_name ?? null,
-      arriving_guest_count: arrivingBooking?.guests_count ?? null,
-      checklist_items: [
-        { id: "c1", label: "Cambiar sábanas y toallas", done: false, type: "general" },
-        { id: "c2", label: "Limpieza general", done: false, type: "general" },
-        { id: "c3", label: "Verificar inventario", done: false, type: "general" },
-        { id: "c4", label: "Control Remoto TV", done: false, type: "appliance" },
-        { id: "c5", label: "Aire Acondicionado", done: false, type: "appliance" },
-      ],
+  // Asegurar que haya una task por cada booking activo. Antes se hacia
+  // inline con una query que usaba `guests_count` (columna que no existe:
+  // la real es `num_guests`), silenciando toda la auto-creacion. Ahora
+  // delegamos al helper compartido — mismo que usa syncIcalForProperty
+  // para no depender de que el host abra el modulo Limpiezas.
+  for (const pid of propIds) {
+    await ensureCleaningTasksForProperty({
+      supabase,
+      tenantId,
+      propertyId: pid,
     });
-  }
-
-  if (newTasks.length) {
-    await supabase
-      .from("cleaning_tasks")
-      .upsert(newTasks as never, { onConflict: "id", ignoreDuplicates: true });
   }
 
   // Return all tasks with property info

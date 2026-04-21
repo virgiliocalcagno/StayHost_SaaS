@@ -11,6 +11,7 @@
  */
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { cascadeCancelBooking } from "@/lib/bookings/cleanup";
+import { ensureCleaningTasksForProperty } from "@/lib/cleaning/ensure-tasks";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnySupabase = SupabaseClient<any, any, any>;
@@ -270,6 +271,23 @@ export async function syncIcalForProperty(args: {
         message: `Orphan detection failed: ${orphanErr instanceof Error ? orphanErr.message : String(orphanErr)}`,
       });
     }
+  }
+
+  // Auto-schedule cleanings for all new bookings of this property. Sin este
+  // paso, las reservas de Airbnb se importan pero nadie sabe que hay que
+  // limpiar — la limpiadora se entera recien cuando el host abre el modulo
+  // Limpiezas. Para un SaaS de hosting eso es inaceptable.
+  try {
+    await ensureCleaningTasksForProperty({
+      supabase,
+      tenantId,
+      propertyId,
+    });
+  } catch (taskErr) {
+    result.errors.push({
+      feed: "cleaning-tasks",
+      message: `Task scheduling failed: ${taskErr instanceof Error ? taskErr.message : String(taskErr)}`,
+    });
   }
 
   return result;
