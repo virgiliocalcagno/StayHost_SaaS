@@ -714,22 +714,28 @@ export default function PropertiesPanel() {
           body: JSON.stringify({ propertyId: editingProperty.id }),
         });
         const importData = await importRes.json().catch(() => null);
-        if (importData) {
-          const total = (importData.imported ?? 0) + (importData.blocksImported ?? 0);
+        if (!importRes.ok) {
+          toast.error(
+            `iCal HTTP ${importRes.status}: ${importData?.error ?? "error desconocido"}`
+          );
+        } else if (importData) {
+          const reservas = importData.imported ?? 0;
+          const bloqueos = importData.blocksImported ?? 0;
           if (importData.errors?.length) {
             toast.error(
               `iCal: ${importData.errors[0].message}` +
               (importData.errors.length > 1 ? ` (+${importData.errors.length - 1} más)` : "")
             );
-          } else if (total > 0) {
-            toast.success(
-              `${importData.imported ?? 0} reservas + ${importData.blocksImported ?? 0} bloqueos sincronizados.`
-            );
           } else {
-            toast.success("Sincronización completada (sin cambios nuevos).");
+            toast.success(`Sync OK: ${reservas} reservas, ${bloqueos} bloqueos`);
           }
           window.dispatchEvent(new CustomEvent("stayhost:bookings-updated"));
+        } else {
+          toast.error("iCal: respuesta vacía del servidor.");
         }
+      } else {
+        const errBody = await syncRes.json().catch(() => null);
+        toast.error(`Sync propiedad falló: ${errBody?.error ?? syncRes.status}`);
       }
     } catch {}
     const now = new Date().toISOString();
@@ -967,7 +973,9 @@ export default function PropertiesPanel() {
         // presionar "Sincronizar" manualmente — y aún así el calendario no
         // se refrescaba. Ahora basta con guardar.
         const hasIcal = !!(formData.airbnbIcal || formData.vrboIcal);
-        if (hasIcal) {
+        if (!hasIcal) {
+          toast.message("Sin iCal configurado — saltando sincronización.");
+        } else {
           try {
             const importRes = await fetch("/api/ical/import", {
               method: "POST",
@@ -976,23 +984,34 @@ export default function PropertiesPanel() {
               body: JSON.stringify({ propertyId: finalProp.id }),
             });
             const importData = await importRes.json().catch(() => null);
-            if (importData) {
-              const total = (importData.imported ?? 0) + (importData.blocksImported ?? 0);
+            if (!importRes.ok) {
+              toast.error(
+                `iCal HTTP ${importRes.status}: ${importData?.error ?? "error desconocido"}`
+              );
+            } else if (importData) {
+              const reservas = importData.imported ?? 0;
+              const bloqueos = importData.blocksImported ?? 0;
+              const orphans = importData.orphansCancelled ?? 0;
               if (importData.errors?.length) {
                 toast.error(
                   `iCal: ${importData.errors[0].message}` +
                   (importData.errors.length > 1 ? ` (+${importData.errors.length - 1} más)` : "")
                 );
-              } else if (total > 0) {
+              } else {
+                // Siempre damos feedback — incluso 0/0 te dice que el sync
+                // corrió pero el feed no trajo nada (ej. URL inválida).
                 toast.success(
-                  `Importadas ${importData.imported ?? 0} reservas y ${importData.blocksImported ?? 0} bloqueos del iCal.`
+                  `Sync OK: ${reservas} reservas, ${bloqueos} bloqueos` +
+                  (orphans > 0 ? `, ${orphans} canceladas` : "")
                 );
               }
-              // Avisarle al multi-calendario que hay datos nuevos.
               window.dispatchEvent(new CustomEvent("stayhost:bookings-updated"));
+            } else {
+              toast.error("iCal: respuesta vacía del servidor.");
             }
           } catch (icalErr) {
             console.error("auto ical import failed:", icalErr);
+            toast.error(`iCal falló: ${icalErr instanceof Error ? icalErr.message : String(icalErr)}`);
           }
         }
       } else {
