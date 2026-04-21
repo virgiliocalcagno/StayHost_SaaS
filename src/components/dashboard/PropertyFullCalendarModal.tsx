@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState, useCallback, useEffect, useRef, type RefObject } from "react";
+import { useMemo, useState, useCallback, useEffect, useRef } from "react";
 import { Dialog, DialogContent } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -73,7 +73,6 @@ type CleaningTask = {
   guestCount?: number | null;
   assigneeName?: string | null;
   isBackToBack?: boolean;
-  arrivingGuestName?: string | null;
 };
 
 type Property = {
@@ -490,7 +489,7 @@ export default function PropertyFullCalendarModal({
                       if (el) monthRefs.current.set(key, el);
                       else monthRefs.current.delete(key);
                     }}
-                    todayRef={todayCellRef}
+                    setTodayRef={(el) => { todayCellRef.current = el; }}
                     bookings={bookings}
                     tasks={tasks}
                     rangeStart={rangeStart}
@@ -540,7 +539,7 @@ export default function PropertyFullCalendarModal({
             ) : (
               <MonthSummaryPanel
                 stats={monthStats}
-                monthText={monthLabel(cursor)}
+                monthText={monthLabel(visibleMonth)}
               />
             )}
           </aside>
@@ -560,7 +559,7 @@ export default function PropertyFullCalendarModal({
 type MonthBlockProps = {
   monthDate: Date;
   setRef: (el: HTMLElement | null) => void;
-  todayRef: RefObject<HTMLDivElement | null>;
+  setTodayRef: (el: HTMLDivElement | null) => void;
   bookings: Booking[];
   tasks: CleaningTask[];
   rangeStart: string | null;
@@ -575,7 +574,7 @@ type MonthBlockProps = {
 function MonthBlock({
   monthDate,
   setRef,
-  todayRef,
+  setTodayRef,
   bookings,
   tasks,
   rangeStart,
@@ -634,7 +633,7 @@ function MonthBlock({
           return (
             <div
               key={d.str}
-              ref={d.isToday ? todayRef : undefined}
+              ref={d.isToday ? setTodayRef : undefined}
               onClick={() => onDayClick(d.str, onDay)}
               style={idx === 0 ? { gridColumnStart: startCol } : undefined}
               className={cn(
@@ -1048,18 +1047,6 @@ function TaskDetailPanel({ task, onClose }: { task: CleaningTask; onClose: () =>
           <p className="text-sm font-bold">
             {task.guestName}
             {task.guestCount ? ` · ${task.guestCount} huespedes` : ""}
-          </p>
-        </div>
-      )}
-
-      {task.arrivingGuestName && (
-        <div>
-          <p className="text-[10px] uppercase tracking-wider text-muted-foreground font-bold mb-1">
-            Huesped que llega (mismo dia)
-          </p>
-          <p className="text-sm font-bold">
-            {task.arrivingGuestName}
-            {task.arrivingGuestCount ? ` · ${task.arrivingGuestCount} huespedes` : ""}
           </p>
         </div>
       )}
