@@ -35,7 +35,9 @@ const PROTECTED_PREFIXES = [
   "/api/team-members",
   "/api/tuya",
   "/api/ttlock",          // /api/ttlock and /api/ttlock/code — webhook is carved out below
-  "/api/ical/export",
+  // /api/ical/export es PUBLICO — Airbnb / Google Calendar / VRBO lo
+  // consumen sin sesion. La autorizacion se hace via property.ical_token
+  // dentro del endpoint (capability URL).
   "/api/ical/import",
   "/api/admin",           // panel de SaaS — el propio endpoint verifica MASTER_EMAIL
 ];
@@ -59,10 +61,11 @@ const PROTECTED_EXCEPTIONS = [
  *   - /hub/:hostId           → shared public host portal
  */
 function isDynamicPublicPath(pathname: string): boolean {
-  // /api/ical/[propertyId] but NOT /api/ical/export or /api/ical/import
-  if (pathname.startsWith("/api/ical/") &&
-      !pathname.startsWith("/api/ical/export") &&
-      !pathname.startsWith("/api/ical/import")) {
+  // /api/ical/* es PUBLICO excepto /api/ical/import (que necesita sesion del
+  // host para importar a su tenant). Tanto /api/ical/[propertyId] como
+  // /api/ical/export son consumidos por Airbnb/VRBO/Google Calendar sin
+  // sesion — usan auth via token o admin client.
+  if (pathname.startsWith("/api/ical/") && !pathname.startsWith("/api/ical/import")) {
     return true;
   }
   if (pathname === "/api/checkin" || pathname.startsWith("/api/checkin/")) return true;

@@ -36,8 +36,8 @@ type BookingRow = {
   check_out: string;
   source: string | null;
   status: string | null;
-  guest_count: number | null;
-  notes: string | null;
+  num_guests: number | null;
+  note: string | null;
 };
 
 export async function GET(req: NextRequest) {
@@ -116,27 +116,31 @@ export async function GET(req: NextRequest) {
 
     const { data: bookings } = await supabaseAdmin
       .from("bookings")
-      .select("id, source_uid, guest_name, check_in, check_out, source, status, guest_count, notes")
+      .select("id, source_uid, guest_name, check_in, check_out, source, status, num_guests, note")
       .eq("property_id", propertyId)
       .neq("status", "cancelled")
       .returns<BookingRow[]>();
 
     events = (bookings || [])
       .map((b) => {
-        const isBlock = b.source === "block";
-        const guestName = b.guest_name || "Reserva";
-        const sourceName = b.source ? b.source.toUpperCase() : "STAYHOST";
-        const summary = isBlock
-          ? `[Bloqueo] — ${prop.name ?? ""}`
-          : `[B] — ${guestName} — ${sourceName}`;
+        const isBlock = b.source === "block" || b.status === "blocked";
+        // Para Airbnb/VRBO no exponemos el nombre del huesped ni el canal de
+        // origen — es informacion del competidor. Igualamos el SUMMARY al
+        // mismo formato que ellos usan ("Reserved" / "Not available") para
+        // evitar que rechacen el feed.
+        const summary = isBlock ? "Not available" : "Reserved";
 
         const descriptionLines = [
-          `Plataforma: ${sourceName}`,
-          `Huéspedes: ${b.guest_count || prop.max_guests || "N/A"}`,
+          `StayHost — ${prop.name ?? ""}`,
           `Check-in: ${b.check_in}`,
           `Check-out: ${b.check_out}`,
-          `Notas: ${b.notes || "S/N"}`,
         ];
+        if (!isBlock && b.num_guests) {
+          descriptionLines.push(`Huespedes: ${b.num_guests}`);
+        }
+        if (b.note) {
+          descriptionLines.push(`Notas: ${b.note}`);
+        }
 
         return [
           "BEGIN:VEVENT",
@@ -144,25 +148,27 @@ export async function GET(req: NextRequest) {
           `DTSTART;VALUE=DATE:${toIcalDate(b.check_in)}`,
           `DTEND;VALUE=DATE:${toIcalDate(b.check_out)}`,
           `SUMMARY:${summary}`,
-          `LOCATION:${prop.address || ""}, ${prop.city || ""}`,
           `DESCRIPTION:${descriptionLines.join("\\n")}`,
-          `UID:stayhost-booking-${b.source_uid || b.id}`,
+          `UID:stayhost-booking-${b.source_uid || b.id}@stayhost.app`,
           "END:VEVENT",
         ].join("\r\n");
       })
       .join("\r\n");
   }
 
-  const cal = [
+  // Si no hay events no incluimos linea vacia — RFC5545 no permite blank
+  // lines dentro de VCALENDAR y Airbnb rechaza el feed con esa estructura.
+  const calLines = [
     "BEGIN:VCALENDAR",
     "PRODID:-//StayHost//Hosting Calendar 1.0//EN",
     "CALSCALE:GREGORIAN",
     "VERSION:2.0",
     `X-WR-CALNAME:${calName}`,
     "X-WR-TIMEZONE:UTC",
-    events,
-    "END:VCALENDAR",
-  ].join("\r\n");
+  ];
+  if (events) calLines.push(events);
+  calLines.push("END:VCALENDAR");
+  const cal = calLines.join("\r\n");
 
   return new NextResponse(cal, {
     headers: {
