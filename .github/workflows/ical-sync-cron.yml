@@ -1,0 +1,30 @@
+name: iCal sync cron
+
+on:
+  schedule:
+    - cron: "*/30 * * * *"
+  workflow_dispatch:
+
+jobs:
+  trigger:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping /api/cron/ical-sync
+        env:
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+          TARGET_URL: https://stay-host-saa-s.vercel.app/api/cron/ical-sync
+        run: |
+          if [ -z "$CRON_SECRET" ]; then
+            echo "::error::CRON_SECRET repo secret is missing. Add it at Settings > Secrets and variables > Actions."
+            exit 1
+          fi
+          status=$(curl -sS -o /tmp/body.txt -w "%{http_code}" \
+            -H "Authorization: Bearer $CRON_SECRET" \
+            -H "Content-Type: application/json" \
+            --max-time 300 \
+            "$TARGET_URL")
+          echo "HTTP $status"
+          cat /tmp/body.txt || true
+          if [ "$status" -ge 400 ]; then
+            exit 1
+          fi

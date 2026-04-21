@@ -3,10 +3,6 @@
     {
       "path": "/api/ttlock/refresh-all",
       "schedule": "0 3 * * *"
-    },
-    {
-      "path": "/api/cron/ical-sync",
-      "schedule": "*/30 * * * *"
     }
   ]
 }
