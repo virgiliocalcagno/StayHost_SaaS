@@ -235,22 +235,47 @@ export async function POST(req: NextRequest) {
           });
         }
 
-        // Registramos el UID como "visto" solo si el upsert no fallo.
-        if (!error && !isBlock) seenUids.add(ev.uid);
+        // Registramos el UID como "visto" si el upsert no fallo. Tambien
+        // los bloqueos cuentan: si el host desbloquea en Airbnb, el VEVENT
+        // desaparece del feed y el bloqueo huerfano debe limpiarse.
+        if (!error) seenUids.add(ev.uid);
       }
 
-      // Detectar orphans — bookings del canal que ya no están en el feed.
-      // Solo miramos reservas confirmadas (ignoramos bloques y canceladas).
+      // Detectar orphans — filas que estaban en la BD para este feed pero
+      // ya no aparecen en el iCal actual:
+      //   - reservas confirmadas (source = channel) que el huesped cancelo
+      //   - bloqueos importados (source = 'block', source_uid no manual) que
+      //     el host desbloqueo en Airbnb/VRBO
+      // Importante: los bloqueos MANUALES de StayHost (source_uid empieza
+      // con "manual-") sobreviven al sync — son del usuario, no del canal.
       try {
         const { data: existing } = await supabase
           .from("bookings")
-          .select("id, source_uid")
+          .select("id, source_uid, source, status")
           .eq("property_id", propertyId)
-          .eq("source", channel)
-          .eq("status", "confirmed");
+          .neq("status", "cancelled");
 
-        const toCancel = ((existing ?? []) as Array<{ id: string; source_uid: string | null }>)
-          .filter((b) => b.source_uid && !seenUids.has(b.source_uid));
+        const rows = (existing ?? []) as Array<{
+          id: string;
+          source_uid: string | null;
+          source: string;
+          status: string;
+        }>;
+
+        const toCancel = rows.filter((b) => {
+          if (!b.source_uid || seenUids.has(b.source_uid)) return false;
+          // Reservas del canal que ya no aparecen en el feed
+          if (b.source === channel && b.status === "confirmed") return true;
+          // Bloqueos del feed (no manuales) que ya no aparecen
+          if (
+            b.source === "block" &&
+            b.status === "blocked" &&
+            !b.source_uid.startsWith("manual-")
+          ) {
+            return true;
+          }
+          return false;
+        });
 
         for (const orphan of toCancel) {
           const { error: updErr } = await supabase
