@@ -131,7 +131,13 @@ export default function MultiCalendarPanel() {
       .catch(() => {});
   };
 
-  useEffect(() => { loadData(); }, []);
+  useEffect(() => {
+    loadData();
+    // Refrescar cuando otro panel (PropertiesPanel) importa iCals.
+    const onUpdated = () => loadData();
+    window.addEventListener("stayhost:bookings-updated", onUpdated);
+    return () => window.removeEventListener("stayhost:bookings-updated", onUpdated);
+  }, []);
 
   // Pago de servicios extras
   const [isChargeOpen, setIsChargeOpen] = useState(false);

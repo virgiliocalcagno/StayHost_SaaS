@@ -125,8 +125,10 @@ export async function POST(req: NextRequest) {
     }
 
     let imported = 0;
+    let blocksImported = 0;
     const skipped = 0;
     let orphansCancelled = 0;
+    const errors: { feed: string; uid?: string; message: string }[] = [];
 
     for (const feed of feeds) {
       let icalText: string;
@@ -138,12 +140,17 @@ export async function POST(req: NextRequest) {
         console.log(`[ical/import] fetch ${feed.url} → status ${res.status}`);
         if (!res.ok) {
           console.error(`[ical/import] non-ok status ${res.status} for ${feed.url}`);
+          errors.push({ feed: feed.source, message: `Feed devolvió status ${res.status}` });
           continue;
         }
         icalText = await res.text();
         console.log(`[ical/import] got ${icalText.length} bytes`);
       } catch (fetchErr) {
         console.error(`[ical/import] fetch failed for ${feed.url}:`, fetchErr);
+        errors.push({
+          feed: feed.source,
+          message: `No se pudo descargar el feed: ${fetchErr instanceof Error ? fetchErr.message : String(fetchErr)}`,
+        });
         continue;
       }
 
@@ -187,36 +194,46 @@ export async function POST(req: NextRequest) {
           booking_url: isBlock ? null : ev.bookingUrl,
         };
 
-        let { error } = await supabase
-          .from("bookings")
-          .upsert(baseRow as never, {
-            onConflict: "property_id,source_uid",
-            ignoreDuplicates: false,
-          });
-
-        // Fallback: si alguna columna nueva no existe todavía en prod (el
-        // usuario no corrió la migración), reintentar sin ella.
-        const retryWithout = async (cols: string[]) => {
-          const retryRow = { ...baseRow };
-          cols.forEach((c) => { delete retryRow[c]; });
-          const res2 = await supabase
+        // Fallback acumulativo: si una migración pendiente falta, drop la
+        // columna y reintentamos. Acumulamos las dropeadas para que un segundo
+        // error en otra columna no resucite la primera.
+        const droppedCols = new Set<string>();
+        const tryUpsert = async () => {
+          const row = { ...baseRow };
+          droppedCols.forEach((c) => { delete row[c]; });
+          const { error: upErr } = await supabase
             .from("bookings")
-            .upsert(retryRow as never, {
+            .upsert(row as never, {
               onConflict: "property_id,source_uid",
               ignoreDuplicates: false,
             });
-          return res2.error;
+          return upErr;
         };
 
-        if (error?.message?.includes("booking_url")) {
-          error = await retryWithout(["booking_url"]);
-        }
-        if (error?.message?.includes("channel_code") || error?.message?.includes("phone_last4")) {
-          error = await retryWithout(["channel_code", "phone_last4"]);
+        let error = await tryUpsert();
+        const candidateCols = ["booking_url", "channel_code", "phone_last4"];
+        let attempts = 0;
+        while (error && attempts < candidateCols.length) {
+          const missing = candidateCols.find(
+            (c) => !droppedCols.has(c) && error?.message?.includes(c)
+          );
+          if (!missing) break;
+          droppedCols.add(missing);
+          error = await tryUpsert();
+          attempts++;
         }
 
-        if (!error) imported++;
-        else console.error("[ical/import] upsert error:", error.message);
+        if (!error) {
+          if (isBlock) blocksImported++;
+          else imported++;
+        } else {
+          console.error("[ical/import] upsert error:", error.message, "row:", baseRow);
+          errors.push({
+            feed: feed.source,
+            uid: ev.uid,
+            message: error.message,
+          });
+        }
 
         // Registramos el UID como "visto" solo si el upsert no fallo.
         if (!error && !isBlock) seenUids.add(ev.uid);
@@ -255,9 +272,11 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json({
       imported,
+      blocksImported,
       skipped,
       orphansCancelled,
-      total: imported + skipped,
+      total: imported + blocksImported + skipped,
+      errors,
     });
   } catch (err) {
     console.error("[ical/import]", err);

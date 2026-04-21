@@ -707,12 +707,29 @@ export default function PropertiesPanel() {
       });
       if (syncRes.ok) {
         // Then import iCal bookings
-        await fetch("/api/ical/import", {
+        const importRes = await fetch("/api/ical/import", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           credentials: "same-origin",
           body: JSON.stringify({ propertyId: editingProperty.id }),
         });
+        const importData = await importRes.json().catch(() => null);
+        if (importData) {
+          const total = (importData.imported ?? 0) + (importData.blocksImported ?? 0);
+          if (importData.errors?.length) {
+            toast.error(
+              `iCal: ${importData.errors[0].message}` +
+              (importData.errors.length > 1 ? ` (+${importData.errors.length - 1} más)` : "")
+            );
+          } else if (total > 0) {
+            toast.success(
+              `${importData.imported ?? 0} reservas + ${importData.blocksImported ?? 0} bloqueos sincronizados.`
+            );
+          } else {
+            toast.success("Sincronización completada (sin cambios nuevos).");
+          }
+          window.dispatchEvent(new CustomEvent("stayhost:bookings-updated"));
+        }
       }
     } catch {}
     const now = new Date().toISOString();
@@ -944,6 +961,40 @@ export default function PropertiesPanel() {
           setProperties((prev) => [...prev, finalProp]);
         }
         setShowModal(false);
+
+        // Auto-importar bookings/bloqueos si la propiedad tiene algún iCal
+        // configurado. Sin esto, el usuario tenía que ir al tab Canales y
+        // presionar "Sincronizar" manualmente — y aún así el calendario no
+        // se refrescaba. Ahora basta con guardar.
+        const hasIcal = !!(formData.airbnbIcal || formData.vrboIcal);
+        if (hasIcal) {
+          try {
+            const importRes = await fetch("/api/ical/import", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              credentials: "same-origin",
+              body: JSON.stringify({ propertyId: finalProp.id }),
+            });
+            const importData = await importRes.json().catch(() => null);
+            if (importData) {
+              const total = (importData.imported ?? 0) + (importData.blocksImported ?? 0);
+              if (importData.errors?.length) {
+                toast.error(
+                  `iCal: ${importData.errors[0].message}` +
+                  (importData.errors.length > 1 ? ` (+${importData.errors.length - 1} más)` : "")
+                );
+              } else if (total > 0) {
+                toast.success(
+                  `Importadas ${importData.imported ?? 0} reservas y ${importData.blocksImported ?? 0} bloqueos del iCal.`
+                );
+              }
+              // Avisarle al multi-calendario que hay datos nuevos.
+              window.dispatchEvent(new CustomEvent("stayhost:bookings-updated"));
+            }
+          } catch (icalErr) {
+            console.error("auto ical import failed:", icalErr);
+          }
+        }
       } else {
         toast.error("Error al sincronizar con el servidor. Por favor intenta de nuevo.");
       }
