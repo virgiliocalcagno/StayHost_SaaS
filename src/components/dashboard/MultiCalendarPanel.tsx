@@ -41,6 +41,7 @@ import { Sheet, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetT
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import ChargeServiceDrawer from "./ChargeServiceDrawer";
+import PropertyFullCalendarModal from "./PropertyFullCalendarModal";
 
 // Returns YYYY-MM-DD in the USER's local timezone — never UTC.
 // toISOString() was the old bug: past ~8pm in Chile (UTC-4), UTC already
@@ -143,6 +144,10 @@ export default function MultiCalendarPanel() {
   // Pago de servicios extras
   const [isChargeOpen, setIsChargeOpen] = useState(false);
   const [selectedBookingForCharge, setSelectedBookingForCharge] = useState<{id: string, guest: string, property: string} | null>(null);
+
+  // Modal del calendario completo de una sola propiedad (estilo Airbnb).
+  // Se abre al clickear el nombre de la propiedad en la fila.
+  const [fullCalProperty, setFullCalProperty] = useState<typeof initialMockBookings[number] | null>(null);
 
   const openChargeDrawer = (booking: { id: string; guest: string }, propertyName: string) => {
     setSelectedBookingForCharge({
@@ -770,13 +775,19 @@ export default function MultiCalendarPanel() {
             </div>
             <div className="divide-y divide-border/40 text-[11px]">
               {properties.map(property => (
-                <div key={property.id} className="h-12 flex items-center px-4 hover:bg-primary/[0.03] transition-colors group">
+                <button
+                  type="button"
+                  key={property.id}
+                  onClick={() => setFullCalProperty(property)}
+                  className="h-12 w-full flex items-center px-4 hover:bg-primary/[0.05] transition-colors group text-left focus:outline-none focus:bg-primary/[0.06]"
+                  title="Ver calendario completo de esta propiedad"
+                >
                   <ChannelIcon channel={property.channel} className="mr-3 shrink-0" />
                   <div className="min-w-0">
                     <p className="font-bold truncate text-[11px] leading-tight group-hover:text-primary transition-colors text-foreground/90">{property.name}</p>
                     <p className="text-[9px] text-muted-foreground font-medium">Desde ${property.price}/noche</p>
                   </div>
-                </div>
+                </button>
               ))}
             </div>
           </div>
@@ -1111,6 +1122,22 @@ export default function MultiCalendarPanel() {
         isOpen={isChargeOpen}
         onClose={() => setIsChargeOpen(false)}
         bookingData={selectedBookingForCharge}
+      />
+
+      {/* Calendario completo por propiedad (estilo Airbnb) */}
+      <PropertyFullCalendarModal
+        open={!!fullCalProperty}
+        onOpenChange={(o) => { if (!o) setFullCalProperty(null); }}
+        property={fullCalProperty}
+        onCreateBookingForRange={(propertyId, start, end) => {
+          setNewBooking((b) => ({
+            ...b,
+            propertyId: String(propertyId),
+            start,
+            end,
+          }));
+          setIsNewBookingOpen(true);
+        }}
       />
 
       {/* Edit Booking Sheet */}
