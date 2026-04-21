@@ -27,10 +27,15 @@ import {
   Trash2,
   X,
   Loader2,
+  Copy,
+  Check,
+  MessageCircle,
+  KeyRound,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Textarea } from "@/components/ui/textarea";
 import { useState, useMemo, useEffect } from "react";
+import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { Sheet, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
 import { Label } from "@/components/ui/label";
@@ -57,25 +62,25 @@ const generateMockBookings = () => {
 
   return [
     { id: 1, name: "Pool + Free Shuttle to Beach", channel: "airbnb", price: 125, bookings: [
-      { id: "b1", guest: "Maria Lopez", phone: null as string | null, phone4: null as string | null, numGuests: 2, totalPrice: 625, note: "" as string | null, start: getDateStr(-5), end: getDateStr(-1), status: "confirmed", channel: "airbnb" },
-      { id: "b2", guest: "Carlos Mendez", phone: null, phone4: null, numGuests: 2, totalPrice: 500, note: null, start: getDateStr(2), end: getDateStr(6), status: "pending", channel: "direct" },
-      { id: "b3", guest: "Ana Rodriguez", phone: null, phone4: null, numGuests: 2, totalPrice: 625, note: null, start: getDateStr(9), end: getDateStr(14), status: "confirmed", channel: "airbnb" },
+      { id: "b1", guest: "Maria Lopez", phone: null as string | null, phone4: null as string | null, bookingUrl: null as string | null, channelCode: null as string | null, phoneLast4: null as string | null, numGuests: 2, totalPrice: 625, note: "" as string | null, start: getDateStr(-5), end: getDateStr(-1), status: "confirmed", channel: "airbnb" },
+      { id: "b2", guest: "Carlos Mendez", phone: null, phone4: null, bookingUrl: null, channelCode: null, phoneLast4: null, numGuests: 2, totalPrice: 500, note: null, start: getDateStr(2), end: getDateStr(6), status: "pending", channel: "direct" },
+      { id: "b3", guest: "Ana Rodriguez", phone: null, phone4: null, bookingUrl: null, channelCode: null, phoneLast4: null, numGuests: 2, totalPrice: 625, note: null, start: getDateStr(9), end: getDateStr(14), status: "confirmed", channel: "airbnb" },
     ]},
     { id: 2, name: "Apartamento Centro", channel: "booking", price: 89, bookings: [
-      { id: "b4", guest: "Pedro Sanchez", phone: null, phone4: null, numGuests: 2, totalPrice: 267, note: null, start: getDateStr(0), end: getDateStr(3), status: "confirmed", channel: "booking" },
-      { id: "b5", guest: "Luisa Gomez", phone: null, phone4: null, numGuests: 2, totalPrice: 267, note: null, start: getDateStr(3), end: getDateStr(6), status: "confirmed", channel: "direct" },
+      { id: "b4", guest: "Pedro Sanchez", phone: null, phone4: null, bookingUrl: null, channelCode: null, phoneLast4: null, numGuests: 2, totalPrice: 267, note: null, start: getDateStr(0), end: getDateStr(3), status: "confirmed", channel: "booking" },
+      { id: "b5", guest: "Luisa Gomez", phone: null, phone4: null, bookingUrl: null, channelCode: null, phoneLast4: null, numGuests: 2, totalPrice: 267, note: null, start: getDateStr(3), end: getDateStr(6), status: "confirmed", channel: "direct" },
     ]},
     { id: 3, name: "Casa de Playa Sunset", channel: "vrbo", price: 210, bookings: [
-      { id: "b6", guest: "Sofia Castro", phone: null, phone4: null, numGuests: 2, totalPrice: 630, note: null, start: getDateStr(-2), end: getDateStr(1), status: "confirmed", channel: "vrbo" },
-      { id: "b7", guest: "Jorge Diaz", phone: null, phone4: null, numGuests: 2, totalPrice: 840, note: null, start: getDateStr(1), end: getDateStr(5), status: "confirmed", channel: "airbnb" },
-      { id: "b7b", guest: "Mariano Suarez", phone: null, phone4: null, numGuests: 2, totalPrice: 840, note: null, start: getDateStr(5), end: getDateStr(9), status: "pending", channel: "booking" },
+      { id: "b6", guest: "Sofia Castro", phone: null, phone4: null, bookingUrl: null, channelCode: null, phoneLast4: null, numGuests: 2, totalPrice: 630, note: null, start: getDateStr(-2), end: getDateStr(1), status: "confirmed", channel: "vrbo" },
+      { id: "b7", guest: "Jorge Diaz", phone: null, phone4: null, bookingUrl: null, channelCode: null, phoneLast4: null, numGuests: 2, totalPrice: 840, note: null, start: getDateStr(1), end: getDateStr(5), status: "confirmed", channel: "airbnb" },
+      { id: "b7b", guest: "Mariano Suarez", phone: null, phone4: null, bookingUrl: null, channelCode: null, phoneLast4: null, numGuests: 2, totalPrice: 840, note: null, start: getDateStr(5), end: getDateStr(9), status: "pending", channel: "booking" },
     ]},
     { id: 4, name: "Loft Moderno CDMX", channel: "airbnb", price: 145, bookings: [
-      { id: "b8", guest: "Roberto Jimenez", phone: null, phone4: null, numGuests: 2, totalPrice: 725, note: null, start: getDateStr(4), end: getDateStr(9), status: "pending", channel: "airbnb" },
+      { id: "b8", guest: "Roberto Jimenez", phone: null, phone4: null, bookingUrl: null, channelCode: null, phoneLast4: null, numGuests: 2, totalPrice: 725, note: null, start: getDateStr(4), end: getDateStr(9), status: "pending", channel: "airbnb" },
     ]},
     { id: 5, name: "Cabana en el Bosque", channel: "direct", price: 180, bookings: [] },
     { id: 6, name: "Penthouse Vista al Mar", channel: "booking", price: 450, bookings: [
-      { id: "b9", guest: "Fernanda Torres", phone: null, phone4: null, numGuests: 2, totalPrice: 4050, note: null, start: getDateStr(-1), end: getDateStr(8), status: "confirmed", channel: "booking" },
+      { id: "b9", guest: "Fernanda Torres", phone: null, phone4: null, bookingUrl: null, channelCode: null, phoneLast4: null, numGuests: 2, totalPrice: 4050, note: null, start: getDateStr(-1), end: getDateStr(8), status: "confirmed", channel: "booking" },
     ]},
   ];
 };
@@ -127,7 +132,13 @@ export default function MultiCalendarPanel() {
       .catch(() => {});
   };
 
-  useEffect(() => { loadData(); }, []);
+  useEffect(() => {
+    loadData();
+    // Refrescar cuando otro panel (PropertiesPanel) importa iCals.
+    const onUpdated = () => loadData();
+    window.addEventListener("stayhost:bookings-updated", onUpdated);
+    return () => window.removeEventListener("stayhost:bookings-updated", onUpdated);
+  }, []);
 
   // Pago de servicios extras
   const [isChargeOpen, setIsChargeOpen] = useState(false);
@@ -163,12 +174,33 @@ export default function MultiCalendarPanel() {
         setIsBlockOpen(false);
         setBlockForm({ propertyId: "", start: "", end: "", note: "" });
         loadData();
+        // Toast persistente — el host debe ir a Airbnb a forzar el refresh
+        // o esperar 2-4h. Sin esta accion entran reservas en la ventana.
+        toast.warning(
+          "Bloqueo guardado. Acordate de entrar a Airbnb → Calendario → Importar ahora para evitar overbooking.",
+          { duration: 10000 }
+        );
+      } else {
+        toast.error(data.error ?? "No se pudo guardar el bloqueo.");
       }
-    } catch {}
+    } catch {
+      toast.error("Error de conexión al guardar el bloqueo.");
+    }
     setSavingBlock(false);
   };
 
   const [savingBooking, setSavingBooking] = useState(false);
+
+  // Resultado de la creación — se muestra en un modal con el código de check-in
+  // recién generado + acciones de compartir. Null = oculto.
+  const [createdBookingInfo, setCreatedBookingInfo] = useState<{
+    channelCode: string;
+    phoneLast4: string | null;
+    guestName: string;
+    guestPhone: string;
+    propertyName: string;
+  } | null>(null);
+  const [copiedCode, setCopiedCode] = useState(false);
 
   const handleCreateBooking = async () => {
     if (!newBooking.guest || !newBooking.start || !newBooking.end) return;
@@ -193,12 +225,71 @@ export default function MultiCalendarPanel() {
       });
       const data = await res.json();
       if (data.ok) {
+        const prop = properties.find((p) => String(p.id) === String(newBooking.propertyId));
         setIsNewBookingOpen(false);
+        // Solo mostramos el modal de confirmación si la API devolvió
+        // channelCode (reservas directas con la migración corrida). Si no,
+        // cerramos silenciosamente como antes.
+        if (data.channelCode) {
+          setCreatedBookingInfo({
+            channelCode: data.channelCode,
+            phoneLast4: data.phoneLast4 ?? null,
+            guestName: newBooking.guest,
+            guestPhone: newBooking.telefono || "",
+            propertyName: prop?.name ?? "",
+          });
+        }
         setNewBooking({ propertyId: "1", guest: "", docIdentidad: "", nacionalidad: "", telefono: "", numHuespedes: 2, start: "", end: "", channel: "direct", status: "confirmed", price: 0 });
         loadData();
       }
     } catch {}
     setSavingBooking(false);
+  };
+
+  // Arma el link con el código pre-rellenado para compartir con el huésped.
+  const buildCheckinUrl = (code: string) => {
+    if (typeof window === "undefined") return `/checkin?code=${encodeURIComponent(code)}`;
+    return `${window.location.origin}/checkin?code=${encodeURIComponent(code)}`;
+  };
+
+  const shareBookingWhatsApp = (info: NonNullable<typeof createdBookingInfo>) => {
+    const url = buildCheckinUrl(info.channelCode);
+    const lines = [
+      `¡Hola ${info.guestName}! 👋`,
+      ``,
+      `Te doy la bienvenida a *${info.propertyName}*.`,
+      ``,
+      `Para completar tu check-in online, entrá a:`,
+      url,
+      ``,
+      `Tu código de reserva ya viene cargado.`,
+      info.phoneLast4
+        ? `Vas a necesitar los últimos 4 dígitos del teléfono que nos pasaste.`
+        : `Vas a necesitar los últimos 4 dígitos de tu teléfono.`,
+      ``,
+      `¡Cualquier duda, me avisás!`,
+    ];
+    const text = lines.join("\n");
+    const cleanPhone = info.guestPhone.replace(/\D/g, "");
+    if (cleanPhone.length >= 8) {
+      window.open(`https://wa.me/${cleanPhone}?text=${encodeURIComponent(text)}`, "_blank");
+      return;
+    }
+    // Sin teléfono completo → Web Share API o WhatsApp Web sin número
+    type NavigatorWithShare = Navigator & { share?: (data: ShareData) => Promise<void> };
+    const nav = navigator as NavigatorWithShare;
+    if (nav.share) {
+      nav.share({ title: "Check-in StayHost", text }).catch(() => {});
+      return;
+    }
+    window.open(`https://wa.me/?text=${encodeURIComponent(text)}`, "_blank");
+    navigator.clipboard.writeText(text).catch(() => {});
+  };
+
+  const copyChannelCode = (code: string) => {
+    navigator.clipboard.writeText(code).catch(() => {});
+    setCopiedCode(true);
+    setTimeout(() => setCopiedCode(false), 2000);
   };
 
   const handleDeleteBooking = async (bookingId: string) => {
@@ -377,6 +468,19 @@ export default function MultiCalendarPanel() {
                 <SheetDescription>Las fechas bloqueadas se sincronizan automáticamente a Airbnb y VRBO vía tu iCal propio.</SheetDescription>
               </SheetHeader>
               <div className="flex-1 overflow-y-auto px-6 py-4 space-y-4">
+                {/* Aviso critico de lag iCal — Airbnb hace pull cada 2-4h.
+                    Sin esto el host se confia y puede sufrir overbooking real. */}
+                <div className="rounded-xl border-2 border-amber-400 bg-amber-50 p-3 flex gap-2.5">
+                  <span className="text-xl leading-none mt-0.5">⚠️</span>
+                  <div className="flex-1 text-[12px] leading-snug text-amber-900">
+                    <p className="font-black mb-1">Importante — riesgo de doble reserva</p>
+                    <p className="font-medium">
+                      Airbnb puede tardar <span className="font-black">hasta 4 horas</span> en leer este bloqueo.
+                      Para evitar reservas dobles, después de guardar acá entrá a{" "}
+                      <span className="font-black">Airbnb → Calendario → tu propiedad → Importar calendario → "Importar ahora"</span>.
+                    </p>
+                  </div>
+                </div>
                 <div className="space-y-2">
                   <Label className="text-[11px] font-bold text-muted-foreground uppercase tracking-[0.05em]">Propiedad</Label>
                   <Select value={blockForm.propertyId} onValueChange={v => setBlockForm(f => ({ ...f, propertyId: v }))}>
@@ -554,6 +658,105 @@ export default function MultiCalendarPanel() {
         </div>
       </div>
 
+      {/* ── Modal post-creación: muestra el código de check-in generado ─── */}
+      <Sheet open={!!createdBookingInfo} onOpenChange={(o) => !o && setCreatedBookingInfo(null)}>
+        <SheetContent className="w-full sm:max-w-lg overflow-y-auto">
+          {createdBookingInfo && (
+            <>
+              <SheetHeader>
+                <SheetTitle className="flex items-center gap-2">
+                  <div className="h-10 w-10 rounded-xl bg-emerald-100 flex items-center justify-center">
+                    <Check className="h-5 w-5 text-emerald-600" />
+                  </div>
+                  ¡Reserva creada!
+                </SheetTitle>
+                <SheetDescription>
+                  Compartile el código con el huésped para que haga su check-in online.
+                </SheetDescription>
+              </SheetHeader>
+
+              <div className="mt-6 space-y-5">
+                {/* Código destacado */}
+                <div className="bg-gradient-to-br from-sky-50 to-emerald-50 rounded-3xl border-2 border-emerald-200 p-6 text-center space-y-3">
+                  <div className="flex items-center justify-center gap-2 text-[11px] font-bold text-emerald-700 uppercase tracking-widest">
+                    <KeyRound className="h-3.5 w-3.5" />
+                    Código de check-in
+                  </div>
+                  <p className="text-3xl font-black font-mono tracking-[0.3em] text-slate-900">
+                    {createdBookingInfo.channelCode}
+                  </p>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => copyChannelCode(createdBookingInfo.channelCode)}
+                    className="gap-1.5"
+                  >
+                    {copiedCode ? (
+                      <><Check className="h-3.5 w-3.5 text-emerald-600" /> Copiado</>
+                    ) : (
+                      <><Copy className="h-3.5 w-3.5" /> Copiar código</>
+                    )}
+                  </Button>
+                </div>
+
+                {/* Info del huésped */}
+                <div className="rounded-2xl border bg-card p-4 space-y-2 text-sm">
+                  <div className="flex justify-between">
+                    <span className="text-muted-foreground">Huésped</span>
+                    <span className="font-semibold">{createdBookingInfo.guestName}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-muted-foreground">Propiedad</span>
+                    <span className="font-semibold truncate max-w-[200px]">{createdBookingInfo.propertyName}</span>
+                  </div>
+                  {createdBookingInfo.phoneLast4 && (
+                    <div className="flex justify-between">
+                      <span className="text-muted-foreground">Auth (4 dígitos)</span>
+                      <span className="font-mono font-semibold">••{createdBookingInfo.phoneLast4}</span>
+                    </div>
+                  )}
+                </div>
+
+                {/* Acciones */}
+                <div className="space-y-2">
+                  <Button
+                    onClick={() => shareBookingWhatsApp(createdBookingInfo)}
+                    className="w-full h-12 bg-emerald-600 hover:bg-emerald-700 text-white font-bold"
+                  >
+                    <MessageCircle className="h-4 w-4 mr-2" />
+                    Enviar por WhatsApp
+                  </Button>
+                  <Button
+                    variant="outline"
+                    onClick={() => {
+                      const url = buildCheckinUrl(createdBookingInfo.channelCode);
+                      navigator.clipboard.writeText(url).catch(() => {});
+                      setCopiedCode(true);
+                      setTimeout(() => setCopiedCode(false), 2000);
+                    }}
+                    className="w-full h-11"
+                  >
+                    <Copy className="h-4 w-4 mr-2" />
+                    Copiar link del check-in
+                  </Button>
+                </div>
+
+                <p className="text-[11px] text-center text-muted-foreground leading-relaxed">
+                  El huésped entrará a <span className="font-mono">stayhost.app/checkin</span> con este código
+                  + los últimos 4 dígitos de su teléfono para acceder al check-in online.
+                </p>
+              </div>
+
+              <SheetFooter className="mt-6">
+                <Button variant="ghost" onClick={() => setCreatedBookingInfo(null)} className="w-full">
+                  Cerrar
+                </Button>
+              </SheetFooter>
+            </>
+          )}
+        </SheetContent>
+      </Sheet>
+
       {/* Calendar Grid */}
       <div className="flex-1 border rounded-2xl bg-card overflow-hidden flex flex-col shadow-soft border-border/60">
         <div className="grid grid-cols-[250px_1fr] flex-1 overflow-auto">
@@ -664,6 +867,26 @@ export default function MultiCalendarPanel() {
                     const isOutRight = endD.getTime() > viewEndMs;
 
                     const isBlock = booking.channel === "block" || booking.status === "blocked";
+                    // Distinguir bloqueos manuales (creados en StayHost) vs
+                    // importados de un canal externo (Airbnb/VRBO/Booking iCal):
+                    //   - manual: source_uid empieza con "manual-"
+                    //   - importado: source_uid contiene "@" (UID del feed)
+                    // Esto permite al usuario saber de un vistazo si un bloqueo
+                    // lo puede editar/borrar en StayHost o si tiene que ir al
+                    // canal donde lo creo originalmente.
+                    const sourceUid = (booking as { sourceUid?: string | null }).sourceUid;
+                    const isManualBlock = isBlock && typeof sourceUid === "string" && sourceUid.startsWith("manual-");
+                    // Para bloqueos importados, derivamos el canal del UID del feed:
+                    // ej. "...@airbnb.com" → Airbnb. Si no podemos determinar, "iCal".
+                    const blockOrigin: string = !isBlock || isManualBlock
+                      ? ""
+                      : typeof sourceUid === "string" && sourceUid.includes("airbnb")
+                        ? "Airbnb"
+                        : typeof sourceUid === "string" && sourceUid.includes("vrbo")
+                          ? "VRBO"
+                          : typeof sourceUid === "string" && sourceUid.includes("booking")
+                            ? "Booking"
+                            : "iCal";
 
                     return (
                       <Popover key={booking.id}>
@@ -672,7 +895,11 @@ export default function MultiCalendarPanel() {
                             className={cn(
                               "absolute top-1/2 -translate-y-1/2 h-8 flex items-center px-2 rounded-lg text-[10px] font-black shadow-soft cursor-pointer hover:brightness-110 transition-all border select-none",
                               isBlock
-                                ? "bg-slate-400 text-white border-slate-300 bg-[repeating-linear-gradient(45deg,#64748b,#64748b_6px,#94a3b8_6px,#94a3b8_12px)]"
+                                ? isManualBlock
+                                  // Manual StayHost: cinta de obra (amarillo señalizacion + negro)
+                                  ? "text-black border-yellow-600 bg-[repeating-linear-gradient(45deg,#facc15,#facc15_8px,#1f2937_8px,#1f2937_16px)]"
+                                  // Importado del canal: rayas gris oscuro + gris claro (como antes)
+                                  : "text-white border-slate-300 bg-[repeating-linear-gradient(45deg,#64748b,#64748b_6px,#94a3b8_6px,#94a3b8_12px)]"
                                 : booking.status === "confirmed"
                                   ? (booking.channel === "airbnb" ? "bg-rose-500 text-white border-white/20" : booking.channel === "booking" ? "bg-blue-600 text-white border-white/20" : booking.channel === "vrbo" ? "bg-indigo-500 text-white border-white/20" : "bg-emerald-500 text-white border-white/20")
                                   : "bg-amber-500 text-amber-950 border-amber-400",
@@ -682,22 +909,57 @@ export default function MultiCalendarPanel() {
                             style={{ left: `calc(${leftPct}%)`, width: `calc(${widthPct}%)`, zIndex: 5 }}
                           >
                             {!isBlock && <ChannelIcon channel={booking.channel || "direct"} className="mr-1.5 w-3.5 h-3.5 bg-white/30 border-none shadow-none text-[7px]" />}
-                            <span className="truncate">{isBlock ? "🔒 Bloqueado" : booking.guest}</span>
+                            <span className="truncate">
+                              {isBlock
+                                ? (isManualBlock ? "🔒 Bloqueo manual" : `🔒 Bloqueo ${blockOrigin}`)
+                                : booking.guest}
+                            </span>
                           </div>
                         </PopoverTrigger>
                         <PopoverPrimitive.Portal>
                           <PopoverContent className="w-64 p-3 rounded-xl bg-card border border-border/50 text-sm shadow-2xl z-[100]" sideOffset={5}>
-                            <div className="flex items-start justify-between mb-2">
-                            <div className="flex items-center gap-2">
-                              <ChannelIcon channel={booking.channel} />
-                              <span className="font-bold text-foreground capitalize">{booking.channel}</span>
-                            </div>
-                            <span className={cn("text-[10px] font-black px-2 py-0.5 rounded-full uppercase tracking-wider", booking.status === "confirmed" ? "bg-emerald-100 text-emerald-700" : "bg-amber-100 text-amber-700")}>
-                              {booking.status}
-                            </span>
-                          </div>
-                          <h4 className="font-black text-base">{booking.guest}</h4>
-                          <p className="text-xs text-muted-foreground mb-3">{property.name}</p>
+                          {isBlock ? (
+                            <>
+                              {/* Banner que distingue origen del bloqueo: el host
+                                  necesita saber si lo edita aca o en el canal */}
+                              <div className={cn(
+                                "rounded-lg p-2 mb-3 border-2 flex items-center gap-2",
+                                isManualBlock
+                                  ? "bg-yellow-100 border-yellow-500 text-yellow-900"
+                                  : "bg-slate-100 border-slate-400 text-slate-800"
+                              )}>
+                                <span className="text-lg">🔒</span>
+                                <div className="flex-1 min-w-0">
+                                  <p className="text-[10px] uppercase tracking-wider font-black opacity-70">
+                                    {isManualBlock ? "Bloqueo creado en StayHost" : `Bloqueo importado de ${blockOrigin}`}
+                                  </p>
+                                  <p className="font-black text-sm leading-tight">
+                                    {isManualBlock ? "Bloqueo manual" : `Bloqueo ${blockOrigin}`}
+                                  </p>
+                                </div>
+                              </div>
+                              <p className="text-xs text-muted-foreground mb-3">{property.name}</p>
+                              {!isManualBlock && (
+                                <p className="text-[10px] text-muted-foreground mb-3 italic leading-snug">
+                                  Para editarlo o quitarlo, hacelo desde {blockOrigin}. Aca solo se sincroniza.
+                                </p>
+                              )}
+                            </>
+                          ) : (
+                            <>
+                              <div className="flex items-start justify-between mb-2">
+                                <div className="flex items-center gap-2">
+                                  <ChannelIcon channel={booking.channel} />
+                                  <span className="font-bold text-foreground capitalize">{booking.channel}</span>
+                                </div>
+                                <span className={cn("text-[10px] font-black px-2 py-0.5 rounded-full uppercase tracking-wider", booking.status === "confirmed" ? "bg-emerald-100 text-emerald-700" : "bg-amber-100 text-amber-700")}>
+                                  {booking.status}
+                                </span>
+                              </div>
+                              <h4 className="font-black text-base">{booking.guest}</h4>
+                              <p className="text-xs text-muted-foreground mb-3">{property.name}</p>
+                            </>
+                          )}
                           
                           <div className="flex justify-between items-center text-xs font-medium bg-muted/30 rounded-lg p-2 mb-3 border border-border/50">
                             <div className="flex flex-col">
@@ -721,6 +983,49 @@ export default function MultiCalendarPanel() {
                               <Phone className="w-3 h-3 text-muted-foreground" />
                               <span>{booking.phone}</span>
                               {booking.phone4 && <Badge variant="outline" className="text-[9px] ml-auto">PIN: {booking.phone4}</Badge>}
+                            </div>
+                          )}
+
+                          {/* ── Datos de check-in: código + 4 dígitos + URL del canal ── */}
+                          {(booking.channelCode || booking.phoneLast4 || booking.bookingUrl) && (
+                            <div className="mb-3 p-2.5 rounded-lg bg-gradient-to-br from-sky-50/50 to-emerald-50/50 border border-emerald-200/60 space-y-1.5">
+                              <p className="text-[9px] uppercase tracking-widest font-bold text-emerald-700">Check-in online</p>
+                              {booking.channelCode && (
+                                <div className="flex items-center justify-between gap-2 text-[11px]">
+                                  <span className="text-muted-foreground">Código</span>
+                                  <div className="flex items-center gap-1">
+                                    <span className="font-mono font-bold tracking-wider">{booking.channelCode}</span>
+                                    <button
+                                      type="button"
+                                      onClick={() => copyChannelCode(booking.channelCode!)}
+                                      className="text-slate-400 hover:text-emerald-600 transition-colors"
+                                      title="Copiar"
+                                    >
+                                      {copiedCode ? <Check className="h-3 w-3 text-emerald-600" /> : <Copy className="h-3 w-3" />}
+                                    </button>
+                                  </div>
+                                </div>
+                              )}
+                              {booking.phoneLast4 && (
+                                <div className="flex items-center justify-between gap-2 text-[11px]">
+                                  <span className="text-muted-foreground">Auth (4 dig)</span>
+                                  <span className="font-mono font-bold">••{booking.phoneLast4}</span>
+                                </div>
+                              )}
+                              {booking.bookingUrl && (
+                                <div className="flex items-center justify-between gap-2 text-[11px]">
+                                  <span className="text-muted-foreground">URL canal</span>
+                                  <a
+                                    href={booking.bookingUrl}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="text-sky-600 hover:text-sky-800 underline truncate max-w-[120px]"
+                                    title={booking.bookingUrl}
+                                  >
+                                    ver reserva
+                                  </a>
+                                </div>
+                              )}
                             </div>
                           )}
 
@@ -785,7 +1090,21 @@ export default function MultiCalendarPanel() {
         </div>
         <div className="flex items-center gap-1.5">
           <div className="w-2 h-2 rounded-full bg-amber-500"></div>
-          <span>Pendiente / Bloqueo</span>
+          <span>Pendiente</span>
+        </div>
+        <div className="flex items-center gap-1.5">
+          <div
+            className="w-3 h-2 rounded-sm border border-slate-300"
+            style={{ background: "repeating-linear-gradient(45deg,#64748b 0,#64748b 2px,#94a3b8 2px,#94a3b8 4px)" }}
+          />
+          <span>Bloqueo del canal</span>
+        </div>
+        <div className="flex items-center gap-1.5">
+          <div
+            className="w-3 h-2 rounded-sm border border-yellow-600"
+            style={{ background: "repeating-linear-gradient(45deg,#facc15 0,#facc15 2px,#1f2937 2px,#1f2937 4px)" }}
+          />
+          <span>Bloqueo manual</span>
         </div>
       </div>
       <ChargeServiceDrawer

@@ -707,12 +707,35 @@ export default function PropertiesPanel() {
       });
       if (syncRes.ok) {
         // Then import iCal bookings
-        await fetch("/api/ical/import", {
+        const importRes = await fetch("/api/ical/import", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           credentials: "same-origin",
           body: JSON.stringify({ propertyId: editingProperty.id }),
         });
+        const importData = await importRes.json().catch(() => null);
+        if (!importRes.ok) {
+          toast.error(
+            `iCal HTTP ${importRes.status}: ${importData?.error ?? "error desconocido"}`
+          );
+        } else if (importData) {
+          const reservas = importData.imported ?? 0;
+          const bloqueos = importData.blocksImported ?? 0;
+          if (importData.errors?.length) {
+            toast.error(
+              `iCal: ${importData.errors[0].message}` +
+              (importData.errors.length > 1 ? ` (+${importData.errors.length - 1} más)` : "")
+            );
+          } else {
+            toast.success(`Sync OK: ${reservas} reservas, ${bloqueos} bloqueos`);
+          }
+          window.dispatchEvent(new CustomEvent("stayhost:bookings-updated"));
+        } else {
+          toast.error("iCal: respuesta vacía del servidor.");
+        }
+      } else {
+        const errBody = await syncRes.json().catch(() => null);
+        toast.error(`Sync propiedad falló: ${errBody?.error ?? syncRes.status}`);
       }
     } catch {}
     const now = new Date().toISOString();
@@ -944,6 +967,53 @@ export default function PropertiesPanel() {
           setProperties((prev) => [...prev, finalProp]);
         }
         setShowModal(false);
+
+        // Auto-importar bookings/bloqueos si la propiedad tiene algún iCal
+        // configurado. Sin esto, el usuario tenía que ir al tab Canales y
+        // presionar "Sincronizar" manualmente — y aún así el calendario no
+        // se refrescaba. Ahora basta con guardar.
+        const hasIcal = !!(formData.airbnbIcal || formData.vrboIcal);
+        if (!hasIcal) {
+          toast.message("Sin iCal configurado — saltando sincronización.");
+        } else {
+          try {
+            const importRes = await fetch("/api/ical/import", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              credentials: "same-origin",
+              body: JSON.stringify({ propertyId: finalProp.id }),
+            });
+            const importData = await importRes.json().catch(() => null);
+            if (!importRes.ok) {
+              toast.error(
+                `iCal HTTP ${importRes.status}: ${importData?.error ?? "error desconocido"}`
+              );
+            } else if (importData) {
+              const reservas = importData.imported ?? 0;
+              const bloqueos = importData.blocksImported ?? 0;
+              const orphans = importData.orphansCancelled ?? 0;
+              if (importData.errors?.length) {
+                toast.error(
+                  `iCal: ${importData.errors[0].message}` +
+                  (importData.errors.length > 1 ? ` (+${importData.errors.length - 1} más)` : "")
+                );
+              } else {
+                // Siempre damos feedback — incluso 0/0 te dice que el sync
+                // corrió pero el feed no trajo nada (ej. URL inválida).
+                toast.success(
+                  `Sync OK: ${reservas} reservas, ${bloqueos} bloqueos` +
+                  (orphans > 0 ? `, ${orphans} canceladas` : "")
+                );
+              }
+              window.dispatchEvent(new CustomEvent("stayhost:bookings-updated"));
+            } else {
+              toast.error("iCal: respuesta vacía del servidor.");
+            }
+          } catch (icalErr) {
+            console.error("auto ical import failed:", icalErr);
+            toast.error(`iCal falló: ${icalErr instanceof Error ? icalErr.message : String(icalErr)}`);
+          }
+        }
       } else {
         toast.error("Error al sincronizar con el servidor. Por favor intenta de nuevo.");
       }

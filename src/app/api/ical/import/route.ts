@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getAuthenticatedTenant } from "@/lib/supabase/server";
+import { cascadeCancelBooking } from "@/lib/bookings/cleanup";
 
 // Unfold RFC-5545 line continuations before parsing
 function unfold(text: string) {
@@ -124,7 +125,10 @@ export async function POST(req: NextRequest) {
     }
 
     let imported = 0;
+    let blocksImported = 0;
     const skipped = 0;
+    let orphansCancelled = 0;
+    const errors: { feed: string; uid?: string; message: string }[] = [];
 
     for (const feed of feeds) {
       let icalText: string;
@@ -136,21 +140,43 @@ export async function POST(req: NextRequest) {
         console.log(`[ical/import] fetch ${feed.url} → status ${res.status}`);
         if (!res.ok) {
           console.error(`[ical/import] non-ok status ${res.status} for ${feed.url}`);
+          errors.push({ feed: feed.source, message: `Feed devolvió status ${res.status}` });
           continue;
         }
         icalText = await res.text();
         console.log(`[ical/import] got ${icalText.length} bytes`);
       } catch (fetchErr) {
         console.error(`[ical/import] fetch failed for ${feed.url}:`, fetchErr);
+        errors.push({
+          feed: feed.source,
+          message: `No se pudo descargar el feed: ${fetchErr instanceof Error ? fetchErr.message : String(fetchErr)}`,
+        });
         continue;
       }
 
       const events = parseIcal(icalText);
       const channel = detectChannel(feed.url);
 
+      // Detección de orphans: bookings que estaban en la BD para este feed
+      // (source = channel) pero NO aparecen en el iCal actual → el huésped
+      // canceló en Airbnb/VRBO. Marcamos cancelled + cascade cleanup.
+      // Recolectamos los UIDs vistos durante la importación y al final
+      // comparamos.
+      const seenUids = new Set<string>();
+
       for (const ev of events) {
         // "Airbnb (Not available)", "Blocked", "Not available" = manual blocks from platform
         const isBlock = /not available|blocked/i.test(ev.summary);
+
+        // Código de reserva del canal (para login del huésped en /checkin).
+        // Airbnb: HMXXXXXXXX dentro de la URL del DESCRIPTION.
+        // VRBO/Booking: por ahora null (añadir parser cuando tengamos muestras).
+        const channelCode = (() => {
+          if (isBlock || !ev.bookingUrl) return null;
+          const airbnbMatch = ev.bookingUrl.match(/details\/([A-Z0-9]{8,})/i);
+          if (airbnbMatch) return airbnbMatch[1].toUpperCase();
+          return null;
+        })();
 
         const baseRow: Record<string, unknown> = {
           property_id: propertyId,
@@ -160,38 +186,123 @@ export async function POST(req: NextRequest) {
           guest_name: isBlock ? "Bloqueado" : extractGuestName(ev.summary),
           guest_email: null,
           guest_phone: isBlock ? null : ev.phone,
+          phone_last4: isBlock ? null : ev.phone4,
+          channel_code: channelCode,
           check_in: ev.dtstart,
           check_out: ev.dtend,
           status: isBlock ? "blocked" : "confirmed",
           booking_url: isBlock ? null : ev.bookingUrl,
         };
 
-        let { error } = await supabase
-          .from("bookings")
-          .upsert(baseRow as never, {
-            onConflict: "property_id,source_uid",
-            ignoreDuplicates: false,
-          });
-
-        // Fallback: if booking_url column missing, retry without it
-        if (error?.message?.includes("booking_url")) {
-          const { booking_url: _drop, ...rowWithout } = baseRow;
-          void _drop;
-          const res2 = await supabase
+        // Fallback acumulativo: si una migración pendiente falta, drop la
+        // columna y reintentamos. Acumulamos las dropeadas para que un segundo
+        // error en otra columna no resucite la primera.
+        const droppedCols = new Set<string>();
+        const tryUpsert = async () => {
+          const row = { ...baseRow };
+          droppedCols.forEach((c) => { delete row[c]; });
+          const { error: upErr } = await supabase
             .from("bookings")
-            .upsert(rowWithout as never, {
+            .upsert(row as never, {
               onConflict: "property_id,source_uid",
               ignoreDuplicates: false,
             });
-          error = res2.error;
+          return upErr;
+        };
+
+        let error = await tryUpsert();
+        const candidateCols = ["booking_url", "channel_code", "phone_last4"];
+        let attempts = 0;
+        while (error && attempts < candidateCols.length) {
+          const missing = candidateCols.find(
+            (c) => !droppedCols.has(c) && error?.message?.includes(c)
+          );
+          if (!missing) break;
+          droppedCols.add(missing);
+          error = await tryUpsert();
+          attempts++;
         }
 
-        if (!error) imported++;
-        else console.error("[ical/import] upsert error:", error.message);
+        if (!error) {
+          if (isBlock) blocksImported++;
+          else imported++;
+        } else {
+          console.error("[ical/import] upsert error:", error.message, "row:", baseRow);
+          errors.push({
+            feed: feed.source,
+            uid: ev.uid,
+            message: error.message,
+          });
+        }
+
+        // Registramos el UID como "visto" si el upsert no fallo. Tambien
+        // los bloqueos cuentan: si el host desbloquea en Airbnb, el VEVENT
+        // desaparece del feed y el bloqueo huerfano debe limpiarse.
+        if (!error) seenUids.add(ev.uid);
+      }
+
+      // Detectar orphans — filas que estaban en la BD para este feed pero
+      // ya no aparecen en el iCal actual:
+      //   - reservas confirmadas (source = channel) que el huesped cancelo
+      //   - bloqueos importados (source = 'block', source_uid no manual) que
+      //     el host desbloqueo en Airbnb/VRBO
+      // Importante: los bloqueos MANUALES de StayHost (source_uid empieza
+      // con "manual-") sobreviven al sync — son del usuario, no del canal.
+      try {
+        const { data: existing } = await supabase
+          .from("bookings")
+          .select("id, source_uid, source, status")
+          .eq("property_id", propertyId)
+          .neq("status", "cancelled");
+
+        const rows = (existing ?? []) as Array<{
+          id: string;
+          source_uid: string | null;
+          source: string;
+          status: string;
+        }>;
+
+        const toCancel = rows.filter((b) => {
+          if (!b.source_uid || seenUids.has(b.source_uid)) return false;
+          // Reservas del canal que ya no aparecen en el feed
+          if (b.source === channel && b.status === "confirmed") return true;
+          // Bloqueos del feed (no manuales) que ya no aparecen
+          if (
+            b.source === "block" &&
+            b.status === "blocked" &&
+            !b.source_uid.startsWith("manual-")
+          ) {
+            return true;
+          }
+          return false;
+        });
+
+        for (const orphan of toCancel) {
+          const { error: updErr } = await supabase
+            .from("bookings")
+            .update({ status: "cancelled" } as never)
+            .eq("id", orphan.id);
+          if (updErr) {
+            console.error("[ical/import] orphan cancel error:", updErr.message);
+            continue;
+          }
+          // Cascade cleanup — borra check-in records + access_pins
+          await cascadeCancelBooking(orphan.id);
+          orphansCancelled++;
+        }
+      } catch (orphanErr) {
+        console.error("[ical/import] orphan detection failed:", orphanErr);
       }
     }
 
-    return NextResponse.json({ imported, skipped, total: imported + skipped });
+    return NextResponse.json({
+      imported,
+      blocksImported,
+      skipped,
+      orphansCancelled,
+      total: imported + blocksImported + skipped,
+      errors,
+    });
   } catch (err) {
     console.error("[ical/import]", err);
     return NextResponse.json({ error: "Internal error" }, { status: 500 });

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getAuthenticatedTenant } from "@/lib/supabase/server";
 import { supabaseAdmin } from "@/lib/supabase/admin";
+import { cascadeCancelBooking } from "@/lib/bookings/cleanup";
 
 // All three handlers read the tenant_id from the authenticated session
 // cookie. They no longer accept `tenantEmail` in the body or `?email=` in
@@ -96,7 +97,23 @@ export async function POST(req: NextRequest) {
         ? clientSourceUid
         : `manual-${crypto.randomUUID()}`;
 
-    const { data, error } = await supabase.from("bookings").insert({
+    // Código de reserva para login del huésped en /checkin. Formato
+    // "SHXXXXXXXX" — 2 letras prefijo (StayHost) + 8 hex, mismo largo
+    // que Airbnb (HM........) y VRBO. Sin guion porque es mas natural
+    // de tipear y compartir por whatsapp. Las reservas iCal reciben su
+    // codigo desde el parser (HM... de Airbnb).
+    const channelCode = isBlock
+      ? null
+      : `SH${crypto.randomUUID().replace(/-/g, "").slice(0, 8).toUpperCase()}`;
+
+    // Últimos 4 dígitos del teléfono para auth del huésped.
+    const phoneLast4 = (() => {
+      if (isBlock || !guestPhone) return null;
+      const digits = String(guestPhone).replace(/\D/g, "");
+      return digits.length >= 4 ? digits.slice(-4) : null;
+    })();
+
+    const insertRow: Record<string, unknown> = {
       property_id: propertyId,
       tenant_id: tenantId,
       source_uid: sourceUid,
@@ -111,7 +128,21 @@ export async function POST(req: NextRequest) {
       total_price: totalPrice ?? 0,
       num_guests: numGuests ?? 1,
       note: note ?? null,
-    } as never).select("id").single();
+      channel_code: channelCode,
+      phone_last4: phoneLast4,
+    };
+
+    let insertRes = await supabase.from("bookings").insert(insertRow as never).select("id").single();
+
+    // Fallback: si las columnas nuevas no existen todavía en prod, reintentar
+    // sin ellas. Una vez corrida la migración 20260421 esto es no-op.
+    if (insertRes.error?.message?.includes("channel_code") || insertRes.error?.message?.includes("phone_last4")) {
+      delete insertRow.channel_code;
+      delete insertRow.phone_last4;
+      insertRes = await supabase.from("bookings").insert(insertRow as never).select("id").single();
+    }
+
+    const { data, error } = insertRes;
 
     if (error) {
       // 23505 = unique_violation. If client sent a sourceUid that already
@@ -161,7 +192,12 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    return NextResponse.json({ ok: true, id: bookingId });
+    return NextResponse.json({
+      ok: true,
+      id: bookingId,
+      channelCode,       // para que el UI muestre el codigo generado
+      phoneLast4,
+    });
   } catch (err) {
     return NextResponse.json(
       { error: err instanceof Error ? err.message : String(err) },
@@ -270,14 +306,12 @@ export async function PATCH(req: NextRequest) {
 
     if (error) return NextResponse.json({ error: error.message }, { status: 500 });
 
-    // If status changed to cancelled, revoke associated PINs
+    // Cuando se cancela, limpiamos todo lo asociado: check-in records,
+    // access_pins (y en el futuro el PIN físico en TTLock). Un booking
+    // cancelado no debe tener rastros operativos — el huésped ya no puede
+    // ni hacer check-in ni abrir la puerta.
     if (patch.status === "cancelled") {
-      try {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        await (supabaseAdmin.from("access_pins") as any)
-          .update({ status: "revoked" })
-          .eq("booking_id", bookingId);
-      } catch {}
+      await cascadeCancelBooking(bookingId);
     }
 
     return NextResponse.json({ ok: true });
@@ -302,15 +336,10 @@ export async function DELETE(req: NextRequest) {
   const bookingId = req.nextUrl.searchParams.get("bookingId");
   if (!bookingId) return NextResponse.json({ error: "bookingId required" }, { status: 400 });
 
-  // Delete associated PINs first (before the booking disappears)
-  try {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    await (supabaseAdmin.from("access_pins") as any)
-      .delete()
-      .eq("booking_id", bookingId);
-  } catch (pinErr) {
-    console.error("[bookings/DELETE] PIN cleanup failed (non-fatal):", pinErr);
-  }
+  // Cleanup completo: check-in records + access_pins (y TTLock físico
+  // cuando se implemente). Corre ANTES de borrar el booking para que las
+  // rows dependientes salgan primero.
+  await cascadeCancelBooking(bookingId);
 
   const { error, count } = await supabase
     .from("bookings")
@@ -339,7 +368,7 @@ export async function GET() {
 
   const { data: bookings } = await supabase
     .from("bookings")
-    .select("id, property_id, guest_name, guest_phone, guest_doc, guest_nationality, check_in, check_out, status, source, booking_url, source_uid, total_price, num_guests, note")
+    .select("id, property_id, guest_name, guest_phone, guest_doc, guest_nationality, check_in, check_out, status, source, booking_url, source_uid, total_price, num_guests, note, channel_code, phone_last4")
     .in("property_id", (props as { id: string }[]).map((p) => p.id))
     .neq("status", "cancelled");
 
@@ -384,6 +413,8 @@ export async function GET() {
           totalPrice: b.total_price ?? 0,
           numGuests: b.num_guests ?? 1,
           note: b.note ?? null,
+          channelCode: b.channel_code ?? null,
+          phoneLast4: b.phone_last4 ?? null,
         })),
     };
   });

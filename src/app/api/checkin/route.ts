@@ -128,13 +128,31 @@ async function fetchRecordForGuest(
     .eq("id", id)
     .maybeSingle<CheckinRow>();
   if (!data) return null;
-  if (
-    data.guest_last_name !== lastName.toLowerCase().trim() ||
-    data.last_four_digits !== last4.trim()
-  ) {
-    return null;
+
+  // El último dígito siempre debe coincidir — es la credencial primaria.
+  if (data.last_four_digits !== last4.trim()) return null;
+
+  const credLC = lastName.toLowerCase().trim();
+
+  // Opción A: el parámetro enviado es el apellido real y matchea
+  // (flujo legacy de links con apellido conocido).
+  if (data.guest_last_name === credLC) return data;
+
+  // Opción B: el parámetro es el código de reserva del canal (Airbnb
+  // HMXXXXXXXX, reservas directas SHXXXXXXXX). Validamos contra el
+  // channel_code del booking vinculado. Esto es lo que usa el flow v=2
+  // donde el huésped nunca escribió un apellido.
+  if (data.booking_ref) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- no generated DB types yet
+    const { data: booking } = await (supabaseAdmin.from("bookings") as any)
+      .select("channel_code")
+      .eq("id", data.booking_ref)
+      .maybeSingle();
+    const bookingCode = String((booking as { channel_code?: string | null } | null)?.channel_code ?? "").toLowerCase().trim();
+    if (bookingCode && bookingCode === credLC) return data;
   }
-  return data;
+
+  return null;
 }
 
 function bad(status: number, error: string) {

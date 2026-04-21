@@ -18,7 +18,7 @@
  * transitions (ID validation, electricity payment, access granted).
  */
 
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, useRef } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -32,7 +32,7 @@ import {
   LogIn, Plus, Copy, Check, Eye, EyeOff, Wifi, Zap, ShieldCheck, ShieldX,
   RefreshCw, Trash2, ExternalLink, User, Calendar, Building2, Phone,
   CheckCircle2, Clock, XCircle, AlertTriangle, QrCode, Download,
-  Sparkles, Globe, Repeat, Search,
+  Sparkles, Globe, Repeat, Search, MessageCircle,
 } from "lucide-react";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -404,6 +404,11 @@ export default function CheckInsPanel() {
   const [syncStats, setSyncStats] = useState({ direct: 0, ical: 0 });
   const [showWifiPass, setShowWifiPass] = useState({} as Record<string, boolean>);
 
+  // Cache bookingId → channel_code para que el boton WhatsApp arme la URL
+  // /checkin?code=HMXXXXXXXX (code real del canal) en vez del UUID del
+  // booking. Se popula desde /api/bookings al cargar y tras cada sync.
+  const [bookingCodeMap, setBookingCodeMap] = useState(new Map<string, string>());
+
   // Search & filter
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState("all" as "all" | "today" | "review" | "granted" | "pending");
@@ -523,7 +528,14 @@ export default function CheckInsPanel() {
   // bookingRef-based dedup on the client avoids the backend needing to know
   // about direct_bookings / ical_configs storage conventions.
 
+  // Lock para prevenir corridas concurrentes de autoSync (desde el effect,
+  // el boton, o cualquier otra ruta). Si ya hay una en curso, la segunda
+  // no hace nada — evita double-insert bajo cualquier circunstancia.
+  const syncInFlight = useRef(false);
+
   const autoSync = useCallback(async (quiet = false) => {
+    if (syncInFlight.current) return { directCount: 0, icalCount: 0 };
+    syncInFlight.current = true;
     if (!quiet) setSyncing(true);
 
     try {
@@ -636,6 +648,119 @@ export default function CheckInsPanel() {
         }
       } catch {}
 
+      // ── Source 3: bookings en BD (via /api/bookings) ──────────────────────
+      // La fuente de verdad está en Postgres, no en localStorage. Esta fuente
+      // cubre el caso donde el iCal se importó antes de que este panel se
+      // abriera (los datos viven en bookings pero no en stayhost_ical_configs).
+      let dbCount = 0;
+      try {
+        const res = await fetch("/api/bookings", { cache: "no-store" });
+        if (res.ok) {
+          const { properties: propsWithBookings } = await res.json() as {
+            properties: Array<{
+              id: string; name: string; address: string; channel: string;
+              bookings: Array<{
+                id: string; guest: string; phone: string | null; phone4: string | null;
+                start: string; end: string; status: string; channel: string;
+                bookingUrl: string | null; channelCode: string | null; phoneLast4: string | null;
+                sourceUid: string | null;
+              }>;
+            }>;
+          };
+          const wifi = JSON.parse(localStorage.getItem("stayhost_wifi_configs") ?? "[]") as WifiConfig[];
+
+          // Populamos el mapa bookingId → channel_code para el boton
+          // WhatsApp. Sin esto, shareWhatsApp usa el UUID del booking como
+          // si fuera el code, lo cual genera URLs tipo /checkin?code=<uuid>
+          // que confunden al huesped.
+          const newCodeMap = new Map<string, string>();
+          for (const p of propsWithBookings ?? []) {
+            for (const b of p.bookings ?? []) {
+              if (b.channelCode) newCodeMap.set(b.id, b.channelCode);
+            }
+          }
+          setBookingCodeMap(newCodeMap);
+
+          // Dedupe reforzado: además de usedRefs, construimos un índice por
+          // (propertyId + start + end) desde los apiRecords. Cubre el caso
+          // donde Source 2 (legacy ical-localStorage) creó el record con
+          // bookingRef = "ical-<uid>" y ahora Source 3 lo revisita con la
+          // UUID de bookings. El ref no matchea pero las fechas sí → skip.
+          const existingByPropDates = new Set(
+            apiRecords
+              .filter(r => r.propertyId && r.checkin && r.checkout)
+              .map(r => `${r.propertyId}|${r.checkin}|${r.checkout}`)
+          );
+
+          for (const prop of propsWithBookings ?? []) {
+            const w = wifi.find(x => x.propertyId === prop.id);
+            const propInfo = properties.find(p => p.id === prop.id);
+            const ec = getElecConfig(prop.id, freshElecConfigs);
+
+            for (const b of prop.bookings ?? []) {
+              if (b.status !== "confirmed") continue;
+
+              // Dedupe por UUID directo (Source 3 previa)
+              if (usedRefs.has(b.id)) continue;
+
+              // Dedupe por ref legacy "ical-<uid>" (Source 2 previa)
+              if (b.sourceUid && usedRefs.has(`ical-${b.sourceUid}`)) continue;
+
+              // Dedupe por fechas+propiedad (cubre otros formatos de ref)
+              if (existingByPropDates.has(`${prop.id}|${b.start}|${b.end}`)) continue;
+
+              // Preferimos phone_last4 del iCal (Airbnb) si existe; sino de
+              // guest_phone. Sin 4 dígitos no podemos sincronizar (el wizard
+              // actual los requiere como auth).
+              const last4 = b.phoneLast4 || b.phone4 || "";
+              const isMissingPhone = last4.length !== 4;
+
+              const nights = diffNights(b.start, b.end);
+              if (nights <= 0) continue;
+
+              const nameParts = (b.guest || "").trim().split(/\s+/);
+              const firstName = nameParts[0] ?? "";
+              const lastNameFromGuest = nameParts.length > 1 ? nameParts.slice(1).join(" ") : "";
+              // Para Airbnb nunca viene el apellido (SUMMARY = "Reserved").
+              // Usamos el channel_code como pseudo-apellido INTERNO: el auth
+              // del backend sigue siendo (lastName + last4) pero el huesped
+              // nunca lo escribe — el /checkin landing lo valida con codigo
+              // +4digitos y redirige con el flag v=2 que skip-ea la pantalla
+              // de login. Para legacy links sin v=2 el flujo sigue igual.
+              const channelCode = b.channelCode ?? null;
+              const lastNameForAuth =
+                lastNameFromGuest ||
+                (channelCode ? channelCode : "");  // fallback al codigo
+              const isMissingName = !lastNameForAuth;
+              const missingData = isMissingPhone || isMissingName;
+
+              const elec = ec.enabled ? calcElectricity(nights, ec.rate, ec.paypal) : 0;
+              const sourceKind: "auto_ical" | "auto_direct" =
+                b.channel === "direct" || b.channel === "manual" ? "auto_direct" : "auto_ical";
+
+              candidates.push(buildCandidate({
+                source: sourceKind,
+                channel: (b.channel as "airbnb" | "vrbo" | "booking" | "direct") ?? "direct",
+                guestName: firstName || b.guest || "Huésped",
+                guestLastName: lastNameForAuth,  // apellido real o code
+                lastFourDigits: isMissingPhone ? "0000" : last4,
+                checkin: b.start, checkout: b.end, nights,
+                propertyId: prop.id, propertyName: propInfo?.name ?? prop.name,
+                propertyAddress: propInfo?.address, propertyImage: propInfo?.image,
+                missingData,
+                wifiSsid: w?.ssid, wifiPassword: w?.password,
+                electricityEnabled: ec.enabled, electricityTotal: elec,
+                bookingRef: b.id,        // UUID de bookings → sincroniza 1:1
+              }));
+              usedRefs.add(b.id);
+              dbCount++;
+            }
+          }
+        }
+      } catch (err) {
+        console.warn("[CheckInsPanel] bookings sync skipped:", err);
+      }
+
       if (candidates.length > 0) {
         await apiCheckin("upsertBatch", { records: candidates });
         await refreshRecords();
@@ -644,21 +769,32 @@ export default function CheckInsPanel() {
         setRecords(apiRecords.map(r => fromApi(r, upsellsByProperty)));
       }
 
-      setSyncStats(s => ({ direct: s.direct + directCount, ical: s.ical + icalCount }));
-      return { directCount, icalCount };
+      setSyncStats(s => ({
+        direct: s.direct + directCount,
+        ical: s.ical + icalCount + dbCount,
+      }));
+      return { directCount, icalCount: icalCount + dbCount };
     } catch (err) {
       console.error("[CheckInsPanel] autoSync failed:", err);
       return { directCount: 0, icalCount: 0 };
     } finally {
       if (!quiet) setSyncing(false);
+      syncInFlight.current = false;
     }
   }, [buildCandidate, properties, refreshRecords, upsellsByProperty]);
 
-  // Run auto-sync on mount (quiet)
+  // Run auto-sync on mount (quiet). OJO: el efecto se disparaba en cada
+  // cambio de `properties` (que arranca [] y luego se completa con la API),
+  // ejecutando autoSync 2 veces en paralelo y metiendo duplicados en la BD.
+  // Ahora corre una sola vez cuando properties está cargado y usamos un
+  // ref-guard para evitar re-entradas.
+  const hasAutoSynced = useRef(false);
   useEffect(() => {
-    if (properties.length >= 0) void autoSync(true);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [properties]);
+    if (hasAutoSynced.current) return;
+    if (properties.length === 0) return;  // esperar a que las props carguen
+    hasAutoSynced.current = true;
+    void autoSync(true);
+  }, [properties, autoSync]);
 
   // ─── Manual create ──────────────────────────────────────────────────────────
 
@@ -753,6 +889,53 @@ export default function CheckInsPanel() {
     setTimeout(() => setCopiedId(null), 2000);
   }
 
+  // Compartir check-in por WhatsApp. Arma el mensaje con la URL genérica
+  // v2 (código pre-rellenado) y abre WhatsApp — si tenemos el número
+  // completo va directo al chat, sino abre el share nativo (Web Share API)
+  // o copia al portapapeles como fallback.
+  function shareWhatsApp(r: LocalCheckIn) {
+    const origin = typeof window !== "undefined" ? window.location.origin : "";
+    // Preferir el channel_code real del booking vinculado (HMXXXXXXXX de
+    // Airbnb o D-XXXXXXXX de reserva directa). Si no hay match en el
+    // mapa (caso raro: booking sin code), no pre-rellenamos nada y el
+    // huésped escribe manualmente.
+    const channelCode = r.bookingRef ? bookingCodeMap.get(r.bookingRef) : undefined;
+    const genericUrl = channelCode
+      ? `${origin}/checkin?code=${encodeURIComponent(channelCode)}`
+      : `${origin}/checkin`;
+
+    const lines = [
+      `¡Hola${r.guestName ? ` ${r.guestName}` : ""}! 👋`,
+      ``,
+      `Te doy la bienvenida a *${r.propertyName}*.`,
+      ``,
+      `Para hacer tu check-in online, entrá a:`,
+      genericUrl,
+      ``,
+      channelCode ? `Tu código de reserva ya viene cargado en el link.` : `Usá el código de reserva que recibiste por email.`,
+      `Vas a necesitar los últimos 4 dígitos de tu teléfono.`,
+      ``,
+      `¡Cualquier duda, me avisás!`,
+    ];
+    const text = lines.join("\n");
+
+    // Intento 1: Web Share API (iOS Safari / Android Chrome) — abre el
+    // sheet nativo donde el host elige WhatsApp del contacto.
+    type NavigatorWithShare = Navigator & { share?: (data: ShareData) => Promise<void> };
+    const nav = navigator as NavigatorWithShare;
+    if (typeof window !== "undefined" && nav.share) {
+      nav.share({ title: "Check-in StayHost", text }).catch(() => {});
+      return;
+    }
+
+    // Intento 2: wa.me sin número — abre WhatsApp Web con el mensaje
+    // pre-cargado; el host elige el contacto manualmente.
+    window.open(`https://wa.me/?text=${encodeURIComponent(text)}`, "_blank");
+
+    // Paralelo: copiar al portapapeles por si WhatsApp Web falla.
+    navigator.clipboard.writeText(text).catch(() => {});
+  }
+
   // ─── WiFi ─────────────────────────────────────────────────────────────────
 
   function saveWifi() {
@@ -764,18 +947,40 @@ export default function CheckInsPanel() {
   }
 
   // ─── Stats ────────────────────────────────────────────────────────────────
-
-  const stats = {
-    total: records.length,
-    validated: records.filter(r => r.accessGranted).length,
-    idReview: records.filter(r => r.idStatus === "uploaded").length,
-    autoGen: records.filter(r => r.source !== "manual").length,
-  };
+  // NOTA: stats se calcula sobre dedupedRecords (definido abajo) para que los
+  // contadores no cuenten duplicados de BD. Lo declaramos después del dedup.
 
   // ─── Filter logic ─────────────────────────────────────────────────────────
 
+  // Dedup de visualizacion: si hay duplicados en BD (de corridas previas con
+  // race condition), quedamos con uno solo por (propiedad + checkin + checkout).
+  // Preferimos el que ya tiene accessGranted o idStatus != pending para no
+  // perder el trabajo hecho en el huesped.
+  const dedupedRecords = (() => {
+    const byKey = new Map<string, LocalCheckIn>();
+    for (const r of records) {
+      const key = `${r.propertyId}|${r.checkin}|${r.checkout}|${r.guestLastName}`;
+      const prev = byKey.get(key);
+      if (!prev) { byKey.set(key, r); continue; }
+      // Score: mayor es mejor (más "progreso" del huésped)
+      const score = (x: LocalCheckIn) =>
+        (x.accessGranted ? 10 : 0) +
+        (x.idStatus === "validated" ? 4 : x.idStatus === "uploaded" ? 2 : 0) +
+        (x.electricityPaid ? 1 : 0);
+      if (score(r) > score(prev)) byKey.set(key, r);
+    }
+    return Array.from(byKey.values());
+  })();
+
+  const stats = {
+    total: dedupedRecords.length,
+    validated: dedupedRecords.filter(r => r.accessGranted).length,
+    idReview: dedupedRecords.filter(r => r.idStatus === "uploaded").length,
+    autoGen: dedupedRecords.filter(r => r.source !== "manual").length,
+  };
+
   const today = new Date().toISOString().slice(0, 10);
-  const filtered = records.filter(r => {
+  const filtered = dedupedRecords.filter(r => {
     if (search && !`${r.guestName} ${r.guestLastName} ${r.propertyName}`.toLowerCase().includes(search.toLowerCase())) return false;
     if (filter === "today") return r.checkin === today || r.checkout === today;
     if (filter === "review") return r.idStatus === "uploaded";
@@ -1083,6 +1288,15 @@ export default function CheckInsPanel() {
                         ? <><Check className="h-3.5 w-3.5 text-emerald-500" />Copiado</>
                         : <><Copy className="h-3.5 w-3.5" />Copiar enlace</>
                       }
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => shareWhatsApp(r)}
+                      disabled={r.missingData}
+                      className="flex-1 h-8 gap-1.5 text-xs text-emerald-700 hover:text-emerald-800 hover:bg-emerald-50"
+                    >
+                      <MessageCircle className="h-3.5 w-3.5" />WhatsApp
                     </Button>
                     <Button variant="ghost" size="sm" asChild disabled={r.missingData} className="flex-1 h-8 gap-1.5 text-xs text-muted-foreground hover:text-foreground">
                       <a href={r.link || buildLink(r.id, r.encodedData)} target={r.missingData ? "_self" : "_blank"} rel="noopener noreferrer" onClick={e => r.missingData && e.preventDefault()}>

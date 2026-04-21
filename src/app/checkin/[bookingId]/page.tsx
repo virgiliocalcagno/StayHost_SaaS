@@ -15,7 +15,7 @@
  * Steps: 0 Bienvenida → 1 Verificación → 2 Documento → 3 Extras → 4 Electricidad → 5 Acceso
  */
 
-import { useState, useRef, use, Suspense } from "react";
+import { useState, useRef, use, Suspense, useEffect } from "react";
 import { useSearchParams } from "next/navigation";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -67,13 +67,24 @@ function CheckInInner({ bookingId }: { bookingId: string }) {
   const sp = useSearchParams();
   const booking = decodeBooking(sp.get("d") ?? "");
 
+  // v=2 indica que el huésped viene del landing genérico /checkin donde ya
+  // validó (código + últimos 4 dígitos). No tiene que pasar por el paso 1
+  // (apellido+4dig) — usamos el código como pseudo-apellido interno para
+  // que el backend autentique sin pedir nada más.
+  const isV2 = sp.get("v") === "2";
+
   const [step, setStep] = useState<Step>(0);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
 
-  // Step 1
-  const [lastName, setLastName] = useState("");
-  const [last4, setLast4] = useState("");
+  // Step 1 — precargado desde el landing si viene v=2
+  const [lastName, setLastName] = useState(() => (isV2 ? (booking?.l ?? "") : ""));
+  const [last4, setLast4] = useState(() => (isV2 ? (booking?.d4 ?? "") : ""));
+
+  // v=2 → saltamos bienvenida y auth, vamos directo a subir documento
+  useEffect(() => {
+    if (isV2 && booking) setStep(2);
+  }, [isV2, booking]);
 
   // Step 2
   const [idPreview, setIdPreview] = useState<string | null>(null);
@@ -104,13 +115,47 @@ function CheckInInner({ bookingId }: { bookingId: string }) {
   }
 
   // ── ID upload ───────────────────────────────────────────────────────────────
-  function handleFile(e: React.ChangeEvent<HTMLInputElement>) {
+
+  // Redimensiona y recomprime la foto en el navegador antes de enviarla.
+  // Vercel corta bodies >4.5MB; una foto de iPhone (4-8MB) sale siempre
+  // rechazada. 1600px/quality 0.72 deja el documento legible en ~200-500KB.
+  async function compressImage(file: File): Promise<string> {
+    const dataUrl: string = await new Promise((res, rej) => {
+      const r = new FileReader();
+      r.onload = () => res(r.result as string);
+      r.onerror = () => rej(new Error("read"));
+      r.readAsDataURL(file);
+    });
+    const img: HTMLImageElement = await new Promise((res, rej) => {
+      const i = new Image();
+      i.onload = () => res(i);
+      i.onerror = () => rej(new Error("decode"));
+      i.src = dataUrl;
+    });
+    const MAX = 1600;
+    const scale = Math.min(1, MAX / Math.max(img.width, img.height));
+    const w = Math.round(img.width * scale);
+    const h = Math.round(img.height * scale);
+    const canvas = document.createElement("canvas");
+    canvas.width = w; canvas.height = h;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return dataUrl;
+    ctx.drawImage(img, 0, 0, w, h);
+    return canvas.toDataURL("image/jpeg", 0.72);
+  }
+
+  async function handleFile(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
     if (!file) return;
-    if (file.size > 8 * 1024 * 1024) { setError("Imagen demasiado grande (máx 8MB)."); return; }
-    const r = new FileReader();
-    r.onload = () => { setIdBase64(r.result as string); setIdPreview(r.result as string); setError(""); };
-    r.readAsDataURL(file);
+    if (file.size > 20 * 1024 * 1024) { setError("Imagen demasiado grande (máx 20MB)."); return; }
+    try {
+      const compressed = await compressImage(file);
+      setIdBase64(compressed);
+      setIdPreview(compressed);
+      setError("");
+    } catch {
+      setError("No pudimos procesar la imagen. Probá otra foto.");
+    }
   }
 
   async function handleUploadId() {
@@ -119,9 +164,22 @@ function CheckInInner({ bookingId }: { bookingId: string }) {
     try {
       // Pasamos el soft token (lastName + last4) porque el endpoint lo exige
       // para aceptar uploads desde el flujo de huésped sin sesión.
-      await fetch("/api/checkin", { method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "uploadId", id: bookingId, lastName, last4, idPhotoBase64: idBase64 }) });
-    } catch {}
+      const res = await fetch("/api/checkin", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "uploadId", id: bookingId, lastName, last4, idPhotoBase64: idBase64 }),
+      });
+      if (!res.ok) {
+        const msg = await res.json().catch(() => ({ error: "" }));
+        setError(msg.error || "No pudimos subir la foto. Intentá de nuevo.");
+        setLoading(false);
+        return;
+      }
+    } catch {
+      setError("Error de conexión. Revisá tu internet e intentá de nuevo.");
+      setLoading(false);
+      return;
+    }
     setLoading(false); setError("");
     setStep(upsells.length > 0 ? 3 : (booking?.ee !== false ? 4 : 5));
   }
