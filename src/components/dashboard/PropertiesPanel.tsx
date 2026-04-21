@@ -153,6 +153,7 @@ interface Property {
   checkInTime?: string;
   checkOutTime?: string;
   ttlockLockId?: string;
+  icalToken?: string;          // capability secret para /api/ical/export
 }
 
 // ─── Mock Data ──────────────────────────────────────────────────────────────
@@ -590,6 +591,7 @@ export default function PropertiesPanel() {
           checkInTime: p.check_in_time ?? "14:00",
           checkOutTime: p.check_out_time ?? "12:00",
           ttlockLockId: p.ttlock_lock_id ?? undefined,
+          icalToken: p.ical_token ?? undefined,
         }));
         setProperties(fromDb);
       })
@@ -2115,18 +2117,22 @@ export default function PropertiesPanel() {
                                 <Badge variant="outline" className="text-[9px] border-emerald-200 text-emerald-600 font-medium">Recomendado</Badge>
                               </div>
                               <div className="flex gap-2">
-                                <Input 
-                                  readOnly 
-                                  value={`${typeof window !== "undefined" ? window.location.origin : ""}/api/ical/export?id=${editingProperty.id}&type=bookings`}
+                                <Input
+                                  readOnly
+                                  value={editingProperty.icalToken
+                                    ? `${typeof window !== "undefined" ? window.location.origin : ""}/api/ical/export?id=${editingProperty.id}&type=bookings&token=${editingProperty.icalToken}`
+                                    : "Guardá la propiedad primero para generar el enlace"}
                                   className="text-xs bg-white dark:bg-background border-emerald-200 font-mono h-9"
                                   onClick={(e) => (e.target as HTMLInputElement).select()}
                                 />
-                                <Button 
-                                  type="button" 
+                                <Button
+                                  type="button"
                                   size="sm"
+                                  disabled={!editingProperty.icalToken}
                                   className="gradient-gold text-primary-foreground h-9 px-3 gap-1.5 shrink-0"
                                   onClick={() => {
-                                    const url = `${window.location.origin}/api/ical/export?id=${editingProperty.id}&type=bookings`;
+                                    if (!editingProperty.icalToken) return;
+                                    const url = `${window.location.origin}/api/ical/export?id=${editingProperty.id}&type=bookings&token=${editingProperty.icalToken}`;
                                     navigator.clipboard.writeText(url);
                                     toast.success("Enlace de Reservas copiado");
                                   }}
@@ -2146,19 +2152,23 @@ export default function PropertiesPanel() {
                                 </Label>
                               </div>
                               <div className="flex gap-2">
-                                <Input 
-                                  readOnly 
-                                  value={`${typeof window !== "undefined" ? window.location.origin : ""}/api/ical/export?id=${editingProperty.id}&type=tasks`}
+                                <Input
+                                  readOnly
+                                  value={editingProperty.icalToken
+                                    ? `${typeof window !== "undefined" ? window.location.origin : ""}/api/ical/export?id=${editingProperty.id}&type=tasks&token=${editingProperty.icalToken}`
+                                    : "Guardá la propiedad primero para generar el enlace"}
                                   className="text-xs bg-white dark:bg-background border-emerald-200 font-mono h-9"
                                   onClick={(e) => (e.target as HTMLInputElement).select()}
                                 />
-                                <Button 
-                                  type="button" 
+                                <Button
+                                  type="button"
                                   size="sm"
                                   variant="outline"
+                                  disabled={!editingProperty.icalToken}
                                   className="h-9 px-3 gap-1.5 shrink-0 border-emerald-200 hover:bg-emerald-50 text-emerald-700"
                                   onClick={() => {
-                                    const url = `${window.location.origin}/api/ical/export?id=${editingProperty.id}&type=tasks`;
+                                    if (!editingProperty.icalToken) return;
+                                    const url = `${window.location.origin}/api/ical/export?id=${editingProperty.id}&type=tasks&token=${editingProperty.icalToken}`;
                                     navigator.clipboard.writeText(url);
                                     toast.success("Enlace de Limpiezas copiado");
                                   }}
