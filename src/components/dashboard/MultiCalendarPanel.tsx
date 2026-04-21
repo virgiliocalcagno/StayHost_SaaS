@@ -843,6 +843,26 @@ export default function MultiCalendarPanel() {
                     const isOutRight = endD.getTime() > viewEndMs;
 
                     const isBlock = booking.channel === "block" || booking.status === "blocked";
+                    // Distinguir bloqueos manuales (creados en StayHost) vs
+                    // importados de un canal externo (Airbnb/VRBO/Booking iCal):
+                    //   - manual: source_uid empieza con "manual-"
+                    //   - importado: source_uid contiene "@" (UID del feed)
+                    // Esto permite al usuario saber de un vistazo si un bloqueo
+                    // lo puede editar/borrar en StayHost o si tiene que ir al
+                    // canal donde lo creo originalmente.
+                    const sourceUid = (booking as { sourceUid?: string | null }).sourceUid;
+                    const isManualBlock = isBlock && typeof sourceUid === "string" && sourceUid.startsWith("manual-");
+                    // Para bloqueos importados, derivamos el canal del UID del feed:
+                    // ej. "...@airbnb.com" → Airbnb. Si no podemos determinar, "iCal".
+                    const blockOrigin: string = !isBlock || isManualBlock
+                      ? ""
+                      : typeof sourceUid === "string" && sourceUid.includes("airbnb")
+                        ? "Airbnb"
+                        : typeof sourceUid === "string" && sourceUid.includes("vrbo")
+                          ? "VRBO"
+                          : typeof sourceUid === "string" && sourceUid.includes("booking")
+                            ? "Booking"
+                            : "iCal";
 
                     return (
                       <Popover key={booking.id}>
@@ -851,7 +871,11 @@ export default function MultiCalendarPanel() {
                             className={cn(
                               "absolute top-1/2 -translate-y-1/2 h-8 flex items-center px-2 rounded-lg text-[10px] font-black shadow-soft cursor-pointer hover:brightness-110 transition-all border select-none",
                               isBlock
-                                ? "bg-slate-400 text-white border-slate-300 bg-[repeating-linear-gradient(45deg,#64748b,#64748b_6px,#94a3b8_6px,#94a3b8_12px)]"
+                                ? isManualBlock
+                                  // Manual StayHost: rayas amarillo oscuro + gris claro
+                                  ? "text-amber-950 border-amber-700/50 bg-[repeating-linear-gradient(45deg,#a16207,#a16207_6px,#cbd5e1_6px,#cbd5e1_12px)]"
+                                  // Importado del canal: rayas gris oscuro + gris claro (como antes)
+                                  : "text-white border-slate-300 bg-[repeating-linear-gradient(45deg,#64748b,#64748b_6px,#94a3b8_6px,#94a3b8_12px)]"
                                 : booking.status === "confirmed"
                                   ? (booking.channel === "airbnb" ? "bg-rose-500 text-white border-white/20" : booking.channel === "booking" ? "bg-blue-600 text-white border-white/20" : booking.channel === "vrbo" ? "bg-indigo-500 text-white border-white/20" : "bg-emerald-500 text-white border-white/20")
                                   : "bg-amber-500 text-amber-950 border-amber-400",
@@ -861,7 +885,11 @@ export default function MultiCalendarPanel() {
                             style={{ left: `calc(${leftPct}%)`, width: `calc(${widthPct}%)`, zIndex: 5 }}
                           >
                             {!isBlock && <ChannelIcon channel={booking.channel || "direct"} className="mr-1.5 w-3.5 h-3.5 bg-white/30 border-none shadow-none text-[7px]" />}
-                            <span className="truncate">{isBlock ? "🔒 Bloqueado" : booking.guest}</span>
+                            <span className="truncate">
+                              {isBlock
+                                ? (isManualBlock ? "🔒 Bloqueo manual" : `🔒 Bloqueo ${blockOrigin}`)
+                                : booking.guest}
+                            </span>
                           </div>
                         </PopoverTrigger>
                         <PopoverPrimitive.Portal>
@@ -1007,7 +1035,21 @@ export default function MultiCalendarPanel() {
         </div>
         <div className="flex items-center gap-1.5">
           <div className="w-2 h-2 rounded-full bg-amber-500"></div>
-          <span>Pendiente / Bloqueo</span>
+          <span>Pendiente</span>
+        </div>
+        <div className="flex items-center gap-1.5">
+          <div
+            className="w-3 h-2 rounded-sm border border-slate-300"
+            style={{ background: "repeating-linear-gradient(45deg,#64748b 0,#64748b 2px,#94a3b8 2px,#94a3b8 4px)" }}
+          />
+          <span>Bloqueo del canal</span>
+        </div>
+        <div className="flex items-center gap-1.5">
+          <div
+            className="w-3 h-2 rounded-sm border border-amber-700/50"
+            style={{ background: "repeating-linear-gradient(45deg,#a16207 0,#a16207 2px,#cbd5e1 2px,#cbd5e1 4px)" }}
+          />
+          <span>Bloqueo manual</span>
         </div>
       </div>
       <ChargeServiceDrawer
