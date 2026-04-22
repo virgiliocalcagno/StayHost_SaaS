@@ -227,9 +227,30 @@ function fromApi(
   upsellsByProperty: (propertyId: string) => { id: string; n: string; p: number; d: string }[]
 ): LocalCheckIn {
   const upsells = upsellsByProperty(r.propertyId);
+
+  // Datos "limpios" para el payload del URL. Preferimos:
+  // - name: ocrName (si el doc fue escaneado) > guestName (si no es placeholder)
+  //         > fallback "Huésped"
+  // - lastName (soft-token): channelCode real del booking > guestLastName
+  //         (con filtro para evitar basura tipo "confirmada" de records viejos)
+  const nonCodeWords = new Set(["confirmada", "confirmado", "reserva", "huesped", "huésped"]);
+  const cleanGuestName = (() => {
+    if (r.ocrName && r.ocrName.trim()) return r.ocrName.trim();
+    const n = (r.guestName ?? "").trim();
+    const nLow = n.toLowerCase();
+    if (!n || nLow === "huésped" || nLow === "huesped" || /^reserva( confirmada)?$/i.test(n)) return "Huésped";
+    return n;
+  })();
+  const cleanLastName = (() => {
+    if (r.channelCode && r.channelCode.trim()) return r.channelCode.toLowerCase().trim();
+    const l = (r.guestLastName ?? "").trim().toLowerCase();
+    if (!l || nonCodeWords.has(l)) return "";
+    return l;
+  })();
+
   const encoded = r.missingData ? "" : encodeData({
-    n: r.guestName,
-    l: r.guestLastName,
+    n: cleanGuestName,
+    l: cleanLastName,
     d4: r.lastFourDigits,
     ci: r.checkin,
     co: r.checkout,
