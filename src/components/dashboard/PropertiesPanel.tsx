@@ -153,6 +153,7 @@ interface Property {
   checkInTime?: string;
   checkOutTime?: string;
   ttlockLockId?: string;
+  icalToken?: string;          // capability secret para /api/ical/export
 }
 
 // ─── Mock Data ──────────────────────────────────────────────────────────────
@@ -590,6 +591,7 @@ export default function PropertiesPanel() {
           checkInTime: p.check_in_time ?? "14:00",
           checkOutTime: p.check_out_time ?? "12:00",
           ttlockLockId: p.ttlock_lock_id ?? undefined,
+          icalToken: p.ical_token ?? undefined,
         }));
         setProperties(fromDb);
       })
@@ -707,12 +709,35 @@ export default function PropertiesPanel() {
       });
       if (syncRes.ok) {
         // Then import iCal bookings
-        await fetch("/api/ical/import", {
+        const importRes = await fetch("/api/ical/import", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           credentials: "same-origin",
           body: JSON.stringify({ propertyId: editingProperty.id }),
         });
+        const importData = await importRes.json().catch(() => null);
+        if (!importRes.ok) {
+          toast.error(
+            `iCal HTTP ${importRes.status}: ${importData?.error ?? "error desconocido"}`
+          );
+        } else if (importData) {
+          const reservas = importData.imported ?? 0;
+          const bloqueos = importData.blocksImported ?? 0;
+          if (importData.errors?.length) {
+            toast.error(
+              `iCal: ${importData.errors[0].message}` +
+              (importData.errors.length > 1 ? ` (+${importData.errors.length - 1} más)` : "")
+            );
+          } else {
+            toast.success(`Sync OK: ${reservas} reservas, ${bloqueos} bloqueos`);
+          }
+          window.dispatchEvent(new CustomEvent("stayhost:bookings-updated"));
+        } else {
+          toast.error("iCal: respuesta vacía del servidor.");
+        }
+      } else {
+        const errBody = await syncRes.json().catch(() => null);
+        toast.error(`Sync propiedad falló: ${errBody?.error ?? syncRes.status}`);
       }
     } catch {}
     const now = new Date().toISOString();
@@ -944,6 +969,53 @@ export default function PropertiesPanel() {
           setProperties((prev) => [...prev, finalProp]);
         }
         setShowModal(false);
+
+        // Auto-importar bookings/bloqueos si la propiedad tiene algún iCal
+        // configurado. Sin esto, el usuario tenía que ir al tab Canales y
+        // presionar "Sincronizar" manualmente — y aún así el calendario no
+        // se refrescaba. Ahora basta con guardar.
+        const hasIcal = !!(formData.airbnbIcal || formData.vrboIcal);
+        if (!hasIcal) {
+          toast.message("Sin iCal configurado — saltando sincronización.");
+        } else {
+          try {
+            const importRes = await fetch("/api/ical/import", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              credentials: "same-origin",
+              body: JSON.stringify({ propertyId: finalProp.id }),
+            });
+            const importData = await importRes.json().catch(() => null);
+            if (!importRes.ok) {
+              toast.error(
+                `iCal HTTP ${importRes.status}: ${importData?.error ?? "error desconocido"}`
+              );
+            } else if (importData) {
+              const reservas = importData.imported ?? 0;
+              const bloqueos = importData.blocksImported ?? 0;
+              const orphans = importData.orphansCancelled ?? 0;
+              if (importData.errors?.length) {
+                toast.error(
+                  `iCal: ${importData.errors[0].message}` +
+                  (importData.errors.length > 1 ? ` (+${importData.errors.length - 1} más)` : "")
+                );
+              } else {
+                // Siempre damos feedback — incluso 0/0 te dice que el sync
+                // corrió pero el feed no trajo nada (ej. URL inválida).
+                toast.success(
+                  `Sync OK: ${reservas} reservas, ${bloqueos} bloqueos` +
+                  (orphans > 0 ? `, ${orphans} canceladas` : "")
+                );
+              }
+              window.dispatchEvent(new CustomEvent("stayhost:bookings-updated"));
+            } else {
+              toast.error("iCal: respuesta vacía del servidor.");
+            }
+          } catch (icalErr) {
+            console.error("auto ical import failed:", icalErr);
+            toast.error(`iCal falló: ${icalErr instanceof Error ? icalErr.message : String(icalErr)}`);
+          }
+        }
       } else {
         toast.error("Error al sincronizar con el servidor. Por favor intenta de nuevo.");
       }
@@ -2045,18 +2117,22 @@ export default function PropertiesPanel() {
                                 <Badge variant="outline" className="text-[9px] border-emerald-200 text-emerald-600 font-medium">Recomendado</Badge>
                               </div>
                               <div className="flex gap-2">
-                                <Input 
-                                  readOnly 
-                                  value={`${typeof window !== "undefined" ? window.location.origin : ""}/api/ical/export?id=${editingProperty.id}&type=bookings`}
+                                <Input
+                                  readOnly
+                                  value={editingProperty.icalToken
+                                    ? `${typeof window !== "undefined" ? window.location.origin : ""}/api/ical/export?id=${editingProperty.id}&type=bookings&token=${editingProperty.icalToken}`
+                                    : "Guardá la propiedad primero para generar el enlace"}
                                   className="text-xs bg-white dark:bg-background border-emerald-200 font-mono h-9"
                                   onClick={(e) => (e.target as HTMLInputElement).select()}
                                 />
-                                <Button 
-                                  type="button" 
+                                <Button
+                                  type="button"
                                   size="sm"
+                                  disabled={!editingProperty.icalToken}
                                   className="gradient-gold text-primary-foreground h-9 px-3 gap-1.5 shrink-0"
                                   onClick={() => {
-                                    const url = `${window.location.origin}/api/ical/export?id=${editingProperty.id}&type=bookings`;
+                                    if (!editingProperty.icalToken) return;
+                                    const url = `${window.location.origin}/api/ical/export?id=${editingProperty.id}&type=bookings&token=${editingProperty.icalToken}`;
                                     navigator.clipboard.writeText(url);
                                     toast.success("Enlace de Reservas copiado");
                                   }}
@@ -2076,19 +2152,23 @@ export default function PropertiesPanel() {
                                 </Label>
                               </div>
                               <div className="flex gap-2">
-                                <Input 
-                                  readOnly 
-                                  value={`${typeof window !== "undefined" ? window.location.origin : ""}/api/ical/export?id=${editingProperty.id}&type=tasks`}
+                                <Input
+                                  readOnly
+                                  value={editingProperty.icalToken
+                                    ? `${typeof window !== "undefined" ? window.location.origin : ""}/api/ical/export?id=${editingProperty.id}&type=tasks&token=${editingProperty.icalToken}`
+                                    : "Guardá la propiedad primero para generar el enlace"}
                                   className="text-xs bg-white dark:bg-background border-emerald-200 font-mono h-9"
                                   onClick={(e) => (e.target as HTMLInputElement).select()}
                                 />
-                                <Button 
-                                  type="button" 
+                                <Button
+                                  type="button"
                                   size="sm"
                                   variant="outline"
+                                  disabled={!editingProperty.icalToken}
                                   className="h-9 px-3 gap-1.5 shrink-0 border-emerald-200 hover:bg-emerald-50 text-emerald-700"
                                   onClick={() => {
-                                    const url = `${window.location.origin}/api/ical/export?id=${editingProperty.id}&type=tasks`;
+                                    if (!editingProperty.icalToken) return;
+                                    const url = `${window.location.origin}/api/ical/export?id=${editingProperty.id}&type=tasks&token=${editingProperty.icalToken}`;
                                     navigator.clipboard.writeText(url);
                                     toast.success("Enlace de Limpiezas copiado");
                                   }}

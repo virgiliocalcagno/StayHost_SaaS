@@ -35,11 +35,14 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Textarea } from "@/components/ui/textarea";
 import { useState, useMemo, useEffect } from "react";
+import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { Sheet, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import ChargeServiceDrawer from "./ChargeServiceDrawer";
+import PropertyFullCalendarModal from "./PropertyFullCalendarModal";
+import DocumentScanButton, { type ScannedDoc } from "./DocumentScanButton";
 
 // Returns YYYY-MM-DD in the USER's local timezone — never UTC.
 // toISOString() was the old bug: past ~8pm in Chile (UTC-4), UTC already
@@ -131,11 +134,21 @@ export default function MultiCalendarPanel() {
       .catch(() => {});
   };
 
-  useEffect(() => { loadData(); }, []);
+  useEffect(() => {
+    loadData();
+    // Refrescar cuando otro panel (PropertiesPanel) importa iCals.
+    const onUpdated = () => loadData();
+    window.addEventListener("stayhost:bookings-updated", onUpdated);
+    return () => window.removeEventListener("stayhost:bookings-updated", onUpdated);
+  }, []);
 
   // Pago de servicios extras
   const [isChargeOpen, setIsChargeOpen] = useState(false);
   const [selectedBookingForCharge, setSelectedBookingForCharge] = useState<{id: string, guest: string, property: string} | null>(null);
+
+  // Modal del calendario completo de una sola propiedad (estilo Airbnb).
+  // Se abre al clickear el nombre de la propiedad en la fila.
+  const [fullCalProperty, setFullCalProperty] = useState<typeof initialMockBookings[number] | null>(null);
 
   const openChargeDrawer = (booking: { id: string; guest: string }, propertyName: string) => {
     setSelectedBookingForCharge({
@@ -167,8 +180,18 @@ export default function MultiCalendarPanel() {
         setIsBlockOpen(false);
         setBlockForm({ propertyId: "", start: "", end: "", note: "" });
         loadData();
+        // Toast persistente — el host debe ir a Airbnb a forzar el refresh
+        // o esperar 2-4h. Sin esta accion entran reservas en la ventana.
+        toast.warning(
+          "Bloqueo guardado. Acordate de entrar a Airbnb → Calendario → Importar ahora para evitar overbooking.",
+          { duration: 10000 }
+        );
+      } else {
+        toast.error(data.error ?? "No se pudo guardar el bloqueo.");
       }
-    } catch {}
+    } catch {
+      toast.error("Error de conexión al guardar el bloqueo.");
+    }
     setSavingBlock(false);
   };
 
@@ -451,6 +474,19 @@ export default function MultiCalendarPanel() {
                 <SheetDescription>Las fechas bloqueadas se sincronizan automáticamente a Airbnb y VRBO vía tu iCal propio.</SheetDescription>
               </SheetHeader>
               <div className="flex-1 overflow-y-auto px-6 py-4 space-y-4">
+                {/* Aviso critico de lag iCal — Airbnb hace pull cada 2-4h.
+                    Sin esto el host se confia y puede sufrir overbooking real. */}
+                <div className="rounded-xl border-2 border-amber-400 bg-amber-50 p-3 flex gap-2.5">
+                  <span className="text-xl leading-none mt-0.5">⚠️</span>
+                  <div className="flex-1 text-[12px] leading-snug text-amber-900">
+                    <p className="font-black mb-1">Importante — riesgo de doble reserva</p>
+                    <p className="font-medium">
+                      Airbnb puede tardar <span className="font-black">hasta 4 horas</span> en leer este bloqueo.
+                      Para evitar reservas dobles, después de guardar acá entrá a{" "}
+                      <span className="font-black">Airbnb → Calendario → tu propiedad → Importar calendario → "Importar ahora"</span>.
+                    </p>
+                  </div>
+                </div>
                 <div className="space-y-2">
                   <Label className="text-[11px] font-bold text-muted-foreground uppercase tracking-[0.05em]">Propiedad</Label>
                   <Select value={blockForm.propertyId} onValueChange={v => setBlockForm(f => ({ ...f, propertyId: v }))}>
@@ -508,10 +544,16 @@ export default function MultiCalendarPanel() {
                      </div>
                      <p className="text-[11px] text-blue-600/70 font-medium">Escanea el ID/Pasaporte para auto-completar</p>
                   </div>
-                  <Button size="sm" className="bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-[11px] font-extrabold uppercase tracking-wider flex items-center gap-2 h-9 shadow-lg shadow-blue-500/20">
-                    <Camera className="w-4 h-4" />
-                    ESCANEAR
-                  </Button>
+                  <DocumentScanButton
+                    onScanned={(doc: ScannedDoc) => {
+                      setNewBooking((prev) => ({
+                        ...prev,
+                        guest: doc.guestName ?? prev.guest,
+                        docIdentidad: doc.docNumber ?? prev.docIdentidad,
+                        nacionalidad: doc.nationality ?? prev.nacionalidad,
+                      }));
+                    }}
+                  />
                 </div>
               </div>
 
@@ -740,13 +782,19 @@ export default function MultiCalendarPanel() {
             </div>
             <div className="divide-y divide-border/40 text-[11px]">
               {properties.map(property => (
-                <div key={property.id} className="h-12 flex items-center px-4 hover:bg-primary/[0.03] transition-colors group">
+                <button
+                  type="button"
+                  key={property.id}
+                  onClick={() => setFullCalProperty(property)}
+                  className="h-12 w-full flex items-center px-4 hover:bg-primary/[0.05] transition-colors group text-left focus:outline-none focus:bg-primary/[0.06]"
+                  title="Ver calendario completo de esta propiedad"
+                >
                   <ChannelIcon channel={property.channel} className="mr-3 shrink-0" />
                   <div className="min-w-0">
                     <p className="font-bold truncate text-[11px] leading-tight group-hover:text-primary transition-colors text-foreground/90">{property.name}</p>
                     <p className="text-[9px] text-muted-foreground font-medium">Desde ${property.price}/noche</p>
                   </div>
-                </div>
+                </button>
               ))}
             </div>
           </div>
@@ -837,6 +885,26 @@ export default function MultiCalendarPanel() {
                     const isOutRight = endD.getTime() > viewEndMs;
 
                     const isBlock = booking.channel === "block" || booking.status === "blocked";
+                    // Distinguir bloqueos manuales (creados en StayHost) vs
+                    // importados de un canal externo (Airbnb/VRBO/Booking iCal):
+                    //   - manual: source_uid empieza con "manual-"
+                    //   - importado: source_uid contiene "@" (UID del feed)
+                    // Esto permite al usuario saber de un vistazo si un bloqueo
+                    // lo puede editar/borrar en StayHost o si tiene que ir al
+                    // canal donde lo creo originalmente.
+                    const sourceUid = (booking as { sourceUid?: string | null }).sourceUid;
+                    const isManualBlock = isBlock && typeof sourceUid === "string" && sourceUid.startsWith("manual-");
+                    // Para bloqueos importados, derivamos el canal del UID del feed:
+                    // ej. "...@airbnb.com" → Airbnb. Si no podemos determinar, "iCal".
+                    const blockOrigin: string = !isBlock || isManualBlock
+                      ? ""
+                      : typeof sourceUid === "string" && sourceUid.includes("airbnb")
+                        ? "Airbnb"
+                        : typeof sourceUid === "string" && sourceUid.includes("vrbo")
+                          ? "VRBO"
+                          : typeof sourceUid === "string" && sourceUid.includes("booking")
+                            ? "Booking"
+                            : "iCal";
 
                     return (
                       <Popover key={booking.id}>
@@ -845,7 +913,11 @@ export default function MultiCalendarPanel() {
                             className={cn(
                               "absolute top-1/2 -translate-y-1/2 h-8 flex items-center px-2 rounded-lg text-[10px] font-black shadow-soft cursor-pointer hover:brightness-110 transition-all border select-none",
                               isBlock
-                                ? "bg-slate-400 text-white border-slate-300 bg-[repeating-linear-gradient(45deg,#64748b,#64748b_6px,#94a3b8_6px,#94a3b8_12px)]"
+                                ? isManualBlock
+                                  // Manual StayHost: cinta de obra (amarillo señalizacion + negro)
+                                  ? "text-black border-yellow-600 bg-[repeating-linear-gradient(45deg,#facc15,#facc15_8px,#1f2937_8px,#1f2937_16px)]"
+                                  // Importado del canal: rayas gris oscuro + gris claro (como antes)
+                                  : "text-white border-slate-300 bg-[repeating-linear-gradient(45deg,#64748b,#64748b_6px,#94a3b8_6px,#94a3b8_12px)]"
                                 : booking.status === "confirmed"
                                   ? (booking.channel === "airbnb" ? "bg-rose-500 text-white border-white/20" : booking.channel === "booking" ? "bg-blue-600 text-white border-white/20" : booking.channel === "vrbo" ? "bg-indigo-500 text-white border-white/20" : "bg-emerald-500 text-white border-white/20")
                                   : "bg-amber-500 text-amber-950 border-amber-400",
@@ -855,22 +927,57 @@ export default function MultiCalendarPanel() {
                             style={{ left: `calc(${leftPct}%)`, width: `calc(${widthPct}%)`, zIndex: 5 }}
                           >
                             {!isBlock && <ChannelIcon channel={booking.channel || "direct"} className="mr-1.5 w-3.5 h-3.5 bg-white/30 border-none shadow-none text-[7px]" />}
-                            <span className="truncate">{isBlock ? "🔒 Bloqueado" : booking.guest}</span>
+                            <span className="truncate">
+                              {isBlock
+                                ? (isManualBlock ? "🔒 Bloqueo manual" : `🔒 Bloqueo ${blockOrigin}`)
+                                : booking.guest}
+                            </span>
                           </div>
                         </PopoverTrigger>
                         <PopoverPrimitive.Portal>
                           <PopoverContent className="w-64 p-3 rounded-xl bg-card border border-border/50 text-sm shadow-2xl z-[100]" sideOffset={5}>
-                            <div className="flex items-start justify-between mb-2">
-                            <div className="flex items-center gap-2">
-                              <ChannelIcon channel={booking.channel} />
-                              <span className="font-bold text-foreground capitalize">{booking.channel}</span>
-                            </div>
-                            <span className={cn("text-[10px] font-black px-2 py-0.5 rounded-full uppercase tracking-wider", booking.status === "confirmed" ? "bg-emerald-100 text-emerald-700" : "bg-amber-100 text-amber-700")}>
-                              {booking.status}
-                            </span>
-                          </div>
-                          <h4 className="font-black text-base">{booking.guest}</h4>
-                          <p className="text-xs text-muted-foreground mb-3">{property.name}</p>
+                          {isBlock ? (
+                            <>
+                              {/* Banner que distingue origen del bloqueo: el host
+                                  necesita saber si lo edita aca o en el canal */}
+                              <div className={cn(
+                                "rounded-lg p-2 mb-3 border-2 flex items-center gap-2",
+                                isManualBlock
+                                  ? "bg-yellow-100 border-yellow-500 text-yellow-900"
+                                  : "bg-slate-100 border-slate-400 text-slate-800"
+                              )}>
+                                <span className="text-lg">🔒</span>
+                                <div className="flex-1 min-w-0">
+                                  <p className="text-[10px] uppercase tracking-wider font-black opacity-70">
+                                    {isManualBlock ? "Bloqueo creado en StayHost" : `Bloqueo importado de ${blockOrigin}`}
+                                  </p>
+                                  <p className="font-black text-sm leading-tight">
+                                    {isManualBlock ? "Bloqueo manual" : `Bloqueo ${blockOrigin}`}
+                                  </p>
+                                </div>
+                              </div>
+                              <p className="text-xs text-muted-foreground mb-3">{property.name}</p>
+                              {!isManualBlock && (
+                                <p className="text-[10px] text-muted-foreground mb-3 italic leading-snug">
+                                  Para editarlo o quitarlo, hacelo desde {blockOrigin}. Aca solo se sincroniza.
+                                </p>
+                              )}
+                            </>
+                          ) : (
+                            <>
+                              <div className="flex items-start justify-between mb-2">
+                                <div className="flex items-center gap-2">
+                                  <ChannelIcon channel={booking.channel} />
+                                  <span className="font-bold text-foreground capitalize">{booking.channel}</span>
+                                </div>
+                                <span className={cn("text-[10px] font-black px-2 py-0.5 rounded-full uppercase tracking-wider", booking.status === "confirmed" ? "bg-emerald-100 text-emerald-700" : "bg-amber-100 text-amber-700")}>
+                                  {booking.status}
+                                </span>
+                              </div>
+                              <h4 className="font-black text-base">{booking.guest}</h4>
+                              <p className="text-xs text-muted-foreground mb-3">{property.name}</p>
+                            </>
+                          )}
                           
                           <div className="flex justify-between items-center text-xs font-medium bg-muted/30 rounded-lg p-2 mb-3 border border-border/50">
                             <div className="flex flex-col">
@@ -1001,13 +1108,43 @@ export default function MultiCalendarPanel() {
         </div>
         <div className="flex items-center gap-1.5">
           <div className="w-2 h-2 rounded-full bg-amber-500"></div>
-          <span>Pendiente / Bloqueo</span>
+          <span>Pendiente</span>
+        </div>
+        <div className="flex items-center gap-1.5">
+          <div
+            className="w-3 h-2 rounded-sm border border-slate-300"
+            style={{ background: "repeating-linear-gradient(45deg,#64748b 0,#64748b 2px,#94a3b8 2px,#94a3b8 4px)" }}
+          />
+          <span>Bloqueo del canal</span>
+        </div>
+        <div className="flex items-center gap-1.5">
+          <div
+            className="w-3 h-2 rounded-sm border border-yellow-600"
+            style={{ background: "repeating-linear-gradient(45deg,#facc15 0,#facc15 2px,#1f2937 2px,#1f2937 4px)" }}
+          />
+          <span>Bloqueo manual</span>
         </div>
       </div>
       <ChargeServiceDrawer
         isOpen={isChargeOpen}
         onClose={() => setIsChargeOpen(false)}
         bookingData={selectedBookingForCharge}
+      />
+
+      {/* Calendario completo por propiedad (estilo Airbnb) */}
+      <PropertyFullCalendarModal
+        open={!!fullCalProperty}
+        onOpenChange={(o) => { if (!o) setFullCalProperty(null); }}
+        property={fullCalProperty}
+        onCreateBookingForRange={(propertyId, start, end) => {
+          setNewBooking((b) => ({
+            ...b,
+            propertyId: String(propertyId),
+            start,
+            end,
+          }));
+          setIsNewBookingOpen(true);
+        }}
       />
 
       {/* Edit Booking Sheet */}

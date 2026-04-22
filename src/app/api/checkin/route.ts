@@ -139,7 +139,7 @@ async function fetchRecordForGuest(
   if (data.guest_last_name === credLC) return data;
 
   // Opción B: el parámetro es el código de reserva del canal (Airbnb
-  // HMXXXXXXXX, reservas directas D-XXXXXXXX). Validamos contra el
+  // HMXXXXXXXX, reservas directas SHXXXXXXXX). Validamos contra el
   // channel_code del booking vinculado. Esto es lo que usa el flow v=2
   // donde el huésped nunca escribió un apellido.
   if (data.booking_ref) {

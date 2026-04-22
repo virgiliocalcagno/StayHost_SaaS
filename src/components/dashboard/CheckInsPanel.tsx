@@ -896,7 +896,7 @@ export default function CheckInsPanel() {
   function shareWhatsApp(r: LocalCheckIn) {
     const origin = typeof window !== "undefined" ? window.location.origin : "";
     // Preferir el channel_code real del booking vinculado (HMXXXXXXXX de
-    // Airbnb o D-XXXXXXXX de reserva directa). Si no hay match en el
+    // Airbnb o SHXXXXXXXX de reserva directa). Si no hay match en el
     // mapa (caso raro: booking sin code), no pre-rellenamos nada y el
     // huésped escribe manualmente.
     const channelCode = r.bookingRef ? bookingCodeMap.get(r.bookingRef) : undefined;
