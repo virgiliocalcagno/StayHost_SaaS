@@ -601,11 +601,16 @@ async function staffUpsertBatch(data: Record<string, unknown>) {
     };
   });
 
-  // `onConflict: id` makes re-running autoSync idempotent — existing records
-  // get a patch update instead of erroring on the primary key.
+  // `onConflict: booking_ref` evita que el mismo booking se sincronice dos
+  // veces creando records duplicados. Antes usabamos "id" pero el cliente
+  // genera ids nuevos en cada corrida del autoSync (ci-${timestamp}-${rand}),
+  // asi que 2 corridas del mismo booking terminaban creando 2 records.
+  // Con booking_ref como clave de conflicto, si ya existe, se hace patch.
+  // Requiere UNIQUE constraint en checkin_records(booking_ref) — migracion
+  // 20260422_checkin_records_booking_ref_unique.
   const { data: inserted, error } = await supabase
     .from("checkin_records")
-    .upsert(rows, { onConflict: "id" })
+    .upsert(rows, { onConflict: "booking_ref", ignoreDuplicates: false })
     .select("*");
 
   if (error) {
