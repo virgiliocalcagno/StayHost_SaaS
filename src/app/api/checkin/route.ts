@@ -201,6 +201,7 @@ export async function POST(req: NextRequest) {
       case "delete":       return staffDelete(data);
       case "validateId":   return staffSetIdStatus(data, "validated");
       case "rejectId":     return staffSetIdStatus(data, "rejected");
+      case "resetId":      return staffResetId(data);
       case "upsertBatch":  return staffUpsertBatch(data);
       case "authorize":    return staffAuthorize(data);
 
@@ -442,6 +443,62 @@ async function staffSetIdStatus(
   return NextResponse.json({
     success: true,
     record: rowToApi(updated, { exposeWifi: accessGranted }),
+  });
+}
+
+async function staffResetId(data: Record<string, unknown>) {
+  // Host resetea el documento del checkin: borra la foto, los datos OCR
+  // y vuelve el id_status a "pending". Usado cuando:
+  //  - El host dio rechazar/validar por accidente
+  //  - Los datos OCR quedaron contaminados de otra reserva
+  //  - Queremos darle al huesped la oportunidad de subir foto nueva
+  const { tenantId, supabase } = await getAuthenticatedTenant();
+  if (!tenantId) return bad(401, "No autenticado");
+  const id = String(data.id ?? "");
+  if (!id) return bad(400, "Falta id");
+
+  // Obtenemos el path de la foto actual para borrarla del Storage
+  const { data: current } = await supabase
+    .from("checkin_records")
+    .select("id_photo_path")
+    .eq("id", id)
+    .single<Pick<CheckinRow, "id_photo_path">>();
+
+  if (current?.id_photo_path) {
+    await supabaseAdmin.storage.from("checkin-ids").remove([current.id_photo_path]);
+  }
+
+  const patch = {
+    id_photo_path: null,
+    id_status: "pending" as IdStatus,
+    access_granted: false,
+    status: "pendiente" as Status,
+    ocr_raw: null,
+    ocr_name: null,
+    ocr_document: null,
+    ocr_nationality: null,
+    ocr_language: null,
+    ocr_confidence: null,
+    ocr_attempts: 0,
+    waiting_for_auth: false,
+    auth_reason: null,
+    requires_manual_review: false,
+  };
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const { data: updated, error } = await (supabase.from("checkin_records") as any)
+    .update(patch)
+    .eq("id", id)
+    .select("*")
+    .single();
+
+  if (error || !updated) {
+    console.error("[/api/checkin:resetId] failed:", error);
+    return bad(500, "No se pudo resetear");
+  }
+  return NextResponse.json({
+    success: true,
+    record: rowToApi(updated as CheckinRow, { exposeWifi: false }),
   });
 }
 

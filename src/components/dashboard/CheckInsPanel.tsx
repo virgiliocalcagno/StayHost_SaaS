@@ -907,6 +907,20 @@ export default function CheckInsPanel() {
     }
   }
 
+  // Resetear documento — borra foto + OCR + vuelve id_status a pending.
+  // Usar cuando se dio validar/rechazar por accidente o cuando los datos
+  // OCR quedaron contaminados de otra reserva.
+  async function resetDocument(r: LocalCheckIn) {
+    if (!confirm(`¿Resetear el documento de ${r.guestName || "este huésped"}?\n\nSe borra la foto y los datos leídos. El huésped va a tener que subir su documento de nuevo.`)) return;
+    try {
+      await apiCheckin("resetId", { id: r.id });
+      toast.success("Documento reseteado. El huésped puede subirlo de nuevo.");
+      await refreshRecords();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "No se pudo resetear");
+    }
+  }
+
   // ─── Copy link ────────────────────────────────────────────────────────────
 
   function copyLink(r: LocalCheckIn) {
@@ -1329,6 +1343,25 @@ export default function CheckInsPanel() {
                         className="h-7 px-3 text-xs border-red-400 text-red-600 hover:bg-red-50 gap-1"
                       >
                         <ShieldX className="w-3.5 h-3.5" />Rechazar
+                      </Button>
+                    </div>
+                  )}
+
+                  {/* Deshacer cuando ya validado o rechazado — permite resetear
+                      si el host tocó por accidente o los datos OCR salieron mal. */}
+                  {(r.idStatus === "validated" || r.idStatus === "rejected") && !r.missingData && (
+                    <div className="flex items-center gap-2 px-1 py-2 bg-slate-50 dark:bg-slate-900/30 border border-slate-200 dark:border-slate-700 rounded-lg">
+                      <span className="text-xs text-slate-600 flex-1">
+                        {r.idStatus === "validated" ? "✓ ID aprobado" : "✗ ID rechazado"}
+                        {" — ¿lo hiciste por error?"}
+                      </span>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => resetDocument(r)}
+                        className="h-7 px-3 text-xs border-slate-300 text-slate-700 hover:bg-slate-100 gap-1"
+                      >
+                        <RefreshCw className="w-3.5 h-3.5" />Resetear documento
                       </Button>
                     </div>
                   )}
