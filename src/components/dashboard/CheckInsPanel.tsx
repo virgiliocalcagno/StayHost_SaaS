@@ -293,23 +293,41 @@ function fromApi(
  */
 function guestDisplayName(r: LocalCheckIn): string {
   if (r.ocrName && r.ocrName.trim()) return r.ocrName;
+
   const name = (r.guestName || "").trim();
+  const nameLow = name.toLowerCase();
   const isPlaceholder =
     !name ||
-    name.toLowerCase() === "huésped" ||
-    name.toLowerCase() === "huesped" ||
+    nameLow === "huésped" ||
+    nameLow === "huesped" ||
     /^reserva( confirmada)?$/i.test(name);
-  if (!isPlaceholder) {
-    // Nombre real + apellido si no es channel_code
-    const last = (r.guestLastName || "").trim();
-    const looksLikeCode = /^[a-z0-9]{6,}$/i.test(last) || last.includes("confirmada");
-    return looksLikeCode ? name : `${name} ${last}`.trim();
+
+  // Channel code real — preferimos el decodificado del `l` en encodedData.
+  // Si no se puede (record manual antiguo), caemos al guestLastName.
+  function extractChannelCode(): string {
+    // Palabras que pueden aparecer en guest_last_name y NO son channel_codes
+    const nonCodes = new Set(["confirmada", "confirmado", "huesped", "huésped", "reserva"]);
+    try {
+      if (r.encodedData) {
+        const decoded = atob(r.encodedData);
+        const parsed = JSON.parse(decodeURIComponent(escape(decoded))) as { l?: string };
+        if (parsed.l && !nonCodes.has(parsed.l.toLowerCase())) {
+          return parsed.l.toUpperCase();
+        }
+      }
+    } catch { /* ignore */ }
+    const last = (r.guestLastName ?? "").trim();
+    if (nonCodes.has(last.toLowerCase())) return "";
+    if (/^[a-z0-9]{6,}$/i.test(last)) return last.toUpperCase();
+    return "";
   }
-  // Placeholder → mostramos "Reserva #[channel_code]" si lo tenemos
-  const code = (r.bookingRef ? "" : r.guestLastName ?? "").toUpperCase();
-  // guestLastName en records iCal ahora es channel_code; si parece code lo usamos
-  const possibleCode = (r.guestLastName ?? "").trim().toUpperCase();
-  if (/^[A-Z0-9]{6,}$/.test(possibleCode)) return `Reserva #${possibleCode}`;
+
+  if (!isPlaceholder) {
+    // Nombre real del huesped — no mostramos el channel_code como apellido.
+    return name;
+  }
+
+  const code = extractChannelCode();
   return code ? `Reserva #${code}` : "Reserva";
 }
 
