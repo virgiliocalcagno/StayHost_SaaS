@@ -476,40 +476,12 @@ function DevicesTabContent({ formData, setFormData }: { formData: any; setFormDa
         </div>
       </div>
 
-      {/* ── Monitoreo de Energía ─────────────────────────────────── */}
-      <div className="space-y-4 pt-2">
-        <div className="flex items-center justify-between">
-          <h4 className="text-sm font-bold flex items-center gap-2">
-            <Zap className="h-4 w-4 text-amber-500 fill-amber-500" /> Cargo Eléctrico al Huésped
-          </h4>
-          <div className="flex items-center gap-2 scale-90 origin-right">
-            <span className="text-xs font-medium text-muted-foreground">{formData.electricityEnabled ? "Activo" : "Inactivo"}</span>
-            <button
-              type="button"
-              onClick={() => setFormData((p: any) => ({ ...p, electricityEnabled: !p.electricityEnabled }))}
-              className={`relative inline-flex h-5 w-10 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2 ${formData.electricityEnabled ? "bg-primary" : "bg-muted"}`}
-            >
-              <span className={`${formData.electricityEnabled ? "translate-x-5" : "translate-x-1"} inline-block h-3.5 w-3.5 transform rounded-full bg-white transition-transform`} />
-            </button>
-          </div>
-        </div>
-        <div className={`transition-all duration-300 ${formData.electricityEnabled ? "opacity-100 max-h-48" : "opacity-40 pointer-events-none grayscale"}`}>
-          <div className="p-4 rounded-2xl bg-amber-50/30 border border-amber-100 space-y-2">
-            <div className="space-y-2">
-              <Label className="text-xs">Tarifa por noche</Label>
-              <div className="relative">
-                <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground text-sm">$</span>
-                <Input type="number" step="0.01" className="pl-7 bg-white" placeholder="5.00" value={formData.electricityRate} onChange={(e) => setFormData((p: any) => ({ ...p, electricityRate: e.target.value }))} />
-                <span className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground text-xs">USD / noche</span>
-              </div>
-            </div>
-            <p className="text-[11px] text-muted-foreground leading-snug">
-              Total al huésped = tarifa × noches de estadía. Se cobra en el check-in
-              (Airbnb con opción de autorización manual, VRBO omite).
-            </p>
-          </div>
-        </div>
-      </div>
+      {/*
+        Nota: el control de "Cargo Eléctrico al Huésped" vive en el tab
+        Comercial junto a las otras tarifas — ver sección "Tarifas" de ese tab.
+        Evitamos duplicarlo aquí para no confundir al host con 2 campos que
+        hacen lo mismo.
+      */}
     </div>
   );
 }
@@ -2029,8 +2001,29 @@ export default function PropertiesPanel() {
                       </div>
                       <div className="grid grid-cols-2 gap-4">
                         <div className="space-y-2">
-                          <Label>Tarifa energía (Por noche)</Label>
-                          <Input type="number" placeholder="Ej: 15" value={formData.energyFeePerDay} onChange={(e) => setFormData((p) => ({ ...p, energyFeePerDay: e.target.value }))} />
+                          <div className="flex items-center justify-between">
+                            <Label className="flex items-center gap-1.5"><Zap className="h-3.5 w-3.5 text-amber-500 fill-amber-500" />Cargo eléctrico al huésped</Label>
+                            <div className="flex items-center gap-2 scale-90 origin-right">
+                              <span className="text-[10px] font-medium text-muted-foreground">{formData.electricityEnabled ? "Activo" : "Inactivo"}</span>
+                              <button
+                                type="button"
+                                onClick={() => setFormData((p: any) => ({ ...p, electricityEnabled: !p.electricityEnabled }))}
+                                className={`relative inline-flex h-5 w-10 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2 ${formData.electricityEnabled ? "bg-amber-500" : "bg-muted"}`}
+                              >
+                                <span className={`${formData.electricityEnabled ? "translate-x-5" : "translate-x-1"} inline-block h-3.5 w-3.5 transform rounded-full bg-white transition-transform`} />
+                              </button>
+                            </div>
+                          </div>
+                          <div className={`transition-opacity ${formData.electricityEnabled ? "" : "opacity-40 pointer-events-none"}`}>
+                            <div className="relative">
+                              <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground text-sm">$</span>
+                              <Input type="number" step="0.01" className="pl-7" placeholder="5.00" value={formData.electricityRate} onChange={(e) => setFormData((p: any) => ({ ...p, electricityRate: e.target.value }))} />
+                              <span className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground text-xs">/ noche</span>
+                            </div>
+                            <p className="text-[10px] text-muted-foreground mt-1 leading-snug">
+                              Total = tarifa × noches. Airbnb con opción de autorización, VRBO omite.
+                            </p>
+                          </div>
                         </div>
                         <div className="space-y-2">
                           <Label>Servicios Extra (Por estadía)</Label>
