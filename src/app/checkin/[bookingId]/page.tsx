@@ -15,7 +15,7 @@
  * Steps: 0 Bienvenida → 1 Verificación → 2 Documento → 3 Extras → 4 Electricidad → 5 Acceso
  */
 
-import { useState, useRef, use, Suspense, useEffect } from "react";
+import { useState, useRef, use, Suspense, useEffect, useMemo } from "react";
 import { useSearchParams } from "next/navigation";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -65,12 +65,17 @@ function copyText(text: string, cb: () => void) {
 
 function CheckInInner({ bookingId }: { bookingId: string }) {
   const sp = useSearchParams();
-  const booking = decodeBooking(sp.get("d") ?? "");
+  // Memoizamos el booking: sin esto, cada render crea un objeto nuevo (porque
+  // `decodeBooking` hace JSON.parse), las deps del useEffect de abajo cambian
+  // en cada render, y el setStep(2) del initial jump se dispara DESPUES de
+  // que el usuario ya avanzo al Paso 3/4, devolviendolo al 2 (loop).
+  const dParam = sp.get("d") ?? "";
+  const booking = useMemo(() => decodeBooking(dParam), [dParam]);
 
   // v=2 indica que el huésped viene del landing genérico /checkin donde ya
-  // validó (código + últimos 4 dígitos). No tiene que pasar por el paso 1
-  // (apellido+4dig) — usamos el código como pseudo-apellido interno para
-  // que el backend autentique sin pedir nada más.
+  // validó con el codigo de reserva. Se salta el paso 1 (apellido+4dig) —
+  // usamos el código como pseudo-apellido interno para que el backend
+  // autentique sin pedir nada más.
   const isV2 = sp.get("v") === "2";
 
   const [step, setStep] = useState<Step>(0);
@@ -81,9 +86,16 @@ function CheckInInner({ bookingId }: { bookingId: string }) {
   const [lastName, setLastName] = useState(() => (isV2 ? (booking?.l ?? "") : ""));
   const [last4, setLast4] = useState(() => (isV2 ? (booking?.d4 ?? "") : ""));
 
-  // v=2 → saltamos bienvenida y auth, vamos directo a subir documento
+  // Initial jump a Paso 2 cuando viene con v=2. Usamos un ref one-shot para
+  // garantizar que se dispare UNA sola vez — sin esto, si el useEffect
+  // corriese multiples veces volveria al Paso 2 aunque el usuario haya
+  // avanzado.
+  const didInitialJumpRef = useRef(false);
   useEffect(() => {
-    if (isV2 && booking) setStep(2);
+    if (isV2 && booking && !didInitialJumpRef.current) {
+      didInitialJumpRef.current = true;
+      setStep(2);
+    }
   }, [isV2, booking]);
 
   // Step 2
