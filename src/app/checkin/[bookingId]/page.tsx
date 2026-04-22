@@ -163,8 +163,8 @@ function CheckInInner({ bookingId }: { bookingId: string }) {
     if (!idBase64) { setError("Selecciona una foto de tu documento."); return; }
     setLoading(true);
     try {
-      // Pasamos el soft token (lastName + last4) porque el endpoint lo exige
-      // para aceptar uploads desde el flujo de huésped sin sesión.
+      // Pasamos el soft token (lastName = channel_code). last4 es opcional,
+      // algunas reservas no lo tienen (VRBO, directas sin teléfono).
       const res = await fetch("/api/checkin", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -172,12 +172,16 @@ function CheckInInner({ bookingId }: { bookingId: string }) {
       });
       if (!res.ok) {
         const msg = await res.json().catch(() => ({ error: "" }));
-        setError(msg.error || "No pudimos subir la foto. Intentá de nuevo.");
+        // Incluir status HTTP en el mensaje para diagnóstico rápido desde
+        // el celular sin tener que abrir DevTools.
+        const statusHint = ` (error ${res.status})`;
+        setError((msg.error || "No pudimos subir la foto. Intentá de nuevo.") + statusHint);
         setLoading(false);
         return;
       }
-    } catch {
-      setError("Error de conexión. Revisá tu internet e intentá de nuevo.");
+    } catch (err) {
+      const detail = err instanceof Error ? ` — ${err.message}` : "";
+      setError("Error de conexión. Revisá tu internet e intentá de nuevo." + detail);
       setLoading(false);
       return;
     }

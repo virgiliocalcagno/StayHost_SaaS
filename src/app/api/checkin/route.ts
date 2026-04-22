@@ -129,8 +129,14 @@ async function fetchRecordForGuest(
     .maybeSingle<CheckinRow>();
   if (!data) return null;
 
-  // El último dígito siempre debe coincidir — es la credencial primaria.
-  if (data.last_four_digits !== last4.trim()) return null;
+  // El soft-token primario es el código de reserva (channel_code o apellido).
+  // Los últimos 4 del teléfono se validan SOLO si vienen — algunas reservas
+  // de VRBO o directas no tienen teléfono, y el lookup ya no los pide al
+  // huésped. El channel_code Airbnb/SH es suficientemente único por sí solo.
+  const last4Trimmed = last4.trim();
+  if (last4Trimmed && data.last_four_digits && data.last_four_digits !== last4Trimmed) {
+    return null;
+  }
 
   const credLC = lastName.toLowerCase().trim();
 
@@ -517,7 +523,7 @@ async function guestGet(data: Record<string, unknown>) {
   // never expose wifi credentials. The guest must pass `auth` to unlock them.
   if (!id) return bad(400, "Falta id");
 
-  if (lastName && last4) {
+  if (lastName) {
     const row = await fetchRecordForGuest(id, lastName, last4);
     if (!row) return bad(404, "No encontrado");
     return NextResponse.json({
@@ -544,10 +550,15 @@ async function guestUploadId(data: Record<string, unknown>) {
 
   // Guest must authenticate with their soft token BEFORE uploading — this
   // prevents randos from dumping files into Storage by brute-forcing ids.
-  const row = lastName && last4
+  // El token primario es el código de reserva (lastName). last4 es opcional:
+  // reservas sin teléfono (VRBO, algunas directas) no lo envían.
+  const row = lastName
     ? await fetchRecordForGuest(id, lastName, last4)
     : null;
-  if (!row) return bad(401, "No autorizado");
+  if (!row) {
+    console.warn("[/api/checkin:uploadId] auth failed", { id, lastName, hasLast4: Boolean(last4) });
+    return bad(401, "No autorizado");
+  }
 
   // Strip the data URL prefix if present (`data:image/jpeg;base64,...`).
   const [header, b64Payload] = photo.includes(",")
@@ -585,7 +596,7 @@ async function guestPayElectricity(data: Record<string, unknown>) {
   const last4 = String(data.last4 ?? "");
   if (!id) return bad(400, "Falta id");
 
-  const row = lastName && last4
+  const row = lastName
     ? await fetchRecordForGuest(id, lastName, last4)
     : null;
   if (!row) return bad(401, "No autorizado");
