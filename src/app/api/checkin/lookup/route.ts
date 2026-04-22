@@ -88,7 +88,7 @@ export async function POST(req: NextRequest): Promise<NextResponse<LookupResult 
   const { data, error } = await supabaseAdmin
     .from("bookings")
     .select(
-      "id, tenant_id, channel_code, phone_last4, property_id, guest_name, check_in, check_out, source, properties:property_id(name, address, wifi_name, wifi_password, electricity_enabled, electricity_rate), tenants:tenant_id(owner_whatsapp)"
+      "id, tenant_id, channel_code, phone_last4, property_id, guest_name, guest_doc, guest_nationality, check_in, check_out, source, properties:property_id(name, address, wifi_name, wifi_password, electricity_enabled, electricity_rate), tenants:tenant_id(owner_whatsapp)"
     )
     .eq("channel_code", code)
     .eq("status", "confirmed")
@@ -122,6 +122,8 @@ export async function POST(req: NextRequest): Promise<NextResponse<LookupResult 
     phone_last4: string | null;
     property_id: string;
     guest_name: string | null;
+    guest_doc: string | null;
+    guest_nationality: string | null;
     check_in: string;
     check_out: string;
     source: string | null;
@@ -173,43 +175,70 @@ export async function POST(req: NextRequest): Promise<NextResponse<LookupResult 
     // Si fue creado por autoSync antes de que el booking tuviera
     // channel_code, su guest_last_name podría no coincidir — el uploadId
     // fallaría con 401. Actualizamos para dejar auth consistente.
-    await supabaseAdmin
-      .from("checkin_records")
-      .update({
-        guest_last_name: b.channel_code.toLowerCase().trim(),
-        last_four_digits: phoneLast4,
-      } as never)
+    const syncUpdate: Record<string, unknown> = {
+      guest_last_name: b.channel_code.toLowerCase().trim(),
+      last_four_digits: phoneLast4,
+    };
+    // Heredar datos OCR del booking si el host los cargo al crear la
+    // reserva (escaneo con DocumentScanButton). Solo actualizamos si no
+    // hay ya datos OCR (no pisar si el huesped ya subio foto propia).
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const { data: existing } = await (supabaseAdmin.from("checkin_records") as any)
+      .select("ocr_name, ocr_document, ocr_nationality")
+      .eq("id", checkinRecordId)
+      .single();
+    const hasOcr = existing && (existing.ocr_name || existing.ocr_document);
+    if (!hasOcr && (b.guest_doc || b.guest_nationality)) {
+      if (b.guest_name && b.guest_name !== "Reserva Confirmada" && b.guest_name !== "Huésped") {
+        syncUpdate.ocr_name = b.guest_name;
+      }
+      if (b.guest_doc) syncUpdate.ocr_document = b.guest_doc;
+      if (b.guest_nationality) syncUpdate.ocr_nationality = b.guest_nationality;
+      syncUpdate.ocr_confidence = 1.0; // datos del host → confianza alta
+    }
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await (supabaseAdmin.from("checkin_records") as any)
+      .update(syncUpdate)
       .eq("id", checkinRecordId);
   } else {
     // Crear uno nuevo al vuelo. Usamos channel_code como guest_last_name
     // (soft-token) y phoneLast4 como last_four_digits para que los demás
     // endpoints de huésped autentiquen sin pedir nada más.
     const newId = `ci-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+    const insertRow: Record<string, unknown> = {
+      id: newId,
+      tenant_id: b.tenant_id,
+      guest_name: b.guest_name ?? "Huésped",
+      guest_last_name: b.channel_code.toLowerCase().trim(),
+      last_four_digits: phoneLast4,
+      checkin: b.check_in,
+      checkout: b.check_out,
+      nights,
+      property_id: b.property_id,
+      property_name: b.properties?.name ?? "Propiedad",
+      property_address: b.properties?.address ?? null,
+      status: "pendiente",
+      id_status: "pending",
+      source: channel === "ical" || channel === "airbnb" || channel === "vrbo" ? "auto_ical" : "auto_direct",
+      booking_ref: b.id,
+      access_granted: false,
+      electricity_enabled: electricityEnabledForGuest,
+      electricity_rate: electricityRate,
+      electricity_paid: false,
+      electricity_total: electricityTotal,
+      paypal_fee_included: true,
+    };
+    // Heredar datos OCR del booking si el host los cargo al crear la reserva
+    if (b.guest_name && b.guest_name !== "Reserva Confirmada" && b.guest_name !== "Huésped") {
+      insertRow.ocr_name = b.guest_name;
+    }
+    if (b.guest_doc) insertRow.ocr_document = b.guest_doc;
+    if (b.guest_nationality) insertRow.ocr_nationality = b.guest_nationality;
+    if (b.guest_doc || b.guest_nationality) insertRow.ocr_confidence = 1.0;
+
     const { error: insertErr } = await supabaseAdmin
       .from("checkin_records")
-      .insert({
-        id: newId,
-        tenant_id: b.tenant_id,
-        guest_name: b.guest_name ?? "Huésped",
-        guest_last_name: b.channel_code.toLowerCase().trim(),
-        last_four_digits: phoneLast4,
-        checkin: b.check_in,
-        checkout: b.check_out,
-        nights,
-        property_id: b.property_id,
-        property_name: b.properties?.name ?? "Propiedad",
-        property_address: b.properties?.address ?? null,
-        status: "pendiente",
-        id_status: "pending",
-        source: channel === "ical" || channel === "airbnb" || channel === "vrbo" ? "auto_ical" : "auto_direct",
-        booking_ref: b.id,
-        access_granted: false,
-        electricity_enabled: electricityEnabledForGuest,
-        electricity_rate: electricityRate,
-        electricity_paid: false,
-        electricity_total: electricityTotal,
-        paypal_fee_included: true,
-      } as never);
+      .insert(insertRow as never);
     if (insertErr) {
       console.error("[/api/checkin/lookup] create checkin_record failed:", insertErr);
     } else {
