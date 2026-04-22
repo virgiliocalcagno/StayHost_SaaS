@@ -126,6 +126,12 @@ function CheckInInner({ bookingId }: { bookingId: string }) {
   const cameraRef = useRef<HTMLInputElement>(null);
   const galleryRef = useRef<HTMLInputElement>(null);
 
+  // Estados del Paso 3/5 — declarados aqui porque los usa el polling del Paso 5 mas abajo
+  const [electricityPaid, setElectricityPaid] = useState(false);
+  const [waitingAuthElectric, setWaitingAuthElectric] = useState(false);
+  const [copiedSsid, setCopiedSsid] = useState(false);
+  const [copiedPass, setCopiedPass] = useState(false);
+
   // Fetch del estado inicial cuando llegamos al Paso 2 — permite flujo
   // adaptativo: si el host ya cargo email/foto, no los pedimos al huesped.
   useEffect(() => {
@@ -151,13 +157,35 @@ function CheckInInner({ bookingId }: { bookingId: string }) {
     return () => { cancelled = true; };
   }, [step, isV2, booking, bookingId]);
 
-  // Step 3 — electricity (ex-step 4) — el flow nuevo elimina upsells del wizard
-  const [electricityPaid, setElectricityPaid] = useState(false);
-  const [waitingAuthElectric, setWaitingAuthElectric] = useState(false);
-
-  // Step 4 — copy flags (ex-step 5)
-  const [copiedSsid, setCopiedSsid] = useState(false);
-  const [copiedPass, setCopiedPass] = useState(false);
+  // Polling de la Sala de Espera — mientras el huesped este en el Paso 5
+  // esperando autorizacion del host, consultamos getState cada 5s para
+  // detectar cuando el host apriete "Autorizar" en el dashboard. Apenas
+  // waiting_for_auth pasa a false, el render re-evalua y muestra el Paso 5
+  // normal con PIN/WiFi.
+  const waitingForAnything = (step2State?.waitingForAuth ?? false) || waitingAuthElectric;
+  useEffect(() => {
+    if (step !== 5 || !waitingForAnything || !booking) return;
+    let cancelled = false;
+    const interval = setInterval(async () => {
+      try {
+        const res = await fetch("/api/checkin/step2", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "getState", id: bookingId, code: booking.l }),
+        });
+        if (!res.ok) return;
+        const data = (await res.json()) as { state?: Step2State };
+        if (cancelled || !data.state) return;
+        setStep2State(data.state);
+        // Si el host autorizo, desactivamos ambos flags y el render muestra
+        // la pantalla normal con acceso liberado.
+        if (!data.state.waitingForAuth) {
+          setWaitingAuthElectric(false);
+        }
+      } catch { /* silent */ }
+    }, 5000);
+    return () => { cancelled = true; clearInterval(interval); };
+  }, [step, waitingForAnything, booking, bookingId]);
 
   // Upsells legacy — se mantiene la variable para no romper refs pero ya no
   // se renderizan en el wizard (movidos al Guest Hub post-checkin).
@@ -745,8 +773,12 @@ function CheckInInner({ bookingId }: { bookingId: string }) {
               );
             })()}
 
-            <div className="bg-slate-50 border border-slate-200 rounded-xl p-3 text-xs text-slate-600 text-center">
-              🔒 Tu PIN y WiFi se muestran cuando el anfitrión autorice.
+            <div className="bg-slate-50 border border-slate-200 rounded-xl p-3 text-xs text-slate-600 text-center space-y-1">
+              <p>🔒 Tu PIN y WiFi se muestran cuando el anfitrión autorice.</p>
+              <p className="text-[11px] text-slate-400 flex items-center justify-center gap-1.5">
+                <span className="inline-block w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                Verificando estado cada 5 segundos…
+              </p>
             </div>
           </div>
         )}
