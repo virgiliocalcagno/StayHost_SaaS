@@ -565,51 +565,62 @@ function CheckInInner({ bookingId }: { bookingId: string }) {
               aria-label="Subir foto del documento desde galeria o archivos"
               onChange={handleFile} className="hidden" />
 
-            {idPreview || step2State?.hasPhoto ? (
-              <div className="space-y-3">
-                {idPreview && (
-                  <div className="relative rounded-2xl overflow-hidden border-2 border-orange-300 shadow-sm">
-                    <img src={idPreview} alt="Documento" className="w-full max-h-48 object-contain bg-slate-50" />
-                    <button type="button"
-                      onClick={() => {
-                        setIdPreview(null);
-                        setIdBase64("");
-                        if (cameraRef.current) cameraRef.current.value = "";
-                        if (galleryRef.current) galleryRef.current.value = "";
-                      }}
-                      className="absolute top-2 right-2 w-7 h-7 bg-white/90 rounded-full flex items-center justify-center text-slate-600 shadow text-lg">×</button>
-                  </div>
-                )}
-                {!idPreview && step2State?.hasPhoto && (
-                  <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-3 flex items-center gap-2 text-sm text-emerald-700">
-                    <span className="text-lg">✅</span>
-                    <span>Documento ya cargado.</span>
-                    <button type="button" onClick={() => cameraRef.current?.click()}
-                      className="ml-auto text-xs font-semibold text-emerald-600 underline">Cambiar</button>
-                  </div>
-                )}
-                {step2State?.ocr && (step2State.ocr.name || step2State.ocr.document) && (
-                  <div className="bg-slate-50 rounded-xl p-3 border border-slate-200 space-y-1 text-xs">
-                    <p className="font-bold text-slate-500 uppercase tracking-widest mb-1">Datos leídos del documento</p>
-                    {step2State.ocr.name && <p className="text-slate-700"><span className="text-slate-400">Nombre:</span> <span className="font-semibold">{step2State.ocr.name}</span></p>}
-                    {step2State.ocr.document && <p className="text-slate-700"><span className="text-slate-400">Documento:</span> <span className="font-mono">{step2State.ocr.document}</span></p>}
-                    {step2State.ocr.nationality && <p className="text-slate-700"><span className="text-slate-400">Nacionalidad:</span> <span className="font-semibold">{step2State.ocr.nationality}</span></p>}
-                  </div>
-                )}
+            {/* Datos del OCR — se muestran SIEMPRE que existan, aunque no
+                haya foto (caso tipico: el host escaneo al crear la reserva
+                directa y los datos quedaron en el booking, pero la foto
+                no se guardo). */}
+            {step2State?.ocr && (step2State.ocr.name || step2State.ocr.document) && (
+              <div className="bg-emerald-50 rounded-xl p-4 border border-emerald-200 space-y-1.5 text-xs">
+                <p className="font-bold text-emerald-700 uppercase tracking-widest mb-1 flex items-center gap-1.5">
+                  <span>✓</span> Datos del documento (ya cargados)
+                </p>
+                {step2State.ocr.name && <p className="text-slate-700"><span className="text-slate-400">Nombre:</span> <span className="font-semibold">{step2State.ocr.name}</span></p>}
+                {step2State.ocr.document && <p className="text-slate-700"><span className="text-slate-400">Documento:</span> <span className="font-mono">{step2State.ocr.document}</span></p>}
+                {step2State.ocr.nationality && <p className="text-slate-700"><span className="text-slate-400">Nacionalidad:</span> <span className="font-semibold">{step2State.ocr.nationality}</span></p>}
+              </div>
+            )}
+
+            {/* Seccion foto — separada del bloque de datos. Si ya hay foto
+                subida, muestra preview o estado; si no, 2 botones para subir. */}
+            {idPreview ? (
+              <div className="relative rounded-2xl overflow-hidden border-2 border-orange-300 shadow-sm">
+                <img src={idPreview} alt="Documento" className="w-full max-h-48 object-contain bg-slate-50" />
+                <button type="button"
+                  onClick={() => {
+                    setIdPreview(null);
+                    setIdBase64("");
+                    if (cameraRef.current) cameraRef.current.value = "";
+                    if (galleryRef.current) galleryRef.current.value = "";
+                  }}
+                  className="absolute top-2 right-2 w-7 h-7 bg-white/90 rounded-full flex items-center justify-center text-slate-600 shadow text-lg">×</button>
+              </div>
+            ) : step2State?.hasPhoto ? (
+              <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-3 flex items-center gap-2 text-sm text-emerald-700">
+                <span className="text-lg">✅</span>
+                <span>Foto del documento ya subida.</span>
+                <button type="button" onClick={() => cameraRef.current?.click()}
+                  className="ml-auto text-xs font-semibold text-emerald-600 underline">Cambiar</button>
               </div>
             ) : (
-              <div className="grid grid-cols-2 gap-3">
-                <button type="button" onClick={() => cameraRef.current?.click()}
-                  className="bg-orange-50 hover:bg-orange-100 active:scale-95 border-2 border-orange-200 rounded-2xl py-6 flex flex-col items-center gap-2 transition-all">
-                  <span className="text-4xl">📸</span>
-                  <span className="text-sm font-semibold text-orange-700">Tomar foto</span>
-                </button>
-                <button type="button" onClick={() => galleryRef.current?.click()}
-                  className="bg-sky-50 hover:bg-sky-100 active:scale-95 border-2 border-sky-200 rounded-2xl py-6 flex flex-col items-center gap-2 transition-all">
-                  <span className="text-4xl">🖼️</span>
-                  <span className="text-sm font-semibold text-sky-700">Subir de galería</span>
-                </button>
-              </div>
+              <>
+                {step2State?.ocr?.name && (
+                  <p className="text-center text-xs text-slate-500 px-4">
+                    Falta la <strong>foto</strong> de tu documento para validar.
+                  </p>
+                )}
+                <div className="grid grid-cols-2 gap-3">
+                  <button type="button" onClick={() => cameraRef.current?.click()}
+                    className="bg-orange-50 hover:bg-orange-100 active:scale-95 border-2 border-orange-200 rounded-2xl py-6 flex flex-col items-center gap-2 transition-all">
+                    <span className="text-4xl">📸</span>
+                    <span className="text-sm font-semibold text-orange-700">Tomar foto</span>
+                  </button>
+                  <button type="button" onClick={() => galleryRef.current?.click()}
+                    className="bg-sky-50 hover:bg-sky-100 active:scale-95 border-2 border-sky-200 rounded-2xl py-6 flex flex-col items-center gap-2 transition-all">
+                    <span className="text-4xl">🖼️</span>
+                    <span className="text-sm font-semibold text-sky-700">Subir de galería</span>
+                  </button>
+                </div>
+              </>
             )}
 
             {/* ── Fallback OCR atascado — autorizacion manual ───────────── */}
