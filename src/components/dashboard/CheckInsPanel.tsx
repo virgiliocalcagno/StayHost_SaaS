@@ -146,8 +146,11 @@ function encodeData(data: Record<string, unknown>): string {
 }
 
 function buildLink(id: string, encoded: string): string {
-  if (typeof window === "undefined") return `/checkin/${id}`;
-  return `${window.location.origin}/checkin/${id}?d=${encoded}`;
+  // v=2 indica que el huesped ya se identifico (o viene de un link directo
+  // del host): el flow salta la pantalla vieja de apellido+4digitos y va
+  // directo al Paso 2 de documento + datos de contacto.
+  if (typeof window === "undefined") return `/checkin/${id}?d=${encoded}&v=2`;
+  return `${window.location.origin}/checkin/${id}?d=${encoded}&v=2`;
 }
 
 function qrUrl(data: string, size = 180) {
