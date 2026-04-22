@@ -64,6 +64,17 @@ interface CheckinRow {
   missing_data: boolean;
   created_at: string;
   updated_at: string;
+  // v3 — Paso 2 adaptativo + Sala de Espera
+  guest_email?: string | null;
+  guest_whatsapp?: string | null;
+  guest_count?: number | null;
+  ocr_name?: string | null;
+  ocr_document?: string | null;
+  ocr_nationality?: string | null;
+  ocr_confidence?: number | null;
+  waiting_for_auth?: boolean | null;
+  auth_reason?: string | null;
+  requires_manual_review?: boolean | null;
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -114,6 +125,15 @@ function rowToApi(row: CheckinRow, opts: { exposeWifi: boolean }) {
     missingData: row.missing_data,
     // idPhotoBase64 intentionally omitted — use a signed Storage URL.
     idPhotoPath: row.id_photo_path ?? undefined,
+    // v3 — para el dashboard de autorizaciones pendientes
+    waitingForAuth: row.waiting_for_auth ?? false,
+    authReason: row.auth_reason ?? null,
+    guestEmail: row.guest_email ?? null,
+    guestWhatsapp: row.guest_whatsapp ?? null,
+    guestCount: row.guest_count ?? null,
+    ocrName: row.ocr_name ?? null,
+    ocrDocument: row.ocr_document ?? null,
+    ocrNationality: row.ocr_nationality ?? null,
   };
 }
 
@@ -182,6 +202,7 @@ export async function POST(req: NextRequest) {
       case "validateId":   return staffSetIdStatus(data, "validated");
       case "rejectId":     return staffSetIdStatus(data, "rejected");
       case "upsertBatch":  return staffUpsertBatch(data);
+      case "authorize":    return staffAuthorize(data);
 
       // ── Guest actions (no session, soft token required) ───────────────────
       case "auth":              return guestAuth(data);
@@ -421,6 +442,54 @@ async function staffSetIdStatus(
   return NextResponse.json({
     success: true,
     record: rowToApi(updated, { exposeWifi: accessGranted }),
+  });
+}
+
+async function staffAuthorize(data: Record<string, unknown>) {
+  // El host aprueba manualmente un checkin que estaba en Sala de Espera
+  // (OCR no legible o pago electrico por autorizacion). Libera el acceso:
+  // waiting_for_auth=false, access_granted=true, y marca electricity_paid
+  // si el motivo era electricidad.
+  const { tenantId, supabase } = await getAuthenticatedTenant();
+  if (!tenantId) return bad(401, "No autenticado");
+  const id = String(data.id ?? "");
+  if (!id) return bad(400, "Falta id");
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const { data: current } = await (supabase.from("checkin_records") as any)
+    .select("auth_reason")
+    .eq("id", id)
+    .single();
+  const reason = (current as { auth_reason?: string | null } | null)?.auth_reason ?? null;
+
+  const patch: Record<string, unknown> = {
+    waiting_for_auth: false,
+    auth_reason: null,
+    access_granted: true,
+    status: "validado",
+  };
+  if (reason === "electricity_pending") {
+    patch.electricity_paid = true;
+  }
+  if (reason === "ocr_failed") {
+    patch.id_status = "validated";
+    patch.requires_manual_review = true;
+  }
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const { data: updated, error } = await (supabase.from("checkin_records") as any)
+    .update(patch)
+    .eq("id", id)
+    .select("*")
+    .single();
+
+  if (error || !updated) {
+    console.error("[/api/checkin:authorize] failed:", error);
+    return bad(500, "No se pudo autorizar");
+  }
+  return NextResponse.json({
+    success: true,
+    record: rowToApi(updated as CheckinRow, { exposeWifi: true }),
   });
 }
 

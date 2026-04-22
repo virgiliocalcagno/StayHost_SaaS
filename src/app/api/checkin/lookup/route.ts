@@ -36,6 +36,7 @@ type LookupResult = {
     electricityTotal: number;
     wifiSsid: string | null;
     wifiPassword: string | null;
+    ownerWhatsapp: string | null;
   };
 };
 
@@ -87,7 +88,7 @@ export async function POST(req: NextRequest): Promise<NextResponse<LookupResult 
   const { data, error } = await supabaseAdmin
     .from("bookings")
     .select(
-      "id, tenant_id, channel_code, phone_last4, property_id, guest_name, check_in, check_out, source, properties:property_id(name, address, wifi_name, wifi_password, electricity_enabled, electricity_rate)"
+      "id, tenant_id, channel_code, phone_last4, property_id, guest_name, check_in, check_out, source, properties:property_id(name, address, wifi_name, wifi_password, electricity_enabled, electricity_rate), tenants:tenant_id(owner_whatsapp)"
     )
     .eq("channel_code", code)
     .eq("status", "confirmed")
@@ -132,6 +133,7 @@ export async function POST(req: NextRequest): Promise<NextResponse<LookupResult 
       electricity_enabled: boolean | null;
       electricity_rate: number | null;
     } | null;
+    tenants: { owner_whatsapp: string | null } | null;
   };
   const phoneLast4 = b.phone_last4 ?? "";
 
@@ -236,6 +238,7 @@ export async function POST(req: NextRequest): Promise<NextResponse<LookupResult 
       electricityTotal,
       wifiSsid: b.properties?.wifi_name ?? null,
       wifiPassword: b.properties?.wifi_password ?? null,
+      ownerWhatsapp: b.tenants?.owner_whatsapp ?? null,
     },
   });
 }

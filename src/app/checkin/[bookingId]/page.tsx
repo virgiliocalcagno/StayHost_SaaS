@@ -29,6 +29,7 @@ interface DecodedBooking {
   ws?: string; wp?: string;
   ee?: boolean; et?: number; er?: number;
   ch?: string;                   // canal: airbnb / vrbo / direct / ical
+  ow?: string;                   // WhatsApp del owner (E.164)
   us?: UpsellItem[];
 }
 
@@ -309,14 +310,11 @@ function CheckInInner({ bookingId }: { bookingId: string }) {
       });
     } catch { /* silent */ }
 
-    // Abrimos WhatsApp al numero del anfitrion. Por ahora hardcodeamos un
-    // placeholder — cuando tengamos el campo `tenant.owner_whatsapp` se lee
-    // desde el backend. El admin/email tambien reciben notificacion.
-    const hostPhone = "18095551234";
-    const msg = encodeURIComponent(
-      `Hola, soy ${booking?.n ?? "el huésped"} (reserva ${booking?.l}). Estoy haciendo check-in en ${booking?.p ?? "la propiedad"} pero la app no pudo leer mi documento. ¿Podrías autorizarme?`
-    );
-    window.open(`https://wa.me/${hostPhone}?text=${msg}`, "_blank");
+    // Abre WhatsApp del anfitrion. Si el tenant no tiene owner_whatsapp
+    // configurado, no abre nada — el huesped queda en sala de espera igual,
+    // el host va a ver el pendiente en el dashboard.
+    const link = hostWhatsappLink("ocr");
+    if (link) window.open(link, "_blank");
     setLoading(false);
     setError("");
     // Avanzamos al Paso 5 con estado "esperando autorizacion"
@@ -326,6 +324,48 @@ function CheckInInner({ bookingId }: { bookingId: string }) {
 
   // ── Electricity ─────────────────────────────────────────────────────────────
   function handlePay() { setElectricityPaid(true); setStep(5); }
+
+  // Arma el link wa.me al owner con mensaje pre-rellenado. Si el tenant
+  // no tiene owner_whatsapp configurado, devuelve null (el boton no abre
+  // WA, solo muestra el estado de espera).
+  function hostWhatsappLink(reason: "ocr" | "electricity"): string | null {
+    const phone = (booking?.ow ?? "").replace(/\D/g, "");
+    if (!phone || phone.length < 8) return null;
+    const msg =
+      reason === "ocr"
+        ? `Hola, soy ${booking?.n ?? "el huésped"} (reserva ${booking?.l}). Estoy haciendo check-in en ${booking?.p ?? "la propiedad"} pero la app no pudo leer mi documento. ¿Podrías autorizarme?`
+        : `Hola, soy ${booking?.n ?? "el huésped"} (reserva ${booking?.l}). Hice mi check-in en ${booking?.p ?? "la propiedad"} y elegí solicitar autorización para el cargo eléctrico. Quedo atento a tus instrucciones.`;
+    return `https://wa.me/${phone}?text=${encodeURIComponent(msg)}`;
+  }
+
+  // El huesped selecciona "Solicitar autorizacion" (Airbnb Centro de
+  // Resoluciones o transferencia/efectivo para directas). Marca el
+  // checkin en backend como waiting_for_auth=true y abre WhatsApp del
+  // anfitrion con mensaje pre-rellenado.
+  async function handleRequestAuthElectric() {
+    if (!booking) return;
+    setLoading(true);
+    try {
+      await fetch("/api/checkin/step2", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "requestAuth",
+          id: bookingId,
+          code: booking.l,
+          reason: "electricity_pending",
+        }),
+      });
+    } catch { /* silent */ }
+
+    const link = hostWhatsappLink("electricity");
+    if (link) window.open(link, "_blank");
+
+    setLoading(false);
+    setError("");
+    setWaitingAuthElectric(true);
+    setStep(5);
+  }
 
   // ── No data ─────────────────────────────────────────────────────────────────
   if (!booking && step === 0) {
@@ -646,8 +686,8 @@ function CheckInInner({ bookingId }: { bookingId: string }) {
                   className="w-full bg-[#0070BA] hover:bg-[#005ea6] active:scale-95 text-white font-bold py-4 rounded-2xl transition-all shadow-md flex items-center justify-center gap-2">
                   💳 Pagar con PayPal o Tarjeta — ${(booking?.et ?? 0).toFixed(2)}
                 </button>
-                <button type="button" onClick={() => { setWaitingAuthElectric(true); setStep(5); }}
-                  className="w-full bg-white border-2 border-slate-200 hover:border-slate-300 active:scale-95 text-slate-700 font-semibold py-3.5 rounded-2xl text-sm">
+                <button type="button" onClick={handleRequestAuthElectric} disabled={loading}
+                  className="w-full bg-white border-2 border-slate-200 hover:border-slate-300 active:scale-95 text-slate-700 font-semibold py-3.5 rounded-2xl text-sm disabled:opacity-50">
                   Pedir cargo a Airbnb (Centro de Resoluciones)
                 </button>
               </>
@@ -657,8 +697,8 @@ function CheckInInner({ bookingId }: { bookingId: string }) {
                   className="w-full bg-[#0070BA] hover:bg-[#005ea6] active:scale-95 text-white font-bold py-4 rounded-2xl transition-all shadow-md flex items-center justify-center gap-2">
                   💳 Pagar Online (PayPal / Tarjeta) — ${(booking?.et ?? 0).toFixed(2)}
                 </button>
-                <button type="button" onClick={() => { setWaitingAuthElectric(true); setStep(5); }}
-                  className="w-full bg-white border-2 border-slate-200 hover:border-slate-300 active:scale-95 text-slate-700 font-semibold py-3.5 rounded-2xl text-sm">
+                <button type="button" onClick={handleRequestAuthElectric} disabled={loading}
+                  className="w-full bg-white border-2 border-slate-200 hover:border-slate-300 active:scale-95 text-slate-700 font-semibold py-3.5 rounded-2xl text-sm disabled:opacity-50">
                   Solicitar autorización (transferencia o efectivo)
                 </button>
               </>
@@ -691,6 +731,19 @@ function CheckInInner({ bookingId }: { bookingId: string }) {
                 <li className="flex gap-2"><span>3.</span> Si hay demoras, podés escribirle directamente.</li>
               </ul>
             </div>
+
+            {/* Boton contacto directo — solo si el tenant configuro su WA */}
+            {booking.ow && (() => {
+              const reason = step2State?.waitingForAuth ? "ocr" : "electricity";
+              const link = hostWhatsappLink(reason);
+              if (!link) return null;
+              return (
+                <a href={link} target="_blank" rel="noopener noreferrer"
+                  className="w-full bg-[#25D366] hover:bg-[#1da851] active:scale-95 text-white font-semibold py-3.5 rounded-2xl text-sm flex items-center justify-center gap-2 transition-all shadow-sm">
+                  💬 Contactar anfitrión por WhatsApp
+                </a>
+              );
+            })()}
 
             <div className="bg-slate-50 border border-slate-200 rounded-xl p-3 text-xs text-slate-600 text-center">
               🔒 Tu PIN y WiFi se muestran cuando el anfitrión autorice.

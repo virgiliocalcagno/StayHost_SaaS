@@ -19,6 +19,7 @@
  */
 
 import React, { useState, useEffect, useCallback, useRef } from "react";
+import { toast } from "sonner";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -64,6 +65,16 @@ export interface LocalCheckIn {
   bookingRef?: string;       // id in stayhost_direct_bookings or iCal UID
   encodedData: string;       // base64 for URL ?d=
   link: string;              // full check-in URL
+
+  // v3 — Sala de Espera
+  waitingForAuth?: boolean;  // el huesped pidio autorizacion manual
+  authReason?: string | null;// "ocr_failed" | "electricity_pending"
+  guestEmail?: string | null;
+  guestWhatsapp?: string | null;
+  guestCount?: number | null;
+  ocrName?: string | null;
+  ocrDocument?: string | null;
+  ocrNationality?: string | null;
 }
 
 interface WifiConfig {
@@ -181,6 +192,14 @@ interface ApiCheckin {
   createdAt: string;
   updatedAt: string;
   idPhotoPath?: string;
+  waitingForAuth?: boolean;
+  authReason?: string | null;
+  guestEmail?: string | null;
+  guestWhatsapp?: string | null;
+  guestCount?: number | null;
+  ocrName?: string | null;
+  ocrDocument?: string | null;
+  ocrNationality?: string | null;
 }
 
 async function apiCheckin<T = unknown>(action: string, payload: Record<string, unknown> = {}): Promise<T> {
@@ -251,6 +270,14 @@ function fromApi(
     bookingRef: r.bookingRef,
     encodedData: encoded,
     link,
+    waitingForAuth: r.waitingForAuth ?? false,
+    authReason: r.authReason ?? null,
+    guestEmail: r.guestEmail ?? null,
+    guestWhatsapp: r.guestWhatsapp ?? null,
+    guestCount: r.guestCount ?? null,
+    ocrName: r.ocrName ?? null,
+    ocrDocument: r.ocrDocument ?? null,
+    ocrNationality: r.ocrNationality ?? null,
   };
 }
 
@@ -1035,8 +1062,63 @@ export default function CheckInsPanel() {
     return "bg-slate-400";
   }
 
+  // Autorizaciones pendientes — huespedes que presionaron "Solicitar
+  // autorizacion" en el Paso 2 (OCR) o Paso 3 (electricidad) y estan en
+  // la Sala de Espera hasta que el host apruebe desde este panel.
+  const pendingAuth = records.filter(r => r.waitingForAuth);
+  async function handleAuthorize(r: LocalCheckIn) {
+    const reason = r.authReason === "ocr_failed" ? "identidad" : "pago eléctrico";
+    if (!confirm(`Autorizar el ${reason} de ${r.guestName || "este huésped"}? Se le liberará el acceso al PIN y WiFi.`)) return;
+    try {
+      const res = await fetch("/api/checkin", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "authorize", id: r.id }),
+      });
+      if (!res.ok) {
+        const msg = await res.json().catch(() => ({ error: "" }));
+        toast.error(msg.error || "No se pudo autorizar");
+        return;
+      }
+      toast.success("Huésped autorizado. Ya puede ver su acceso.");
+      await autoSync(false);
+    } catch {
+      toast.error("Error de conexión");
+    }
+  }
+
   return (
     <div className="space-y-6">
+      {/* Autorizaciones pendientes (Sala de Espera) */}
+      {pendingAuth.length > 0 && (
+        <div className="bg-gradient-to-br from-amber-50 to-orange-50 border-2 border-amber-300 rounded-2xl p-4 space-y-3">
+          <div className="flex items-center gap-2">
+            <Clock className="h-5 w-5 text-amber-600" />
+            <h3 className="font-bold text-amber-900">
+              {pendingAuth.length} huésped{pendingAuth.length > 1 ? "es" : ""} en Sala de Espera
+            </h3>
+          </div>
+          <p className="text-xs text-amber-800">Solicitaron autorización manual. No ven su PIN ni WiFi hasta que apruebes.</p>
+          <div className="space-y-2">
+            {pendingAuth.map(r => (
+              <div key={r.id} className="bg-white rounded-xl border border-amber-200 p-3 flex items-center gap-3">
+                <div className="flex-1 min-w-0">
+                  <p className="font-semibold text-sm truncate">{r.guestName || "Huésped"} · {r.propertyName}</p>
+                  <p className="text-xs text-muted-foreground">
+                    {r.authReason === "ocr_failed" ? "📷 OCR no legible" : "⚡ Pago eléctrico pendiente"}
+                    {r.guestEmail && ` · ${r.guestEmail}`}
+                    {r.guestWhatsapp && ` · ${r.guestWhatsapp}`}
+                  </p>
+                </div>
+                <Button size="sm" onClick={() => handleAuthorize(r)} className="bg-emerald-600 hover:bg-emerald-700 text-white">
+                  <CheckCircle2 className="h-3.5 w-3.5 mr-1" />Autorizar
+                </Button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* Header */}
       <div className="space-y-4">
         <div className="flex items-center justify-between">

@@ -41,6 +41,7 @@ interface LookupResponse {
     electricityTotal: number;
     wifiSsid: string | null;
     wifiPassword: string | null;
+    ownerWhatsapp: string | null;
   };
 }
 
@@ -64,6 +65,7 @@ function buildEncodedData(b: NonNullable<LookupResponse["booking"]>): string {
     et: b.electricityTotal,
     ws: b.wifiSsid ?? "",
     wp: b.wifiPassword ?? "",
+    ow: b.ownerWhatsapp ?? "",   // WhatsApp del owner para contacto directo
   };
   try {
     return btoa(unescape(encodeURIComponent(JSON.stringify(payload))));
