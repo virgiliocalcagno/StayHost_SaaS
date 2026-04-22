@@ -89,7 +89,8 @@ function CheckInInner({ bookingId }: { bookingId: string }) {
   // Step 2
   const [idPreview, setIdPreview] = useState<string | null>(null);
   const [idBase64, setIdBase64] = useState("");
-  const fileRef = useRef<HTMLInputElement>(null);
+  const cameraRef = useRef<HTMLInputElement>(null);
+  const galleryRef = useRef<HTMLInputElement>(null);
 
   // Step 3 — upsells
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -352,25 +353,48 @@ function CheckInInner({ bookingId }: { bookingId: string }) {
               <p className="text-slate-500 text-sm">Foto clara de tu pasaporte, cédula o licencia.</p>
             </div>
 
-            <input ref={fileRef} type="file" accept="image/*"
-              title="Seleccionar foto de documento de identidad"
-              aria-label="Subir foto de documento de identidad"
+            {/*
+              Dos inputs separados:
+              - `capture="environment"` fuerza camara trasera en el celular
+              - sin capture, abre selector de archivos/galeria
+              Asi damos una opcion explicita para cada caso y evitamos el
+              selector ambiguo de iOS/Android que algunos usuarios no saben
+              usar.
+            */}
+            <input ref={cameraRef} type="file" accept="image/*" capture="environment"
+              title="Tomar foto con camara"
+              aria-label="Tomar foto del documento con la camara"
+              onChange={handleFile} className="hidden" />
+            <input ref={galleryRef} type="file" accept="image/*"
+              title="Subir desde galeria"
+              aria-label="Subir foto del documento desde galeria o archivos"
               onChange={handleFile} className="hidden" />
 
             {idPreview ? (
               <div className="relative rounded-2xl overflow-hidden border-2 border-orange-300 shadow-sm">
                 <img src={idPreview} alt="Documento" className="w-full max-h-52 object-contain bg-slate-50" />
                 <button type="button"
-                  onClick={() => { setIdPreview(null); setIdBase64(""); if (fileRef.current) fileRef.current.value = ""; }}
+                  onClick={() => {
+                    setIdPreview(null);
+                    setIdBase64("");
+                    if (cameraRef.current) cameraRef.current.value = "";
+                    if (galleryRef.current) galleryRef.current.value = "";
+                  }}
                   className="absolute top-2 right-2 w-7 h-7 bg-white/90 rounded-full flex items-center justify-center text-slate-600 shadow text-lg">×</button>
               </div>
             ) : (
-              <button type="button" onClick={() => fileRef.current?.click()}
-                className="w-full bg-slate-50 hover:bg-sky-50 border-2 border-dashed border-slate-200 hover:border-sky-300 rounded-2xl py-10 flex flex-col items-center gap-3 transition-colors">
-                <span className="text-4xl">📄</span>
-                <span className="text-sm text-slate-500">Toca para tomar foto o subir archivo</span>
-                <span className="text-xs text-slate-400">JPG, PNG — máx 8MB</span>
-              </button>
+              <div className="grid grid-cols-2 gap-3">
+                <button type="button" onClick={() => cameraRef.current?.click()}
+                  className="bg-orange-50 hover:bg-orange-100 active:scale-95 border-2 border-orange-200 rounded-2xl py-6 flex flex-col items-center gap-2 transition-all">
+                  <span className="text-4xl">📸</span>
+                  <span className="text-sm font-semibold text-orange-700">Tomar foto</span>
+                </button>
+                <button type="button" onClick={() => galleryRef.current?.click()}
+                  className="bg-sky-50 hover:bg-sky-100 active:scale-95 border-2 border-sky-200 rounded-2xl py-6 flex flex-col items-center gap-2 transition-all">
+                  <span className="text-4xl">🖼️</span>
+                  <span className="text-sm font-semibold text-sky-700">Subir de galería</span>
+                </button>
+              </div>
             )}
 
             <div className="bg-sky-50 border border-sky-100 rounded-xl p-3 text-sky-700 text-xs space-y-1">
