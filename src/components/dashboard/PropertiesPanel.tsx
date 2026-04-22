@@ -480,7 +480,7 @@ function DevicesTabContent({ formData, setFormData }: { formData: any; setFormDa
       <div className="space-y-4 pt-2">
         <div className="flex items-center justify-between">
           <h4 className="text-sm font-bold flex items-center gap-2">
-            <Zap className="h-4 w-4 text-amber-500 fill-amber-500" /> Monitoreo de Electricidad
+            <Zap className="h-4 w-4 text-amber-500 fill-amber-500" /> Cargo Eléctrico al Huésped
           </h4>
           <div className="flex items-center gap-2 scale-90 origin-right">
             <span className="text-xs font-medium text-muted-foreground">{formData.electricityEnabled ? "Activo" : "Inactivo"}</span>
@@ -493,19 +493,20 @@ function DevicesTabContent({ formData, setFormData }: { formData: any; setFormDa
             </button>
           </div>
         </div>
-        <div className={`transition-all duration-300 ${formData.electricityEnabled ? "opacity-100 max-h-40" : "opacity-40 pointer-events-none grayscale"}`}>
-          <div className="grid grid-cols-2 gap-4 p-4 rounded-2xl bg-amber-50/30 border border-amber-100">
+        <div className={`transition-all duration-300 ${formData.electricityEnabled ? "opacity-100 max-h-48" : "opacity-40 pointer-events-none grayscale"}`}>
+          <div className="p-4 rounded-2xl bg-amber-50/30 border border-amber-100 space-y-2">
             <div className="space-y-2">
-              <Label className="text-xs">Costo por kWh</Label>
+              <Label className="text-xs">Tarifa por noche</Label>
               <div className="relative">
                 <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground text-sm">$</span>
-                <Input type="number" step="0.01" className="pl-7 bg-white" placeholder="0.15" value={formData.electricityRate} onChange={(e) => setFormData((p: any) => ({ ...p, electricityRate: e.target.value }))} />
+                <Input type="number" step="0.01" className="pl-7 bg-white" placeholder="5.00" value={formData.electricityRate} onChange={(e) => setFormData((p: any) => ({ ...p, electricityRate: e.target.value }))} />
+                <span className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground text-xs">USD / noche</span>
               </div>
             </div>
-            <div className="space-y-2">
-              <Label className="text-xs">Unidad de Medida</Label>
-              <div className="h-10 flex items-center px-3 rounded-md bg-white border text-sm text-muted-foreground font-medium">Kilovatios (kWh)</div>
-            </div>
+            <p className="text-[11px] text-muted-foreground leading-snug">
+              Total al huésped = tarifa × noches de estadía. Se cobra en el check-in
+              (Airbnb con opción de autorización manual, VRBO omite).
+            </p>
           </div>
         </div>
       </div>
