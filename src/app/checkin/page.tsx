@@ -3,20 +3,22 @@
 /**
  * /checkin — Página genérica de login del huésped.
  *
- * Reemplaza el paradigma anterior de "un link único por reserva" con una URL
- * pública que el huésped puede llegar por WhatsApp o tipeándola. Se loguea
- * con:
- *   1. Código de reserva (ej. Airbnb: HMXXXXXXXX) que recibió en su email.
- *   2. Últimos 4 dígitos de su teléfono (lo que Airbnb comparte con el host
- *      vía iCal, y que el guest registró al reservar).
+ * El huésped se loguea con un único dato: el código de reserva (ej. Airbnb:
+ * HMXXXXXXXX) que recibió en su email. El código Airbnb tiene ~36^8 combina-
+ * ciones; combinado con rate-limit por IP es suficientemente seguro contra
+ * fuerza bruta y evita fricción (pedir también últimos 4 del teléfono era
+ * redundante).
  *
- * Al validar, el backend nos devuelve los datos de la reserva y redirigimos
+ * Los últimos 4 del teléfono se siguen capturando del iCal pero se usan
+ * internamente como valor por defecto del PIN de la cerradura TTLock.
+ *
+ * Al validar, el backend devuelve los datos de la reserva y redirigimos
  * al flow existente /checkin/[bookingId]?d=... (que ya maneja los 6 pasos).
  */
 
-import { useEffect, useState, Suspense } from "react";
+import { useState, Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { Building2, KeyRound, Phone, Loader2, AlertCircle } from "lucide-react";
+import { Building2, KeyRound, Loader2, AlertCircle } from "lucide-react";
 
 interface LookupResponse {
   ok: boolean;
@@ -32,18 +34,19 @@ interface LookupResponse {
     nights: number;
     guestName: string | null;
     tenantId: string;
+    phoneLast4: string | null;
   };
 }
 
-function buildEncodedData(b: NonNullable<LookupResponse["booking"]>, last4: string): string {
+function buildEncodedData(b: NonNullable<LookupResponse["booking"]>): string {
   // `l` (lastName) es el soft-token del backend para auth del huésped. Como
   // Airbnb no trae apellido, usamos el channel_code como pseudo-apellido
-  // interno. Al Source 3 del autoSync guarda el checkin_record con ese mismo
-  // valor, así el match funciona sin que el huésped tipee nada raro.
+  // interno. `d4` (últimos 4 del tel) viene del booking, no del huésped —
+  // se usa como valor por defecto del PIN TTLock que se le muestra al final.
   const payload = {
     n: b.guestName ?? "Huésped",
     l: b.channelCode,             // pseudo-apellido = código de reserva
-    d4: last4,
+    d4: b.phoneLast4 ?? "",       // sacado del booking, no del input
     ci: b.checkIn,
     co: b.checkOut,
     nt: b.nights,
@@ -68,19 +71,9 @@ export default function CheckinLandingPage() {
 function CheckinForm() {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const [code, setCode] = useState(() => (searchParams.get("code") ?? "").toUpperCase());
-  const [last4, setLast4] = useState("");
+  const [code, setCode] = useState(() => (searchParams.get("code") ?? searchParams.get("res") ?? "").toUpperCase());
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
-
-  // Si el huésped llega con ?code= en la URL (desde el WhatsApp del host),
-  // hacemos focus automático en el campo de teléfono para que solo tenga que
-  // tipear 4 números y listo.
-  useEffect(() => {
-    if (searchParams.get("code")) {
-      document.getElementById("last4")?.focus();
-    }
-  }, [searchParams]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -88,14 +81,9 @@ function CheckinForm() {
 
     setError("");
     const cleanCode = code.trim().toUpperCase().replace(/\s+/g, "");
-    const cleanLast4 = last4.trim();
 
     if (cleanCode.length < 6) {
       setError("El código de reserva es muy corto.");
-      return;
-    }
-    if (!/^\d{4}$/.test(cleanLast4)) {
-      setError("Los últimos 4 dígitos deben ser numéricos.");
       return;
     }
 
@@ -104,7 +92,7 @@ function CheckinForm() {
       const res = await fetch("/api/checkin/lookup", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ code: cleanCode, phoneLast4: cleanLast4 }),
+        body: JSON.stringify({ code: cleanCode }),
       });
       const data = (await res.json()) as LookupResponse;
 
@@ -113,7 +101,7 @@ function CheckinForm() {
         return;
       }
 
-      const encoded = buildEncodedData(data.booking, cleanLast4);
+      const encoded = buildEncodedData(data.booking);
       router.push(`/checkin/${data.booking.id}?d=${encoded}&v=2`);
     } catch {
       setError("Error de conexión. Intenta de nuevo.");
@@ -134,7 +122,7 @@ function CheckinForm() {
             Bienvenido
           </h1>
           <p className="text-slate-500 text-sm mt-2 px-4">
-            Para hacer tu check-in, ingresá los datos de tu reserva.
+            Ingresá tu código de reserva para continuar con el check-in.
           </p>
         </div>
 
@@ -171,34 +159,6 @@ function CheckinForm() {
             </p>
           </div>
 
-          {/* Últimos 4 dígitos del teléfono */}
-          <div className="space-y-2">
-            <label
-              htmlFor="last4"
-              className="text-xs font-bold uppercase tracking-widest text-slate-400 pl-1"
-            >
-              Últimos 4 dígitos del teléfono
-            </label>
-            <div className="relative">
-              <div className="absolute left-4 top-1/2 -translate-y-1/2 h-10 w-10 bg-slate-50 rounded-xl flex items-center justify-center">
-                <Phone className="h-4 w-4 text-slate-400" />
-              </div>
-              <input
-                id="last4"
-                type="tel"
-                inputMode="numeric"
-                maxLength={4}
-                placeholder="0000"
-                value={last4}
-                onChange={(e) => setLast4(e.target.value.replace(/\D/g, "").slice(0, 4))}
-                className="w-full pl-16 pr-4 h-14 rounded-2xl border border-slate-200 bg-white/70 text-base font-mono font-bold tracking-[0.5em] text-center focus:ring-2 focus:ring-primary/30 focus:border-primary/30 outline-none transition-all"
-              />
-            </div>
-            <p className="text-[11px] text-slate-400 pl-1">
-              El teléfono que usaste al reservar.
-            </p>
-          </div>
-
           {/* Error */}
           {error && (
             <div className="bg-rose-50 border border-rose-200 rounded-xl p-3 flex items-start gap-2 text-sm text-rose-700">
@@ -210,7 +170,7 @@ function CheckinForm() {
           {/* Submit */}
           <button
             type="submit"
-            disabled={loading || !code.trim() || last4.length !== 4}
+            disabled={loading || code.trim().length < 6}
             className="w-full h-14 rounded-2xl gradient-gold text-primary-foreground font-bold text-base shadow-xl shadow-primary/20 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
           >
             {loading ? (

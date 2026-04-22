@@ -2,22 +2,19 @@ import { NextRequest, NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 
 // POST /api/checkin/lookup
-// Body: { code: string, phoneLast4: string }
+// Body: { code: string }
 //
 // Endpoint PÚBLICO — el huésped NO está autenticado todavía. Su credencial
-// viene del código de reserva (que recibió en su canal: Airbnb, VRBO,
-// Booking, o el que le mandó el host si es directa) combinado con los
-// últimos 4 dígitos del teléfono que registró al reservar.
+// es el código de reserva (que recibió en su canal: Airbnb, VRBO, Booking,
+// o el que le mandó el host si es directa).
 //
 // Usamos service_role porque:
 //   1. No hay sesión del huésped.
 //   2. El lookup tiene que atravesar RLS (cada tenant tiene sus bookings).
-//   3. La seguridad viene del match exacto (código + 4 dígitos), no de RLS.
+//   3. La seguridad viene del match exacto del código + rate-limit, no de RLS.
 //
-// Los códigos Airbnb (HMXXXXXXXX) son ~36^8 combinaciones. Combinados con
-// los últimos 4 dígitos del teléfono (10^4) el espacio es suficientemente
-// grande para descartar ataques de fuerza bruta, y además se agrega
-// rate-limit por IP abajo.
+// Los códigos Airbnb (HMXXXXXXXX) son ~36^8 combinaciones — espacio sobrado
+// contra fuerza bruta combinado con rate-limit agresivo por IP (20/15min).
 
 type LookupResult = {
   ok: true;
@@ -32,6 +29,7 @@ type LookupResult = {
     nights: number;
     guestName: string | null;
     tenantId: string;
+    phoneLast4: string | null;
   };
 };
 
@@ -64,7 +62,7 @@ export async function POST(req: NextRequest): Promise<NextResponse<LookupResult 
     );
   }
 
-  let body: { code?: string; phoneLast4?: string };
+  let body: { code?: string };
   try {
     body = await req.json();
   } catch {
@@ -72,7 +70,6 @@ export async function POST(req: NextRequest): Promise<NextResponse<LookupResult 
   }
 
   const code = String(body.code ?? "").trim().toUpperCase();
-  const phoneLast4 = String(body.phoneLast4 ?? "").trim();
 
   if (!code || code.length < 6) {
     return NextResponse.json(
@@ -80,20 +77,13 @@ export async function POST(req: NextRequest): Promise<NextResponse<LookupResult 
       { status: 400 }
     );
   }
-  if (!/^\d{4}$/.test(phoneLast4)) {
-    return NextResponse.json(
-      { ok: false, error: "Los últimos 4 dígitos deben ser numéricos" },
-      { status: 400 }
-    );
-  }
 
   const { data, error } = await supabaseAdmin
     .from("bookings")
     .select(
-      "id, tenant_id, channel_code, property_id, guest_name, check_in, check_out, properties:property_id(name, address)"
+      "id, tenant_id, channel_code, phone_last4, property_id, guest_name, check_in, check_out, properties:property_id(name, address)"
     )
     .eq("channel_code", code)
-    .eq("phone_last4", phoneLast4)
     .eq("status", "confirmed")
     .limit(2);
 
@@ -104,14 +94,14 @@ export async function POST(req: NextRequest): Promise<NextResponse<LookupResult 
 
   if (!data || data.length === 0) {
     return NextResponse.json(
-      { ok: false, error: "No encontramos una reserva con ese código y teléfono." },
+      { ok: false, error: "No encontramos una reserva con ese código." },
       { status: 404 }
     );
   }
 
-  // Más de un match = colisión (improbable) → rechazamos por seguridad.
+  // Más de un match = colisión (improbable con códigos Airbnb/SH únicos).
   if (data.length > 1) {
-    console.warn("[/api/checkin/lookup] multiple matches for", { code, phoneLast4 });
+    console.warn("[/api/checkin/lookup] multiple matches for", { code });
     return NextResponse.json(
       { ok: false, error: "No pudimos verificar tu reserva. Contacta al anfitrión." },
       { status: 409 }
@@ -122,12 +112,14 @@ export async function POST(req: NextRequest): Promise<NextResponse<LookupResult 
     id: string;
     tenant_id: string;
     channel_code: string;
+    phone_last4: string | null;
     property_id: string;
     guest_name: string | null;
     check_in: string;
     check_out: string;
     properties: { name: string | null; address: string | null } | null;
   };
+  const phoneLast4 = b.phone_last4 ?? "";
 
   const nights = Math.max(
     1,
@@ -211,6 +203,7 @@ export async function POST(req: NextRequest): Promise<NextResponse<LookupResult 
       nights,
       guestName: b.guest_name,
       tenantId: b.tenant_id,
+      phoneLast4: b.phone_last4,
     },
   });
 }
