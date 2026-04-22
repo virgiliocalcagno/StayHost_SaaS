@@ -758,7 +758,11 @@ function CheckInInner({ bookingId }: { bookingId: string }) {
               <p className="text-amber-50 text-sm leading-relaxed">
                 Tu check-in está listo pero tu acceso está en pausa hasta que
                 tu anfitrión confirme{" "}
-                {step2State?.waitingForAuth ? "tu identidad" : "el pago de la tarifa eléctrica"}.
+                {step2State?.authReason === "ocr_failed"
+                  ? "tu identidad"
+                  : step2State?.authReason === "electricity_pending" || waitingAuthElectric
+                    ? "el pago de la tarifa eléctrica"
+                    : "tu registro"}.
               </p>
             </div>
 
