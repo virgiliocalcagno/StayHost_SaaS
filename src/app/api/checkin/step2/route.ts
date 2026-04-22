@@ -115,7 +115,45 @@ export async function POST(req: NextRequest) {
 
     // ── getState ────────────────────────────────────────────────────────────
     if (action === "getState") {
-      return NextResponse.json({ ok: true, state: getState(row) });
+      // Caso retroactivo: si ya hay foto en Storage pero nunca se corrio OCR
+      // (foto subida con la version vieja del uploadId), corremos OCR ahora
+      // contra la foto existente para que el huesped vea los datos leidos
+      // la proxima vez sin tener que re-subir.
+      let currentRow = row;
+      if (row.id_photo_path && !row.ocr_name && !row.ocr_document) {
+        try {
+          const { data: fileData } = await supabaseAdmin.storage
+            .from("checkin-ids")
+            .download(row.id_photo_path);
+          if (fileData) {
+            const arrayBuffer = await fileData.arrayBuffer();
+            const base64 = Buffer.from(arrayBuffer).toString("base64");
+            const mime = fileData.type || "image/jpeg";
+            const ocr = await scanDocumentWithGemini(base64, mime);
+            if (ocr.ok && ocr.doc) {
+              const ocrUpdates: Record<string, unknown> = {
+                ocr_raw: ocr.doc,
+                ocr_name: ocr.doc.guestName ?? null,
+                ocr_document: ocr.doc.docNumber ?? null,
+                ocr_nationality: ocr.doc.nationality ?? null,
+                ocr_language: ocr.doc.language ?? null,
+                ocr_confidence: ocr.doc.confidence ?? null,
+                ocr_attempts: (row.ocr_attempts ?? 0) + 1,
+              };
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any
+              const { data: updated } = await (supabaseAdmin.from("checkin_records") as any)
+                .update(ocrUpdates)
+                .eq("id", row.id)
+                .select("*")
+                .single();
+              if (updated) currentRow = updated as CheckinRow;
+            }
+          }
+        } catch (err) {
+          console.warn("[checkin/step2:getState] retro-OCR failed:", err);
+        }
+      }
+      return NextResponse.json({ ok: true, state: getState(currentRow) });
     }
 
     // ── submit (foto opcional + datos manuales) ─────────────────────────────
