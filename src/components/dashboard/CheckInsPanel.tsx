@@ -281,6 +281,38 @@ function fromApi(
   };
 }
 
+/**
+ * Nombre a mostrar del huesped en la lista. Prioridades:
+ *  1. Si hay OCR name (del escaneo del host o del huesped) → usarlo
+ *  2. Si guest_name es un nombre real (no "Huésped" / "Reserva*") → usarlo solo
+ *  3. Sino → "Reserva #[CODIGO]" (forma consistente)
+ *
+ * El viejo display concatenaba guest_last_name que en el schema actual
+ * contiene el channel_code en lowercase, dando cosas raras como
+ * "Reserva hmdxfmfs9t" o "Reserva confirmada" (split incorrecto historico).
+ */
+function guestDisplayName(r: LocalCheckIn): string {
+  if (r.ocrName && r.ocrName.trim()) return r.ocrName;
+  const name = (r.guestName || "").trim();
+  const isPlaceholder =
+    !name ||
+    name.toLowerCase() === "huésped" ||
+    name.toLowerCase() === "huesped" ||
+    /^reserva( confirmada)?$/i.test(name);
+  if (!isPlaceholder) {
+    // Nombre real + apellido si no es channel_code
+    const last = (r.guestLastName || "").trim();
+    const looksLikeCode = /^[a-z0-9]{6,}$/i.test(last) || last.includes("confirmada");
+    return looksLikeCode ? name : `${name} ${last}`.trim();
+  }
+  // Placeholder → mostramos "Reserva #[channel_code]" si lo tenemos
+  const code = (r.bookingRef ? "" : r.guestLastName ?? "").toUpperCase();
+  // guestLastName en records iCal ahora es channel_code; si parece code lo usamos
+  const possibleCode = (r.guestLastName ?? "").trim().toUpperCase();
+  if (/^[A-Z0-9]{6,}$/.test(possibleCode)) return `Reserva #${possibleCode}`;
+  return code ? `Reserva #${code}` : "Reserva";
+}
+
 // ─── Status Badge ─────────────────────────────────────────────────────────────
 
 function StatusBadge({ r }: { r: LocalCheckIn }) {
@@ -1282,7 +1314,7 @@ export default function CheckInsPanel() {
                     </div>
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-2 flex-wrap">
-                        <span className="font-semibold text-base leading-tight">{r.guestName} {r.guestLastName}</span>
+                        <span className="font-semibold text-base leading-tight">{guestDisplayName(r)}</span>
                         <StatusBadge r={r} />
                         <SourceBadge r={r} />
                       </div>
