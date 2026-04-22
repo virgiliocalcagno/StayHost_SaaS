@@ -300,9 +300,28 @@ async function staffList() {
     return bad(500, "No se pudo listar check-ins");
   }
 
-  const records = ((data ?? []) as CheckinRow[]).map((r) =>
-    rowToApi(r, { exposeWifi: false })
-  );
+  const rows = (data ?? []) as CheckinRow[];
+
+  // Traer channel_code de cada booking vinculado para poder mostrar
+  // "Reserva #HMXXXXXX" en el dashboard. Hacemos una sola query con IN.
+  const bookingRefs = rows
+    .map((r) => r.booking_ref)
+    .filter((x): x is string => Boolean(x));
+  const channelCodeByBookingId = new Map<string, string>();
+  if (bookingRefs.length > 0) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const { data: bks } = await (supabase.from("bookings") as any)
+      .select("id, channel_code")
+      .in("id", bookingRefs);
+    for (const b of ((bks ?? []) as { id: string; channel_code: string | null }[])) {
+      if (b.channel_code) channelCodeByBookingId.set(b.id, b.channel_code);
+    }
+  }
+
+  const records = rows.map((r) => ({
+    ...rowToApi(r, { exposeWifi: false }),
+    channelCode: r.booking_ref ? channelCodeByBookingId.get(r.booking_ref) ?? null : null,
+  }));
   return NextResponse.json({ records });
 }
 

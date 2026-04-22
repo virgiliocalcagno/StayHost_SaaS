@@ -75,6 +75,7 @@ export interface LocalCheckIn {
   ocrName?: string | null;
   ocrDocument?: string | null;
   ocrNationality?: string | null;
+  channelCodeReal?: string | null;  // traido del booking vinculado (HMXXXXXX / SHXXXXXX)
 }
 
 interface WifiConfig {
@@ -200,6 +201,7 @@ interface ApiCheckin {
   ocrName?: string | null;
   ocrDocument?: string | null;
   ocrNationality?: string | null;
+  channelCode?: string | null;
 }
 
 async function apiCheckin<T = unknown>(action: string, payload: Record<string, unknown> = {}): Promise<T> {
@@ -278,6 +280,7 @@ function fromApi(
     ocrName: r.ocrName ?? null,
     ocrDocument: r.ocrDocument ?? null,
     ocrNationality: r.ocrNationality ?? null,
+    channelCodeReal: r.channelCode ?? null,
   };
 }
 
@@ -292,6 +295,7 @@ function fromApi(
  * "Reserva hmdxfmfs9t" o "Reserva confirmada" (split incorrecto historico).
  */
 function guestDisplayName(r: LocalCheckIn): string {
+  // Prioridad 1: nombre real leido por OCR (del host o del huesped)
   if (r.ocrName && r.ocrName.trim()) return r.ocrName;
 
   const name = (r.guestName || "").trim();
@@ -302,33 +306,26 @@ function guestDisplayName(r: LocalCheckIn): string {
     nameLow === "huesped" ||
     /^reserva( confirmada)?$/i.test(name);
 
-  // Channel code real — preferimos el decodificado del `l` en encodedData.
-  // Si no se puede (record manual antiguo), caemos al guestLastName.
-  function extractChannelCode(): string {
-    // Palabras que pueden aparecer en guest_last_name y NO son channel_codes
-    const nonCodes = new Set(["confirmada", "confirmado", "huesped", "huésped", "reserva"]);
-    try {
-      if (r.encodedData) {
-        const decoded = atob(r.encodedData);
-        const parsed = JSON.parse(decodeURIComponent(escape(decoded))) as { l?: string };
-        if (parsed.l && !nonCodes.has(parsed.l.toLowerCase())) {
-          return parsed.l.toUpperCase();
-        }
+  // Prioridad 2: si tenemos nombre real de otra fuente, usarlo sin sufijo
+  if (!isPlaceholder) return name;
+
+  // Prioridad 3: "Reserva #CODIGO" con el channel_code REAL del booking
+  // vinculado (viene del API en `channelCodeReal`). Fallback al encodedData
+  // si por algun motivo no llego del API.
+  if (r.channelCodeReal && r.channelCodeReal.trim()) {
+    return `Reserva #${r.channelCodeReal.toUpperCase()}`;
+  }
+  try {
+    if (r.encodedData) {
+      const decoded = atob(r.encodedData);
+      const parsed = JSON.parse(decodeURIComponent(escape(decoded))) as { l?: string };
+      const nonCodes = new Set(["confirmada", "confirmado", "huesped", "huésped", "reserva"]);
+      if (parsed.l && !nonCodes.has(parsed.l.toLowerCase())) {
+        return `Reserva #${parsed.l.toUpperCase()}`;
       }
-    } catch { /* ignore */ }
-    const last = (r.guestLastName ?? "").trim();
-    if (nonCodes.has(last.toLowerCase())) return "";
-    if (/^[a-z0-9]{6,}$/i.test(last)) return last.toUpperCase();
-    return "";
-  }
-
-  if (!isPlaceholder) {
-    // Nombre real del huesped — no mostramos el channel_code como apellido.
-    return name;
-  }
-
-  const code = extractChannelCode();
-  return code ? `Reserva #${code}` : "Reserva";
+    }
+  } catch { /* ignore */ }
+  return "Reserva";
 }
 
 // ─── Status Badge ─────────────────────────────────────────────────────────────
