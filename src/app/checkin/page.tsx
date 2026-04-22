@@ -35,6 +35,12 @@ interface LookupResponse {
     guestName: string | null;
     tenantId: string;
     phoneLast4: string | null;
+    channel: string;
+    electricityEnabled: boolean;
+    electricityRate: number;
+    electricityTotal: number;
+    wifiSsid: string | null;
+    wifiPassword: string | null;
   };
 }
 
@@ -52,6 +58,12 @@ function buildEncodedData(b: NonNullable<LookupResponse["booking"]>): string {
     nt: b.nights,
     p: b.propertyName ?? "Propiedad",
     pa: b.propertyAddress ?? "",
+    ch: b.channel,
+    ee: b.electricityEnabled,
+    er: b.electricityRate,
+    et: b.electricityTotal,
+    ws: b.wifiSsid ?? "",
+    wp: b.wifiPassword ?? "",
   };
   try {
     return btoa(unescape(encodeURIComponent(JSON.stringify(payload))));

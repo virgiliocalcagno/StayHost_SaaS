@@ -30,6 +30,12 @@ type LookupResult = {
     guestName: string | null;
     tenantId: string;
     phoneLast4: string | null;
+    channel: string;
+    electricityEnabled: boolean;
+    electricityRate: number;
+    electricityTotal: number;
+    wifiSsid: string | null;
+    wifiPassword: string | null;
   };
 };
 
@@ -81,7 +87,7 @@ export async function POST(req: NextRequest): Promise<NextResponse<LookupResult 
   const { data, error } = await supabaseAdmin
     .from("bookings")
     .select(
-      "id, tenant_id, channel_code, phone_last4, property_id, guest_name, check_in, check_out, properties:property_id(name, address)"
+      "id, tenant_id, channel_code, phone_last4, property_id, guest_name, check_in, check_out, source, properties:property_id(name, address, wifi_name, wifi_password, electricity_enabled, electricity_rate)"
     )
     .eq("channel_code", code)
     .eq("status", "confirmed")
@@ -117,7 +123,15 @@ export async function POST(req: NextRequest): Promise<NextResponse<LookupResult 
     guest_name: string | null;
     check_in: string;
     check_out: string;
-    properties: { name: string | null; address: string | null } | null;
+    source: string | null;
+    properties: {
+      name: string | null;
+      address: string | null;
+      wifi_name: string | null;
+      wifi_password: string | null;
+      electricity_enabled: boolean | null;
+      electricity_rate: number | null;
+    } | null;
   };
   const phoneLast4 = b.phone_last4 ?? "";
 
@@ -127,6 +141,18 @@ export async function POST(req: NextRequest): Promise<NextResponse<LookupResult 
       (new Date(b.check_out).getTime() - new Date(b.check_in).getTime()) / (1000 * 60 * 60 * 24)
     )
   );
+
+  // Tarifa electrica — reactiva por canal (spec 2026-04-22):
+  //   VRBO    → energia incluida, NO se cobra en el check-in
+  //   Airbnb  → se muestra con opcion PayPal o "Solicitar Autorizacion"
+  //   Directa → se muestra con opcion Online o "Solicitar Autorizacion"
+  // Si la propiedad tiene electricity_enabled=false, se omite tambien.
+  const channel = String(b.source ?? "").toLowerCase();
+  const propertyElectricityEnabled = b.properties?.electricity_enabled ?? true;
+  const electricityRate = b.properties?.electricity_rate ?? 0;
+  const isVrbo = channel === "vrbo";
+  const electricityEnabledForGuest = propertyElectricityEnabled && !isVrbo && electricityRate > 0;
+  const electricityTotal = electricityEnabledForGuest ? electricityRate * nights : 0;
 
   // Buscar/crear checkin_record para este booking. La API de huésped
   // (uploadId, payElectricity, etc.) usa checkin_records.id como identidad,
@@ -173,13 +199,13 @@ export async function POST(req: NextRequest): Promise<NextResponse<LookupResult 
         property_address: b.properties?.address ?? null,
         status: "pendiente",
         id_status: "pending",
-        source: "auto_direct",
+        source: channel === "ical" || channel === "airbnb" || channel === "vrbo" ? "auto_ical" : "auto_direct",
         booking_ref: b.id,
         access_granted: false,
-        electricity_enabled: true,
-        electricity_rate: 5,
+        electricity_enabled: electricityEnabledForGuest,
+        electricity_rate: electricityRate,
         electricity_paid: false,
-        electricity_total: 0,
+        electricity_total: electricityTotal,
         paypal_fee_included: true,
       } as never);
     if (insertErr) {
@@ -204,6 +230,12 @@ export async function POST(req: NextRequest): Promise<NextResponse<LookupResult 
       guestName: b.guest_name,
       tenantId: b.tenant_id,
       phoneLast4: b.phone_last4,
+      channel,
+      electricityEnabled: electricityEnabledForGuest,
+      electricityRate,
+      electricityTotal,
+      wifiSsid: b.properties?.wifi_name ?? null,
+      wifiPassword: b.properties?.wifi_password ?? null,
     },
   });
 }

@@ -27,7 +27,8 @@ interface DecodedBooking {
   ci: string; co: string; nt: number;
   p: string; pa?: string; pi?: string;
   ws?: string; wp?: string;
-  ee?: boolean; et?: number;
+  ee?: boolean; et?: number; er?: number;
+  ch?: string;                   // canal: airbnb / vrbo / direct / ical
   us?: UpsellItem[];
 }
 
