@@ -99,23 +99,69 @@ function CheckInInner({ bookingId }: { bookingId: string }) {
     }
   }, [isV2, booking]);
 
-  // Step 2
+  // Step 2 — foto + OCR + datos de contacto (flujo adaptativo)
+  type Step2State = {
+    hasPhoto: boolean;
+    photoStatus: string;
+    needsPhoto: boolean;
+    ocr: { name?: string | null; document?: string | null; nationality?: string | null; confidence?: number | null } | null;
+    contact: { email: string | null; whatsapp: string | null; guests: number | null };
+    needsEmail: boolean;
+    needsWhatsapp: boolean;
+    needsGuestCount: boolean;
+    waitingForAuth: boolean;
+    authReason: string | null;
+    requiresManualReview: boolean;
+  };
+  const [step2State, setStep2State] = useState<Step2State | null>(null);
   const [idPreview, setIdPreview] = useState<string | null>(null);
   const [idBase64, setIdBase64] = useState("");
+  const [guestEmail, setGuestEmail] = useState("");
+  const [guestWhatsapp, setGuestWhatsapp] = useState("");
+  const [guestCount, setGuestCount] = useState<number>(1);
+  const [consentAccepted, setConsentAccepted] = useState(false);
+  const [ocrAttempts, setOcrAttempts] = useState(0);
+  const [ocrFailedLast, setOcrFailedLast] = useState(false);
   const cameraRef = useRef<HTMLInputElement>(null);
   const galleryRef = useRef<HTMLInputElement>(null);
 
-  // Step 3 — upsells
-  const [selected, setSelected] = useState<Set<string>>(new Set());
-  const upsells = booking?.us ?? [];
-  const upsellsTotal = upsells.filter(u => selected.has(u.id)).reduce((s, u) => s + u.p, 0);
+  // Fetch del estado inicial cuando llegamos al Paso 2 — permite flujo
+  // adaptativo: si el host ya cargo email/foto, no los pedimos al huesped.
+  useEffect(() => {
+    if (step !== 2 || !isV2 || !booking) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch("/api/checkin/step2", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "getState", id: bookingId, code: booking.l }),
+        });
+        if (!res.ok) return;
+        const data = (await res.json()) as { state?: Step2State };
+        if (cancelled || !data.state) return;
+        setStep2State(data.state);
+        if (data.state.contact.email) setGuestEmail(data.state.contact.email);
+        if (data.state.contact.whatsapp) setGuestWhatsapp(data.state.contact.whatsapp);
+        if (data.state.contact.guests) setGuestCount(data.state.contact.guests);
+        setOcrAttempts(data.state.ocr ? 1 : 0);
+      } catch { /* silent */ }
+    })();
+    return () => { cancelled = true; };
+  }, [step, isV2, booking, bookingId]);
 
-  // Step 4 — electricity
+  // Step 3 — electricity (ex-step 4) — el flow nuevo elimina upsells del wizard
   const [electricityPaid, setElectricityPaid] = useState(false);
+  const [waitingAuthElectric, setWaitingAuthElectric] = useState(false);
 
-  // Step 5 — copy flags
+  // Step 4 — copy flags (ex-step 5)
   const [copiedSsid, setCopiedSsid] = useState(false);
   const [copiedPass, setCopiedPass] = useState(false);
+
+  // Upsells legacy — se mantiene la variable para no romper refs pero ya no
+  // se renderizan en el wizard (movidos al Guest Hub post-checkin).
+  const upsells = booking?.us ?? [];
+  const upsellsTotal = 0;
 
   // ── Auth ────────────────────────────────────────────────────────────────────
   function handleAuth() {
@@ -172,39 +218,110 @@ function CheckInInner({ bookingId }: { bookingId: string }) {
     }
   }
 
-  async function handleUploadId() {
-    if (!idBase64) { setError("Selecciona una foto de tu documento."); return; }
+  // Valida email basico (formato xxx@xxx.xx). No hace DNS lookup.
+  function isEmailValid(v: string): boolean {
+    return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v.trim());
+  }
+  function isWhatsappValid(v: string): boolean {
+    // Minimo 8 digitos (con o sin +, espacios, guiones)
+    const digits = v.replace(/\D/g, "");
+    return digits.length >= 8 && digits.length <= 15;
+  }
+
+  // Envia foto (si es nueva) + datos de contacto al endpoint /api/checkin/step2.
+  // Flujo adaptativo: solo manda los campos que cambiaron.
+  async function handleSubmitStep2() {
+    if (!booking) return;
+
+    // Validaciones obligatorias. Foto puede omitirse si ya hay una subida previa.
+    const needsPhoto = !step2State?.hasPhoto && !idBase64;
+    if (needsPhoto) { setError("Subí una foto de tu documento."); return; }
+    if (!isEmailValid(guestEmail)) { setError("Ingresá un email válido."); return; }
+    if (!isWhatsappValid(guestWhatsapp)) { setError("Ingresá un WhatsApp válido (mínimo 8 dígitos)."); return; }
+    if (!guestCount || guestCount < 1) { setError("¿Cuántas personas se quedan? Mínimo 1."); return; }
+    if (!consentAccepted) { setError("Debés aceptar las reglas de la casa para continuar."); return; }
+
     setLoading(true);
     try {
-      // Pasamos el soft token (lastName = channel_code). last4 es opcional,
-      // algunas reservas no lo tienen (VRBO, directas sin teléfono).
-      const res = await fetch("/api/checkin", {
+      const body: Record<string, unknown> = {
+        action: "submit",
+        id: bookingId,
+        code: booking.l,
+        email: guestEmail,
+        whatsapp: guestWhatsapp,
+        guestCount,
+        consentAccepted: true,
+      };
+      if (idBase64) body.idPhotoBase64 = idBase64;
+
+      const res = await fetch("/api/checkin/step2", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "uploadId", id: bookingId, lastName, last4, idPhotoBase64: idBase64 }),
+        body: JSON.stringify(body),
       });
+
       if (!res.ok) {
         const msg = await res.json().catch(() => ({ error: "" }));
-        // Incluir status HTTP en el mensaje para diagnóstico rápido desde
-        // el celular sin tener que abrir DevTools.
-        const statusHint = ` (error ${res.status})`;
-        setError((msg.error || "No pudimos subir la foto. Intentá de nuevo.") + statusHint);
+        setError((msg.error || "No pudimos guardar tus datos.") + ` (error ${res.status})`);
         setLoading(false);
         return;
       }
+
+      const data = (await res.json()) as { state?: Step2State };
+      if (data.state) {
+        setStep2State(data.state);
+        // Si la foto fue subida y el OCR tiene confianza baja o no extrajo nombre → incrementamos attempts
+        if (idBase64) {
+          const ocrOk = data.state.ocr && (data.state.ocr.confidence ?? 0) >= 0.5 && data.state.ocr.name;
+          setOcrFailedLast(!ocrOk);
+          setOcrAttempts((n) => n + 1);
+          if (!ocrOk) {
+            setLoading(false);
+            setError(ocrAttempts + 1 >= 2
+              ? "Tuvimos dificultades leyendo tu documento."
+              : "No pudimos leer bien tu documento. Probá con otra foto con mejor luz.");
+            return;
+          }
+        }
+      }
     } catch (err) {
       const detail = err instanceof Error ? ` — ${err.message}` : "";
-      setError("Error de conexión. Revisá tu internet e intentá de nuevo." + detail);
+      setError("Error de conexión. Intentá de nuevo." + detail);
       setLoading(false);
       return;
     }
-    setLoading(false); setError("");
-    setStep(upsells.length > 0 ? 3 : (booking?.ee !== false ? 4 : 5));
+
+    setLoading(false);
+    setError("");
+    // Saltamos Step 3 (upsells removidos). Si la propiedad no cobra electricidad → salta directo al 5.
+    setStep(booking?.ee ? 4 : 5);
   }
 
-  // ── Upsells → next ──────────────────────────────────────────────────────────
-  function handleUpsellsNext() {
-    setStep(booking?.ee !== false ? 4 : 5);
+  // Fallback: el huesped pide autorizacion manual al host cuando OCR no lee.
+  async function handleRequestAuth() {
+    if (!booking) return;
+    setLoading(true);
+    try {
+      await fetch("/api/checkin/step2", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "requestAuth", id: bookingId, code: booking.l, reason: "ocr_failed" }),
+      });
+    } catch { /* silent */ }
+
+    // Abrimos WhatsApp al numero del anfitrion. Por ahora hardcodeamos un
+    // placeholder — cuando tengamos el campo `tenant.owner_whatsapp` se lee
+    // desde el backend. El admin/email tambien reciben notificacion.
+    const hostPhone = "18095551234";
+    const msg = encodeURIComponent(
+      `Hola, soy ${booking?.n ?? "el huésped"} (reserva ${booking?.l}). Estoy haciendo check-in en ${booking?.p ?? "la propiedad"} pero la app no pudo leer mi documento. ¿Podrías autorizarme?`
+    );
+    window.open(`https://wa.me/${hostPhone}?text=${msg}`, "_blank");
+    setLoading(false);
+    setError("");
+    // Avanzamos al Paso 5 con estado "esperando autorizacion"
+    setStep(5);
+    setStep2State((s) => s ? { ...s, waitingForAuth: true, authReason: "ocr_failed" } : s);
   }
 
   // ── Electricity ─────────────────────────────────────────────────────────────
@@ -361,23 +478,16 @@ function CheckInInner({ bookingId }: { bookingId: string }) {
           </div>
         )}
 
-        {/* ── Step 2: ID Upload ────────────────────────────────────────────── */}
+        {/* ── Step 2: ID + Datos de Contacto (flujo adaptativo) ───────────── */}
         {step === 2 && (
           <div className="space-y-5">
             <div className="text-center pt-4 space-y-2">
               <div className="text-5xl">📷</div>
-              <h2 className="text-xl font-bold text-slate-800">Documento de Identidad</h2>
-              <p className="text-slate-500 text-sm">Foto clara de tu pasaporte, cédula o licencia.</p>
+              <h2 className="text-xl font-bold text-slate-800">Documento y Contacto</h2>
+              <p className="text-slate-500 text-sm">Subí tu documento y completá los datos faltantes.</p>
             </div>
 
-            {/*
-              Dos inputs separados:
-              - `capture="environment"` fuerza camara trasera en el celular
-              - sin capture, abre selector de archivos/galeria
-              Asi damos una opcion explicita para cada caso y evitamos el
-              selector ambiguo de iOS/Android que algunos usuarios no saben
-              usar.
-            */}
+            {/* ── Seccion foto ──────────────────────────────────────────── */}
             <input ref={cameraRef} type="file" accept="image/*" capture="environment"
               title="Tomar foto con camara"
               aria-label="Tomar foto del documento con la camara"
@@ -387,17 +497,37 @@ function CheckInInner({ bookingId }: { bookingId: string }) {
               aria-label="Subir foto del documento desde galeria o archivos"
               onChange={handleFile} className="hidden" />
 
-            {idPreview ? (
-              <div className="relative rounded-2xl overflow-hidden border-2 border-orange-300 shadow-sm">
-                <img src={idPreview} alt="Documento" className="w-full max-h-52 object-contain bg-slate-50" />
-                <button type="button"
-                  onClick={() => {
-                    setIdPreview(null);
-                    setIdBase64("");
-                    if (cameraRef.current) cameraRef.current.value = "";
-                    if (galleryRef.current) galleryRef.current.value = "";
-                  }}
-                  className="absolute top-2 right-2 w-7 h-7 bg-white/90 rounded-full flex items-center justify-center text-slate-600 shadow text-lg">×</button>
+            {idPreview || step2State?.hasPhoto ? (
+              <div className="space-y-3">
+                {idPreview && (
+                  <div className="relative rounded-2xl overflow-hidden border-2 border-orange-300 shadow-sm">
+                    <img src={idPreview} alt="Documento" className="w-full max-h-48 object-contain bg-slate-50" />
+                    <button type="button"
+                      onClick={() => {
+                        setIdPreview(null);
+                        setIdBase64("");
+                        if (cameraRef.current) cameraRef.current.value = "";
+                        if (galleryRef.current) galleryRef.current.value = "";
+                      }}
+                      className="absolute top-2 right-2 w-7 h-7 bg-white/90 rounded-full flex items-center justify-center text-slate-600 shadow text-lg">×</button>
+                  </div>
+                )}
+                {!idPreview && step2State?.hasPhoto && (
+                  <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-3 flex items-center gap-2 text-sm text-emerald-700">
+                    <span className="text-lg">✅</span>
+                    <span>Documento ya cargado.</span>
+                    <button type="button" onClick={() => cameraRef.current?.click()}
+                      className="ml-auto text-xs font-semibold text-emerald-600 underline">Cambiar</button>
+                  </div>
+                )}
+                {step2State?.ocr && (step2State.ocr.name || step2State.ocr.document) && (
+                  <div className="bg-slate-50 rounded-xl p-3 border border-slate-200 space-y-1 text-xs">
+                    <p className="font-bold text-slate-500 uppercase tracking-widest mb-1">Datos leídos del documento</p>
+                    {step2State.ocr.name && <p className="text-slate-700"><span className="text-slate-400">Nombre:</span> <span className="font-semibold">{step2State.ocr.name}</span></p>}
+                    {step2State.ocr.document && <p className="text-slate-700"><span className="text-slate-400">Documento:</span> <span className="font-mono">{step2State.ocr.document}</span></p>}
+                    {step2State.ocr.nationality && <p className="text-slate-700"><span className="text-slate-400">Nacionalidad:</span> <span className="font-semibold">{step2State.ocr.nationality}</span></p>}
+                  </div>
+                )}
               </div>
             ) : (
               <div className="grid grid-cols-2 gap-3">
@@ -414,110 +544,161 @@ function CheckInInner({ bookingId }: { bookingId: string }) {
               </div>
             )}
 
-            <div className="bg-sky-50 border border-sky-100 rounded-xl p-3 text-sky-700 text-xs space-y-1">
-              <p className="font-semibold">¿Por qué lo necesitamos?</p>
-              <p>Requerido por regulaciones de alojamiento turístico. Tu información es confidencial.</p>
-            </div>
-
-            {error && <div className="bg-red-50 border border-red-200 rounded-xl p-3 text-red-600 text-sm text-center">{error}</div>}
-
-            <button type="button" onClick={handleUploadId}
-              disabled={loading || !idBase64}
-              className="w-full bg-orange-500 hover:bg-orange-600 disabled:bg-slate-200 disabled:text-slate-400 active:scale-95 text-white font-bold py-4 rounded-2xl transition-all shadow-md shadow-orange-200">
-              {loading ? "Enviando..." : "Enviar Documento →"}
-            </button>
-          </div>
-        )}
-
-        {/* ── Step 3: Upsells / Extras ─────────────────────────────────────── */}
-        {step === 3 && (
-          <div className="space-y-5">
-            <div className="text-center pt-4 space-y-2">
-              <div className="text-5xl">🛍️</div>
-              <h2 className="text-xl font-bold text-slate-800">Servicios Extra</h2>
-              <p className="text-slate-500 text-sm">Opcional — mejora tu estadía con estos servicios.</p>
-            </div>
-
-            <div className="space-y-3">
-              {upsells.map(u => {
-                const on = selected.has(u.id);
-                return (
-                  <button key={u.id} type="button"
-                    onClick={() => setSelected(prev => {
-                      const next = new Set(prev);
-                      on ? next.delete(u.id) : next.add(u.id);
-                      return next;
-                    })}
-                    className={`w-full text-left rounded-2xl border-2 p-4 transition-all ${on ? "border-orange-400 bg-orange-50 shadow-sm" : "border-slate-200 bg-white hover:border-slate-300"}`}>
-                    <div className="flex items-center justify-between">
-                      <div className="flex-1 min-w-0">
-                        <p className="font-semibold text-slate-800">{u.n}</p>
-                        <p className="text-sm text-slate-500 mt-0.5">{u.d}</p>
-                      </div>
-                      <div className="text-right ml-3 shrink-0">
-                        <p className="text-lg font-bold text-orange-500">${u.p}</p>
-                        <div className={`w-5 h-5 rounded-full border-2 ml-auto mt-1 flex items-center justify-center text-xs ${on ? "bg-orange-500 border-orange-500 text-white" : "border-slate-300"}`}>
-                          {on && "✓"}
-                        </div>
-                      </div>
-                    </div>
-                  </button>
-                );
-              })}
-            </div>
-
-            {upsellsTotal > 0 && (
-              <div className="bg-orange-50 border border-orange-200 rounded-xl p-3 flex items-center justify-between">
-                <span className="text-orange-700 text-sm font-medium">Extras seleccionados</span>
-                <span className="text-orange-600 font-bold">${upsellsTotal} USD</span>
+            {/* ── Fallback OCR atascado — autorizacion manual ───────────── */}
+            {ocrFailedLast && ocrAttempts >= 2 && (
+              <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 space-y-3 text-sm">
+                <p className="font-semibold text-amber-800">No pudimos leer tu documento</p>
+                <p className="text-amber-700 text-xs">Podemos avanzar igual — tu anfitrión te autorizará manualmente en minutos.</p>
+                <button type="button" onClick={handleRequestAuth} disabled={loading}
+                  className="w-full bg-emerald-500 hover:bg-emerald-600 text-white font-semibold py-2.5 rounded-xl text-sm flex items-center justify-center gap-2 disabled:opacity-50">
+                  💬 Pedir autorización al anfitrión
+                </button>
               </div>
             )}
 
-            <button type="button" onClick={handleUpsellsNext}
-              className="w-full bg-orange-500 hover:bg-orange-600 active:scale-95 text-white font-bold py-4 rounded-2xl transition-all shadow-md shadow-orange-200">
-              {selected.size > 0 ? `Continuar con ${selected.size} extra${selected.size > 1 ? "s" : ""} →` : "Continuar sin extras →"}
+            {/* ── Datos de contacto (adaptativos) ──────────────────────── */}
+            <div className="bg-white rounded-2xl border border-slate-100 p-4 space-y-4 shadow-sm">
+              <p className="text-xs font-bold text-slate-500 uppercase tracking-widest">Tus datos de contacto</p>
+
+              <div className="space-y-1.5">
+                <label className="text-xs font-semibold text-slate-600" htmlFor="guestEmail">Email *</label>
+                <input id="guestEmail" type="email" inputMode="email" autoComplete="email"
+                  value={guestEmail}
+                  onChange={(e) => { setGuestEmail(e.target.value); setError(""); }}
+                  placeholder="tunombre@ejemplo.com"
+                  className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-orange-400 bg-slate-50" />
+              </div>
+
+              <div className="space-y-1.5">
+                <label className="text-xs font-semibold text-slate-600" htmlFor="guestWhatsapp">WhatsApp *</label>
+                <input id="guestWhatsapp" type="tel" inputMode="tel" autoComplete="tel"
+                  value={guestWhatsapp}
+                  onChange={(e) => { setGuestWhatsapp(e.target.value); setError(""); }}
+                  placeholder="+1 809 555 1234"
+                  className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-orange-400 bg-slate-50" />
+              </div>
+
+              <div className="space-y-1.5">
+                <label className="text-xs font-semibold text-slate-600" htmlFor="guestCount">¿Cuántas personas se quedan? *</label>
+                <input id="guestCount" type="number" min={1} max={20}
+                  value={guestCount}
+                  onChange={(e) => { setGuestCount(parseInt(e.target.value || "1", 10)); setError(""); }}
+                  className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-orange-400 bg-slate-50" />
+              </div>
+            </div>
+
+            {/* ── Advertencia de consentimiento informado ──────────────── */}
+            <label className="flex items-start gap-3 bg-amber-50 border border-amber-200 rounded-xl p-3 cursor-pointer">
+              <input type="checkbox" checked={consentAccepted}
+                onChange={(e) => setConsentAccepted(e.target.checked)}
+                className="mt-0.5 w-5 h-5 accent-orange-500 flex-shrink-0" />
+              <span className="text-xs text-amber-800 leading-relaxed">
+                <strong>Aceptás las reglas de la casa</strong> (previamente informadas al confirmar tu reserva).
+                Tus códigos de puerta se enviarán a los contactos de arriba. <strong>Si los datos son falsos, no podrás ingresar.</strong>
+              </span>
+            </label>
+
+            {error && <div className="bg-red-50 border border-red-200 rounded-xl p-3 text-red-600 text-sm text-center">{error}</div>}
+
+            <button type="button" onClick={handleSubmitStep2}
+              disabled={loading}
+              className="w-full bg-orange-500 hover:bg-orange-600 disabled:bg-slate-200 disabled:text-slate-400 active:scale-95 text-white font-bold py-4 rounded-2xl transition-all shadow-md shadow-orange-200">
+              {loading ? "Procesando..." : "Continuar →"}
             </button>
           </div>
         )}
 
-        {/* ── Step 4: Electricity ──────────────────────────────────────────── */}
+        {/*
+          Step 3 (upsells) fue removido del wizard segun spec 2026-04-22.
+          Los servicios extra viven en el Guest Hub post-checkin (accesible
+          via QR) para no frenar el registro con decisiones de compra.
+          Las variables upsells/upsellsTotal/selected se mantienen solo
+          por compatibilidad con el tipo DecodedBooking.
+        */}
+
+        {/* ── Step 4: Electricidad (reactivo por canal) ──────────────────── */}
         {step === 4 && (
           <div className="space-y-5">
             <div className="text-center pt-4 space-y-2">
               <div className="text-5xl">⚡</div>
               <h2 className="text-xl font-bold text-slate-800">Tarifa Eléctrica</h2>
-              <p className="text-slate-500 text-sm">Pago por consumo eléctrico durante tu estadía.</p>
+              <p className="text-slate-500 text-sm">Cargo por consumo durante tu estadía.</p>
+            </div>
+
+            {/* Consentimiento informado — requerido en TODO paso donde aparece el cobro */}
+            <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 text-xs text-amber-800 leading-snug">
+              <p><strong>⚠️ Este cargo está informado en las reglas de la casa</strong> que aceptaste antes y después de confirmar tu reserva. Es parte integral del acuerdo.</p>
             </div>
 
             <div className="bg-white rounded-2xl shadow-sm border border-slate-100 p-5 space-y-3">
               <div className="flex justify-between text-sm"><span className="text-slate-500">Tarifa por noche</span><span className="font-medium text-slate-800">${((booking?.et ?? 0) / (booking?.nt ?? 1)).toFixed(2)} USD</span></div>
               <div className="flex justify-between text-sm"><span className="text-slate-500">Noches</span><span className="font-medium text-slate-800">× {booking?.nt}</span></div>
-              <div className="flex justify-between text-sm"><span className="text-slate-500">Comisión PayPal</span><span className="font-medium text-slate-800">incluida</span></div>
-              {upsellsTotal > 0 && <div className="flex justify-between text-sm"><span className="text-slate-500">Extras</span><span className="font-medium text-slate-800">${upsellsTotal} USD</span></div>}
               <div className="border-t border-slate-100 pt-3 flex justify-between">
                 <span className="font-bold text-slate-800">Total</span>
-                <span className="text-2xl font-bold text-orange-500">${((booking?.et ?? 0) + upsellsTotal).toFixed(2)} USD</span>
+                <span className="text-2xl font-bold text-orange-500">${(booking?.et ?? 0).toFixed(2)} USD</span>
               </div>
             </div>
 
-            <button type="button" onClick={handlePay}
-              className="w-full bg-[#0070BA] hover:bg-[#005ea6] active:scale-95 text-white font-bold py-4 rounded-2xl transition-all shadow-md flex items-center justify-center gap-2">
-              <svg viewBox="0 0 24 24" fill="currentColor" className="w-5 h-5">
-                <path d="M7.5 5.5C9.5 3.7 12.5 3.7 14.5 5.5L20 11c1.8 1.8 1.8 4.7 0 6.5s-4.7 1.8-6.5 0L7 11C5.2 9.2 5.2 6.3 7 4.5" opacity=".6"/>
-                <path d="M16.5 18.5c-2 1.8-5 1.8-7 0L4 13c-1.8-1.8-1.8-4.7 0-6.5s4.7-1.8 6.5 0L17 13c1.8 1.8 1.8 4.7 0 6.5"/>
-              </svg>
-              Pagar con PayPal — ${((booking?.et ?? 0) + upsellsTotal).toFixed(2)}
-            </button>
+            {/* Botones reactivos por canal */}
+            {booking?.ch === "airbnb" ? (
+              <>
+                <button type="button" onClick={handlePay}
+                  className="w-full bg-[#0070BA] hover:bg-[#005ea6] active:scale-95 text-white font-bold py-4 rounded-2xl transition-all shadow-md flex items-center justify-center gap-2">
+                  💳 Pagar con PayPal o Tarjeta — ${(booking?.et ?? 0).toFixed(2)}
+                </button>
+                <button type="button" onClick={() => { setWaitingAuthElectric(true); setStep(5); }}
+                  className="w-full bg-white border-2 border-slate-200 hover:border-slate-300 active:scale-95 text-slate-700 font-semibold py-3.5 rounded-2xl text-sm">
+                  Pedir cargo a Airbnb (Centro de Resoluciones)
+                </button>
+              </>
+            ) : (
+              <>
+                <button type="button" onClick={handlePay}
+                  className="w-full bg-[#0070BA] hover:bg-[#005ea6] active:scale-95 text-white font-bold py-4 rounded-2xl transition-all shadow-md flex items-center justify-center gap-2">
+                  💳 Pagar Online (PayPal / Tarjeta) — ${(booking?.et ?? 0).toFixed(2)}
+                </button>
+                <button type="button" onClick={() => { setWaitingAuthElectric(true); setStep(5); }}
+                  className="w-full bg-white border-2 border-slate-200 hover:border-slate-300 active:scale-95 text-slate-700 font-semibold py-3.5 rounded-2xl text-sm">
+                  Solicitar autorización (transferencia o efectivo)
+                </button>
+              </>
+            )}
 
-            <button type="button" onClick={() => setStep(5)}
-              className="w-full text-slate-400 text-sm py-2 hover:text-slate-600 transition-colors">
-              Pagar después en recepción
-            </button>
+            <p className="text-center text-[11px] text-slate-400">
+              Si elegís "solicitar autorización", tu acceso se libera cuando el anfitrión confirme el pago.
+            </p>
           </div>
         )}
 
-        {/* ── Step 5: Access ───────────────────────────────────────────────── */}
-        {step === 5 && booking && (
+        {/* ── Step 5: Access / Sala de Espera ──────────────────────────────── */}
+        {step === 5 && booking && (step2State?.waitingForAuth || waitingAuthElectric) && (
+          <div className="space-y-5">
+            <div className="bg-gradient-to-br from-amber-400 to-orange-500 rounded-3xl p-6 text-white text-center space-y-3 shadow-lg shadow-amber-200">
+              <div className="text-5xl">⏳</div>
+              <h2 className="text-2xl font-bold">Registro completo</h2>
+              <p className="text-amber-50 text-sm leading-relaxed">
+                Tu check-in está listo pero tu acceso está en pausa hasta que
+                tu anfitrión confirme{" "}
+                {step2State?.waitingForAuth ? "tu identidad" : "el pago de la tarifa eléctrica"}.
+              </p>
+            </div>
+
+            <div className="bg-white rounded-2xl border border-slate-100 p-5 space-y-3 text-sm">
+              <p className="font-semibold text-slate-700">Qué sigue ahora:</p>
+              <ul className="space-y-2 text-slate-600">
+                <li className="flex gap-2"><span>1.</span> Tu anfitrión fue notificado automáticamente.</li>
+                <li className="flex gap-2"><span>2.</span> Una vez que autorice, esta pantalla se actualiza sola con tu código y WiFi.</li>
+                <li className="flex gap-2"><span>3.</span> Si hay demoras, podés escribirle directamente.</li>
+              </ul>
+            </div>
+
+            <div className="bg-slate-50 border border-slate-200 rounded-xl p-3 text-xs text-slate-600 text-center">
+              🔒 Tu PIN y WiFi se muestran cuando el anfitrión autorice.
+            </div>
+          </div>
+        )}
+
+        {step === 5 && booking && !(step2State?.waitingForAuth || waitingAuthElectric) && (
           <div className="space-y-5">
             {/* Welcome banner */}
             <div className="bg-gradient-to-br from-emerald-400 to-teal-500 rounded-3xl p-6 text-white text-center space-y-2 shadow-lg shadow-emerald-200">
@@ -573,7 +754,20 @@ function CheckInInner({ bookingId }: { bookingId: string }) {
               </div>
             )}
 
-            {/* Access QR for Titan Coloso */}
+            {/* Direccion + Google Maps */}
+            {booking.pa && (
+              <div className="bg-white rounded-2xl shadow-sm border border-slate-100 p-5 space-y-3">
+                <p className="text-xs font-bold text-rose-500 uppercase tracking-widest">📍 Cómo Llegar</p>
+                <p className="text-slate-700 text-sm">{booking.pa}</p>
+                <a href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(booking.pa)}`}
+                  target="_blank" rel="noopener noreferrer"
+                  className="w-full bg-rose-500 hover:bg-rose-600 active:scale-95 text-white font-bold py-3 rounded-xl text-sm flex items-center justify-center gap-2 transition-all shadow-sm">
+                  🗺️ Abrir en Google Maps
+                </a>
+              </div>
+            )}
+
+            {/* Access QR */}
             <div className="bg-white rounded-2xl shadow-sm border border-slate-100 p-5 space-y-3 text-center">
               <p className="text-xs font-bold text-violet-600 uppercase tracking-widest">🏠 Pase de Entrada</p>
               <p className="text-xs text-slate-400">Muéstrale este QR al vigilante en la entrada</p>
@@ -585,20 +779,6 @@ function CheckInInner({ bookingId }: { bookingId: string }) {
               </div>
               <p className="text-xs font-mono text-slate-300">{bookingId.slice(-8).toUpperCase()}</p>
             </div>
-
-            {/* Selected upsells summary */}
-            {selected.size > 0 && (
-              <div className="bg-orange-50 border border-orange-100 rounded-2xl p-4 space-y-2">
-                <p className="text-xs font-bold text-orange-600 uppercase tracking-widest">🛍️ Extras Confirmados</p>
-                {upsells.filter(u => selected.has(u.id)).map(u => (
-                  <div key={u.id} className="flex justify-between text-sm">
-                    <span className="text-slate-600">{u.n}</span>
-                    <span className="font-semibold text-orange-500">${u.p}</span>
-                  </div>
-                ))}
-                <p className="text-xs text-slate-400 pt-1">El equipo te contactará para coordinar los detalles.</p>
-              </div>
-            )}
           </div>
         )}
 
