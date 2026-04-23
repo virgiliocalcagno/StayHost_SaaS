@@ -107,12 +107,15 @@ function CheckInInner({ bookingId }: { bookingId: string }) {
     needsPhoto: boolean;
     ocr: { name?: string | null; document?: string | null; nationality?: string | null; confidence?: number | null } | null;
     contact: { email: string | null; whatsapp: string | null; guests: number | null };
+    typed: { name: string | null; document: string | null; nationality: string | null };
     needsEmail: boolean;
     needsWhatsapp: boolean;
     needsGuestCount: boolean;
     waitingForAuth: boolean;
     authReason: string | null;
     requiresManualReview: boolean;
+    completed: boolean;
+    completedAt: string | null;
   };
   const [step2State, setStep2State] = useState<Step2State | null>(null);
   const [idPreview, setIdPreview] = useState<string | null>(null);
@@ -120,6 +123,9 @@ function CheckInInner({ bookingId }: { bookingId: string }) {
   const [guestEmail, setGuestEmail] = useState("");
   const [guestWhatsapp, setGuestWhatsapp] = useState("");
   const [guestCount, setGuestCount] = useState<number>(1);
+  const [typedName, setTypedName] = useState("");
+  const [typedDocument, setTypedDocument] = useState("");
+  const [typedNationality, setTypedNationality] = useState("");
   const [consentAccepted, setConsentAccepted] = useState(false);
   const [ocrAttempts, setOcrAttempts] = useState(0);
   const [ocrFailedLast, setOcrFailedLast] = useState(false);
@@ -151,7 +157,19 @@ function CheckInInner({ bookingId }: { bookingId: string }) {
         if (data.state.contact.email) setGuestEmail(data.state.contact.email);
         if (data.state.contact.whatsapp) setGuestWhatsapp(data.state.contact.whatsapp);
         if (data.state.contact.guests) setGuestCount(data.state.contact.guests);
+        // Prellenado de nombre/doc/nacionalidad — prioridad:
+        //   1) guest_typed_* (si el huesped ya tipeo antes)
+        //   2) ocr_* (si el OCR los leyo de la foto)
+        //   3) vacio (para que el huesped tipee)
+        setTypedName(data.state.typed.name ?? data.state.ocr?.name ?? "");
+        setTypedDocument(data.state.typed.document ?? data.state.ocr?.document ?? "");
+        setTypedNationality(data.state.typed.nationality ?? data.state.ocr?.nationality ?? "");
         setOcrAttempts(data.state.ocr ? 1 : 0);
+        // Si el checkin ya fue completado en una visita anterior, saltamos
+        // directo al Paso 5 (Guest Hub con pase de acceso).
+        if (data.state.completed) {
+          setStep(5);
+        }
       } catch { /* silent */ }
     })();
     return () => { cancelled = true; };
@@ -186,6 +204,33 @@ function CheckInInner({ bookingId }: { bookingId: string }) {
     }, 5000);
     return () => { cancelled = true; clearInterval(interval); };
   }, [step, waitingForAnything, booking, bookingId]);
+
+  // Marcar el checkin como completado cuando el huesped llega al Paso 5
+  // con acceso liberado (no en Sala de Espera). Idempotente: la API ignora
+  // la llamada si checkin_completed_at ya esta seteado. Sirve para que, si
+  // el huesped reabre el link, la app lo lleve directo al Guest Hub en
+  // lugar de repetir el formulario del Paso 2.
+  const completeCalledRef = useRef(false);
+  useEffect(() => {
+    if (step !== 5 || !booking) return;
+    if (step2State?.waitingForAuth || waitingAuthElectric) return;
+    if (step2State?.completed) return;
+    if (completeCalledRef.current) return;
+    completeCalledRef.current = true;
+    (async () => {
+      try {
+        const res = await fetch("/api/checkin/step2", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "complete", id: bookingId, code: booking.l }),
+        });
+        if (res.ok) {
+          const data = (await res.json()) as { state?: Step2State };
+          if (data.state) setStep2State(data.state);
+        }
+      } catch { /* silent — no bloquea al huesped */ }
+    })();
+  }, [step, booking, bookingId, step2State, waitingAuthElectric]);
 
   // Upsells legacy — se mantiene la variable para no romper refs pero ya no
   // se renderizan en el wizard (movidos al Guest Hub post-checkin).
@@ -265,6 +310,8 @@ function CheckInInner({ bookingId }: { bookingId: string }) {
     // Validaciones obligatorias. Foto puede omitirse si ya hay una subida previa.
     const needsPhoto = !step2State?.hasPhoto && !idBase64;
     if (needsPhoto) { setError("Subí una foto de tu documento."); return; }
+    if (typedName.trim().length < 3) { setError("Ingresá tu nombre completo."); return; }
+    if (typedDocument.trim().length < 4) { setError("Ingresá tu número de documento."); return; }
     if (!isEmailValid(guestEmail)) { setError("Ingresá un email válido."); return; }
     if (!isWhatsappValid(guestWhatsapp)) { setError("Ingresá un WhatsApp válido (mínimo 8 dígitos)."); return; }
     if (!guestCount || guestCount < 1) { setError("¿Cuántas personas se quedan? Mínimo 1."); return; }
@@ -279,6 +326,9 @@ function CheckInInner({ bookingId }: { bookingId: string }) {
         email: guestEmail,
         whatsapp: guestWhatsapp,
         guestCount,
+        typedName,
+        typedDocument,
+        typedNationality,
         consentAccepted: true,
       };
       if (idBase64) body.idPhotoBase64 = idBase64;
@@ -565,20 +615,10 @@ function CheckInInner({ bookingId }: { bookingId: string }) {
               aria-label="Subir foto del documento desde galeria o archivos"
               onChange={handleFile} className="hidden" />
 
-            {/* Datos del OCR — se muestran SIEMPRE que existan, aunque no
-                haya foto (caso tipico: el host escaneo al crear la reserva
-                directa y los datos quedaron en el booking, pero la foto
-                no se guardo). */}
-            {step2State?.ocr && (step2State.ocr.name || step2State.ocr.document) && (
-              <div className="bg-emerald-50 rounded-xl p-4 border border-emerald-200 space-y-1.5 text-xs">
-                <p className="font-bold text-emerald-700 uppercase tracking-widest mb-1 flex items-center gap-1.5">
-                  <span>✓</span> Datos del documento (ya cargados)
-                </p>
-                {step2State.ocr.name && <p className="text-slate-700"><span className="text-slate-400">Nombre:</span> <span className="font-semibold">{step2State.ocr.name}</span></p>}
-                {step2State.ocr.document && <p className="text-slate-700"><span className="text-slate-400">Documento:</span> <span className="font-mono">{step2State.ocr.document}</span></p>}
-                {step2State.ocr.nationality && <p className="text-slate-700"><span className="text-slate-400">Nacionalidad:</span> <span className="font-semibold">{step2State.ocr.nationality}</span></p>}
-              </div>
-            )}
+            {/* Nota: los datos leidos por OCR se vuelcan directo en los
+                inputs editables abajo (nombre/doc/nacionalidad) con una
+                etiqueta "✓ Leídos del documento" en el encabezado de la
+                seccion. No renderizamos el viejo recuadro read-only. */}
 
             {/* Seccion foto — separada del bloque de datos. Si ya hay foto
                 subida, muestra preview o estado; si no, 2 botones para subir. */}
@@ -634,6 +674,45 @@ function CheckInInner({ bookingId }: { bookingId: string }) {
                 </button>
               </div>
             )}
+
+            {/* ── Datos del huesped (editables, prellenados por OCR) ───── */}
+            <div className="bg-white rounded-2xl border border-slate-100 p-4 space-y-4 shadow-sm">
+              <div className="flex items-center justify-between">
+                <p className="text-xs font-bold text-slate-500 uppercase tracking-widest">Tus datos</p>
+                {step2State?.ocr?.name && (
+                  <span className="text-[10px] font-semibold text-emerald-600 uppercase tracking-wider flex items-center gap-1">
+                    <span>✓</span> Leídos del documento
+                  </span>
+                )}
+              </div>
+
+              <div className="space-y-1.5">
+                <label className="text-xs font-semibold text-slate-600" htmlFor="typedName">Nombre completo *</label>
+                <input id="typedName" type="text" autoComplete="name"
+                  value={typedName}
+                  onChange={(e) => { setTypedName(e.target.value); setError(""); }}
+                  placeholder="Como aparece en tu documento"
+                  className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-orange-400 bg-slate-50" />
+              </div>
+
+              <div className="space-y-1.5">
+                <label className="text-xs font-semibold text-slate-600" htmlFor="typedDocument">Número de documento *</label>
+                <input id="typedDocument" type="text" inputMode="text" autoComplete="off"
+                  value={typedDocument}
+                  onChange={(e) => { setTypedDocument(e.target.value); setError(""); }}
+                  placeholder="Pasaporte o ID"
+                  className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-orange-400 bg-slate-50" />
+              </div>
+
+              <div className="space-y-1.5">
+                <label className="text-xs font-semibold text-slate-600" htmlFor="typedNationality">Nacionalidad</label>
+                <input id="typedNationality" type="text" autoComplete="country-name"
+                  value={typedNationality}
+                  onChange={(e) => { setTypedNationality(e.target.value); setError(""); }}
+                  placeholder="Ej: Dominicana, Argentina, USA"
+                  className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-orange-400 bg-slate-50" />
+              </div>
+            </div>
 
             {/* ── Datos de contacto (adaptativos) ──────────────────────── */}
             <div className="bg-white rounded-2xl border border-slate-100 p-4 space-y-4 shadow-sm">

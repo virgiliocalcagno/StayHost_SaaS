@@ -41,6 +41,10 @@ type CheckinRow = {
   requires_manual_review?: boolean | null;
   consent_accepted_at?: string | null;
   booking_ref?: string | null;
+  guest_typed_name?: string | null;
+  guest_typed_document?: string | null;
+  guest_typed_nationality?: string | null;
+  checkin_completed_at?: string | null;
 };
 
 async function authGuest(id: string, code: string): Promise<CheckinRow | null> {
@@ -94,12 +98,19 @@ function getState(row: CheckinRow) {
       whatsapp: row.guest_whatsapp ?? null,
       guests: row.guest_count ?? null,
     },
+    typed: {
+      name: row.guest_typed_name ?? null,
+      document: row.guest_typed_document ?? null,
+      nationality: row.guest_typed_nationality ?? null,
+    },
     needsEmail: !row.guest_email,
     needsWhatsapp: !row.guest_whatsapp,
     needsGuestCount: !row.guest_count,
     waitingForAuth: row.waiting_for_auth ?? false,
     authReason: row.auth_reason ?? null,
     requiresManualReview: row.requires_manual_review ?? false,
+    completed: Boolean(row.checkin_completed_at),
+    completedAt: row.checkin_completed_at ?? null,
   };
 }
 
@@ -163,6 +174,9 @@ export async function POST(req: NextRequest) {
       const whatsapp = body.whatsapp ? String(body.whatsapp).trim() : null;
       const guestCount = body.guestCount != null ? Number(body.guestCount) : null;
       const consentAccepted = Boolean(body.consentAccepted);
+      const typedName = body.typedName != null ? String(body.typedName).trim() : null;
+      const typedDocument = body.typedDocument != null ? String(body.typedDocument).trim() : null;
+      const typedNationality = body.typedNationality != null ? String(body.typedNationality).trim() : null;
 
       const updates: Record<string, unknown> = {};
       const ip = req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? req.headers.get("x-real-ip") ?? null;
@@ -212,6 +226,15 @@ export async function POST(req: NextRequest) {
       if (whatsapp) updates.guest_whatsapp = whatsapp;
       if (guestCount != null && !Number.isNaN(guestCount)) updates.guest_count = Math.max(1, Math.round(guestCount));
 
+      // 2b) Datos tipeados por el huesped (nombre/nacionalidad/documento).
+      // Guardamos siempre lo que mando — aunque coincida con el OCR — para
+      // tener el audit trail de "lo que el huesped confirmo" vs "lo que leyo
+      // la maquina". La UI prellena estos campos con OCR, pero el huesped
+      // los puede editar.
+      if (typedName) updates.guest_typed_name = typedName;
+      if (typedDocument) updates.guest_typed_document = typedDocument;
+      if (typedNationality) updates.guest_typed_nationality = typedNationality;
+
       // 3) Consentimiento + audit
       if (consentAccepted && !row.consent_accepted_at) {
         updates.consent_accepted_at = new Date().toISOString();
@@ -255,6 +278,26 @@ export async function POST(req: NextRequest) {
       }
       // TODO cuando se implemente: disparar email al host con link al panel.
       return NextResponse.json({ ok: true });
+    }
+
+    // ── complete (el huesped llego al Guest Hub con acceso liberado) ───────
+    // Se llama una vez cuando el front renderiza el Paso 5 sin waiting_for_auth.
+    // Idempotente: si ya esta seteado, no lo pisa.
+    if (action === "complete") {
+      if (row.checkin_completed_at) {
+        return NextResponse.json({ ok: true, state: getState(row) });
+      }
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const { data: updated, error } = await (supabaseAdmin.from("checkin_records") as any)
+        .update({ checkin_completed_at: new Date().toISOString() })
+        .eq("id", row.id)
+        .select("*")
+        .single();
+      if (error) {
+        console.error("[checkin/step2:complete] update failed:", error);
+        return bad(500, "No se pudo marcar como terminado");
+      }
+      return NextResponse.json({ ok: true, state: getState(updated as CheckinRow) });
     }
 
     return bad(400, "Accion no reconocida");
