@@ -275,7 +275,10 @@ function GuestBadge({
                   ⚠️ Mostralo solo cuando estés frente a la cerradura. Evitá que otros vean tu PIN.
                 </div>
                 <div className="bg-slate-50 rounded-2xl p-4 border border-slate-100">
-                  <SecretReveal label="código de puerta" value={doorCode} icon="🗝️" revealSeconds={8} monoClass="text-3xl" />
+                  <SecretReveal label="código de puerta" value={`${doorCode}#`} icon="🗝️" revealSeconds={8} monoClass="text-3xl" />
+                </div>
+                <div className="bg-emerald-50 border border-emerald-200 rounded-xl px-3 py-2.5 text-[12px] text-emerald-900 leading-relaxed">
+                  <span className="font-bold">Importante:</span> marcá los dígitos seguidos de <span className="font-mono font-bold">#</span> en la cerradura. El <span className="font-mono font-bold">#</span> es el que confirma y abre la puerta.
                 </div>
                 <p className="text-[11px] text-slate-400 text-center">Válido durante tu estadía. Expira automáticamente al hacer check-out.</p>
               </div>
