@@ -278,15 +278,64 @@ function CheckInInner({ bookingId }: { bookingId: string }) {
     return canvas.toDataURL("image/jpeg", 0.72);
   }
 
+  const [ocrRunning, setOcrRunning] = useState(false);
   async function handleFile(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
     if (!file) return;
     if (file.size > 20 * 1024 * 1024) { setError("Imagen demasiado grande (máx 20MB)."); return; }
+    if (!booking) return;
     try {
       const compressed = await compressImage(file);
       setIdBase64(compressed);
       setIdPreview(compressed);
       setError("");
+
+      // Subimos la foto y corremos el OCR al instante — antes de que el
+      // huesped apriete Continuar. Asi el OCR llena nombre/doc/nacionalidad
+      // automaticamente y el huesped solo tiene que revisar/corregir.
+      setOcrRunning(true);
+      try {
+        const res = await fetch("/api/checkin/step2", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "submit",
+            id: bookingId,
+            code: booking.l,
+            idPhotoBase64: compressed,
+          }),
+        });
+        if (res.ok) {
+          const data = (await res.json()) as { state?: Step2State };
+          if (data.state) {
+            setStep2State(data.state);
+            // Si el huesped todavia no tipeo nada, volcamos los datos del OCR
+            // en los inputs. Si ya habia tipeado algo, respetamos su input.
+            const ocr = data.state.ocr;
+            if (ocr) {
+              if (!typedName.trim() && ocr.name) setTypedName(ocr.name);
+              if (!typedDocument.trim() && ocr.document) setTypedDocument(ocr.document);
+              if (!typedNationality.trim() && ocr.nationality) setTypedNationality(ocr.nationality);
+            }
+            const ocrOk = ocr && (ocr.confidence ?? 0) >= 0.5 && ocr.name;
+            setOcrAttempts((n) => n + 1);
+            setOcrFailedLast(!ocrOk);
+            if (!ocrOk) {
+              setError(ocrAttempts + 1 >= 2
+                ? "Tuvimos dificultades leyendo tu documento. Completá los datos a mano."
+                : "No pudimos leer bien tu documento. Probá con otra foto con mejor luz, o completá los datos a mano.");
+            }
+          }
+        } else {
+          const msg = await res.json().catch(() => ({ error: "" }));
+          setError((msg.error || "No pudimos procesar la foto.") + ` (error ${res.status})`);
+        }
+      } catch (err) {
+        const detail = err instanceof Error ? ` — ${err.message}` : "";
+        setError("No pudimos procesar la foto. Completá los datos a mano." + detail);
+      } finally {
+        setOcrRunning(false);
+      }
     } catch {
       setError("No pudimos procesar la imagen. Probá otra foto.");
     }
@@ -331,7 +380,10 @@ function CheckInInner({ bookingId }: { bookingId: string }) {
         typedNationality,
         consentAccepted: true,
       };
-      if (idBase64) body.idPhotoBase64 = idBase64;
+      // Solo re-enviamos la foto si el backend todavia no la tiene.
+      // handleFile ya la sube apenas el huesped la elige, asi que en el
+      // camino feliz esta condicion es false y el submit va liviano.
+      if (idBase64 && !step2State?.hasPhoto) body.idPhotoBase64 = idBase64;
 
       const res = await fetch("/api/checkin/step2", {
         method: "POST",
@@ -625,6 +677,12 @@ function CheckInInner({ bookingId }: { bookingId: string }) {
             {idPreview ? (
               <div className="relative rounded-2xl overflow-hidden border-2 border-orange-300 shadow-sm">
                 <img src={idPreview} alt="Documento" className="w-full max-h-48 object-contain bg-slate-50" />
+                {ocrRunning && (
+                  <div className="absolute inset-0 bg-slate-900/70 flex flex-col items-center justify-center text-white gap-2">
+                    <div className="text-3xl animate-pulse">🔍</div>
+                    <p className="text-sm font-semibold">Leyendo tu documento…</p>
+                  </div>
+                )}
                 <button type="button"
                   onClick={() => {
                     setIdPreview(null);
@@ -759,9 +817,9 @@ function CheckInInner({ bookingId }: { bookingId: string }) {
             {error && <div className="bg-red-50 border border-red-200 rounded-xl p-3 text-red-600 text-sm text-center">{error}</div>}
 
             <button type="button" onClick={handleSubmitStep2}
-              disabled={loading}
+              disabled={loading || ocrRunning}
               className="w-full bg-orange-500 hover:bg-orange-600 disabled:bg-slate-200 disabled:text-slate-400 active:scale-95 text-white font-bold py-4 rounded-2xl transition-all shadow-md shadow-orange-200">
-              {loading ? "Procesando..." : "Continuar →"}
+              {loading ? "Procesando..." : ocrRunning ? "Leyendo documento…" : "Continuar →"}
             </button>
           </div>
         )}
