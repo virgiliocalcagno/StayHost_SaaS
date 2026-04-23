@@ -109,8 +109,11 @@ export interface AmenitiesConfig {
 interface Property {
   id: string;
   name: string;
-  address: string;
-  city: string;
+  address: string;           // calle y numero (ej: "Calle Danubio White Sand")
+  addressUnit?: string;      // apto/piso/edificio (ej: "Edificio 3 Apt 3C1")
+  neighborhood?: string;     // distrito/barrio (ej: "Bavaro")
+  city: string;              // ciudad/pueblo (ej: "Punta Cana")
+  postalCode?: string;       // codigo postal (ej: "23000")
   image: string;
   type: "apartment" | "house" | "villa" | "loft" | "cabin";
   price: number;
@@ -519,7 +522,10 @@ export default function PropertiesPanel() {
           id: p.id,
           name: p.name,
           address: p.address ?? "",
+          addressUnit: p.address_unit ?? "",
+          neighborhood: p.neighborhood ?? "",
           city: p.city ?? "",
+          postalCode: p.postal_code ?? "",
           image: p.cover_image ?? "",
           type: (p.property_type ?? "apartment") as Property["type"],
           price: p.price ?? 0,
@@ -603,7 +609,10 @@ export default function PropertiesPanel() {
   const [formData, setFormData] = useState({
     name: "",
     address: "",
+    addressUnit: "",
+    neighborhood: "",
     city: "",
+    postalCode: "",
     type: "apartment" as Property["type"],
     price: "",
     beds: "",
@@ -800,7 +809,7 @@ export default function PropertiesPanel() {
     setModalTab("propiedad");
     setCreationStep("options");
     setAirbnbImportLink("");
-    setFormData({ name: "", address: "", city: "", type: "apartment", price: "", beds: "", baths: "", maxGuests: "", airbnbUrl: "", airbnbIcal: "", bookingUrl: "", bookingIcal: "", vrboUrl: "", vrboIcal: "", directaEnabled: false, cleaningFeeOneDay: "", cleaningFeeMoreDays: "", weeklyDiscountPercent: "", energyFeePerDay: "", additionalServicesFee: "", recurringSupplies: [], autoAssignCleaner: false, cleanerPriorities: [], bedConfiguration: "", standardInstructions: "", evidenceCriteria: ["Cocina", "Habitación", "Baño"], descriptionEN: "", descriptionES: "", photoTour: [], amenitiesConfig: { popular: [], bathroom: [], bedroom: [], kitchen: [], outdoor: [] }, wifiSsid: "", wifiPassword: "", electricityEnabled: false, electricityRate: "", checkInTime: "14:00", checkOutTime: "12:00", ttlockLockId: "" });
+    setFormData({ name: "", address: "", addressUnit: "", neighborhood: "", city: "", postalCode: "", type: "apartment", price: "", beds: "", baths: "", maxGuests: "", airbnbUrl: "", airbnbIcal: "", bookingUrl: "", bookingIcal: "", vrboUrl: "", vrboIcal: "", directaEnabled: false, cleaningFeeOneDay: "", cleaningFeeMoreDays: "", weeklyDiscountPercent: "", energyFeePerDay: "", additionalServicesFee: "", recurringSupplies: [], autoAssignCleaner: false, cleanerPriorities: [], bedConfiguration: "", standardInstructions: "", evidenceCriteria: ["Cocina", "Habitación", "Baño"], descriptionEN: "", descriptionES: "", photoTour: [], amenitiesConfig: { popular: [], bathroom: [], bedroom: [], kitchen: [], outdoor: [] }, wifiSsid: "", wifiPassword: "", electricityEnabled: false, electricityRate: "", checkInTime: "14:00", checkOutTime: "12:00", ttlockLockId: "" });
     setShowModal(true);
   };
 
@@ -811,7 +820,10 @@ export default function PropertiesPanel() {
     setFormData({
       name: p.name,
       address: p.address,
+      addressUnit: p.addressUnit || "",
+      neighborhood: p.neighborhood || "",
       city: p.city,
+      postalCode: p.postalCode || "",
       type: p.type,
       price: p.price.toString(),
       beds: p.beds.toString(),
@@ -885,13 +897,16 @@ export default function PropertiesPanel() {
     let finalProp: Property;
 
     if (editingProperty) {
-      finalProp = { ...editingProperty, name: formData.name, address: formData.address, city: formData.city, type: formData.type, price: Number(formData.price) || editingProperty.price, beds: Number(formData.beds) || editingProperty.beds, baths: Number(formData.baths) || editingProperty.baths, maxGuests: Number(formData.maxGuests) || editingProperty.maxGuests, channels: updatedChannels, cleaningFeeOneDay: Number(formData.cleaningFeeOneDay) || 0, cleaningFeeMoreDays: Number(formData.cleaningFeeMoreDays) || 0, weeklyDiscountPercent: Number(formData.weeklyDiscountPercent) || 0, energyFeePerDay: Number(formData.energyFeePerDay) || 0, additionalServicesFee: Number(formData.additionalServicesFee) || 0, recurringSupplies: formData.recurringSupplies, autoAssignCleaner: formData.autoAssignCleaner, cleanerPriorities: formData.cleanerPriorities, bedConfiguration: formData.bedConfiguration, standardInstructions: formData.standardInstructions, evidenceCriteria: formData.evidenceCriteria, descriptionES: formData.descriptionES, descriptionEN: formData.descriptionEN, photoTour: formData.photoTour, amenitiesConfig: formData.amenitiesConfig, wifiSsid: formData.wifiSsid, wifiPassword: formData.wifiPassword, electricityEnabled: formData.electricityEnabled, electricityRate: Number(formData.electricityRate) || 0, checkInTime: formData.checkInTime, checkOutTime: formData.checkOutTime, ttlockLockId: formData.ttlockLockId };
+      finalProp = { ...editingProperty, name: formData.name, address: formData.address, addressUnit: formData.addressUnit, neighborhood: formData.neighborhood, city: formData.city, postalCode: formData.postalCode, type: formData.type, price: Number(formData.price) || editingProperty.price, beds: Number(formData.beds) || editingProperty.beds, baths: Number(formData.baths) || editingProperty.baths, maxGuests: Number(formData.maxGuests) || editingProperty.maxGuests, channels: updatedChannels, cleaningFeeOneDay: Number(formData.cleaningFeeOneDay) || 0, cleaningFeeMoreDays: Number(formData.cleaningFeeMoreDays) || 0, weeklyDiscountPercent: Number(formData.weeklyDiscountPercent) || 0, energyFeePerDay: Number(formData.energyFeePerDay) || 0, additionalServicesFee: Number(formData.additionalServicesFee) || 0, recurringSupplies: formData.recurringSupplies, autoAssignCleaner: formData.autoAssignCleaner, cleanerPriorities: formData.cleanerPriorities, bedConfiguration: formData.bedConfiguration, standardInstructions: formData.standardInstructions, evidenceCriteria: formData.evidenceCriteria, descriptionES: formData.descriptionES, descriptionEN: formData.descriptionEN, photoTour: formData.photoTour, amenitiesConfig: formData.amenitiesConfig, wifiSsid: formData.wifiSsid, wifiPassword: formData.wifiPassword, electricityEnabled: formData.electricityEnabled, electricityRate: Number(formData.electricityRate) || 0, checkInTime: formData.checkInTime, checkOutTime: formData.checkOutTime, ttlockLockId: formData.ttlockLockId };
     } else {
       finalProp = {
         id: crypto.randomUUID(),
         name: formData.name,
         address: formData.address,
+        addressUnit: formData.addressUnit,
+        neighborhood: formData.neighborhood,
         city: formData.city,
+        postalCode: formData.postalCode,
         type: formData.type,
         image: "https://images.unsplash.com/photo-1560448204-e02f11c3d0e2?w=600&h=400&fit=crop",
         price: Number(formData.price) || 100,
@@ -1594,12 +1609,26 @@ export default function PropertiesPanel() {
                     <Input placeholder="Ej: Villa Mar Azul" value={formData.name} onChange={(e) => setFormData((p) => ({ ...p, name: e.target.value }))} />
                   </div>
                   <div className="space-y-2">
-                    <Label>Dirección</Label>
-                    <Input placeholder="Calle, número, colonia" value={formData.address} onChange={(e) => setFormData((p) => ({ ...p, address: e.target.value }))} />
+                    <Label>Dirección (calle y número)</Label>
+                    <Input placeholder="Ej: Calle Danubio White Sand" value={formData.address} onChange={(e) => setFormData((p) => ({ ...p, address: e.target.value }))} />
                   </div>
                   <div className="space-y-2">
-                    <Label>Ciudad</Label>
-                    <Input placeholder="Ej: Cancún, Quintana Roo" value={formData.city} onChange={(e) => setFormData((p) => ({ ...p, city: e.target.value }))} />
+                    <Label className="text-muted-foreground">Apartamento, piso, edificio <span className="text-xs">(si corresponde)</span></Label>
+                    <Input placeholder="Ej: Edificio 3 Apartamento 3C1" value={formData.addressUnit} onChange={(e) => setFormData((p) => ({ ...p, addressUnit: e.target.value }))} />
+                  </div>
+                  <div className="space-y-2">
+                    <Label className="text-muted-foreground">Distrito/vecindario <span className="text-xs">(si corresponde)</span></Label>
+                    <Input placeholder="Ej: Bávaro" value={formData.neighborhood} onChange={(e) => setFormData((p) => ({ ...p, neighborhood: e.target.value }))} />
+                  </div>
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="space-y-2">
+                      <Label>Ciudad/pueblo</Label>
+                      <Input placeholder="Ej: Punta Cana" value={formData.city} onChange={(e) => setFormData((p) => ({ ...p, city: e.target.value }))} />
+                    </div>
+                    <div className="space-y-2">
+                      <Label className="text-muted-foreground">Código postal <span className="text-xs">(si corresponde)</span></Label>
+                      <Input placeholder="Ej: 23000" value={formData.postalCode} onChange={(e) => setFormData((p) => ({ ...p, postalCode: e.target.value }))} />
+                    </div>
                   </div>
                   <div className="space-y-2">
                     <Label>Tipo de propiedad</Label>

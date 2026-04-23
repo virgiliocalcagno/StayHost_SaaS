@@ -14,7 +14,7 @@ export async function GET() {
   const { data: props, error } = await supabase
     .from("properties")
     .select(`
-      id, name, address, city, cover_image,
+      id, name, address, address_unit, neighborhood, city, postal_code, cover_image,
       ical_airbnb, ical_vrbo, ical_token,
       wifi_name, wifi_password,
       electricity_enabled, electricity_rate,

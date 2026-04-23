@@ -134,7 +134,9 @@ function SecretReveal({
 function GuestBadge({
   bookingId, displayName, propertyName,
   checkinISO, checkoutISO,
-  doorCode, wifiSsid, wifiPass, address, qrPayload,
+  doorCode, wifiSsid, wifiPass,
+  address, addressUnit, neighborhood, city, postalCode,
+  qrPayload,
 }: {
   bookingId: string;
   displayName: string;
@@ -145,8 +147,21 @@ function GuestBadge({
   wifiSsid?: string;
   wifiPass?: string;
   address?: string;
+  addressUnit?: string;
+  neighborhood?: string;
+  city?: string;
+  postalCode?: string;
   qrPayload: string;
 }) {
+  // Arma la direccion "larga" para Google Maps y una version por lineas
+  // estilo Airbnb para mostrar en el modal. Solo incluye las partes no
+  // vacias — asi si el host todavia no cargo los campos estructurados, el
+  // gafete se degrada gracefully a la direccion plana de siempre.
+  const fullAddress = [address, addressUnit, neighborhood, city, postalCode]
+    .map((s) => (s ?? "").trim())
+    .filter(Boolean)
+    .join(", ");
+  const cityLine = [city, postalCode].filter((s) => (s ?? "").trim()).join(" ");
   type Sheet = null | "pin" | "wifi" | "map";
   const [sheet, setSheet] = useState<Sheet>(null);
 
@@ -158,7 +173,7 @@ function GuestBadge({
     .map((s) => s[0]?.toUpperCase() ?? "")
     .join("") || "H";
 
-  const hasMap = Boolean(address);
+  const hasMap = Boolean(fullAddress);
   const hasWifi = Boolean(wifiSsid);
 
   return (
@@ -296,13 +311,18 @@ function GuestBadge({
               </div>
             )}
 
-            {sheet === "map" && address && (
+            {sheet === "map" && fullAddress && (
               <div className="space-y-4">
-                <div className="bg-slate-50 rounded-2xl p-4 border border-slate-100">
-                  <p className="text-xs text-slate-500 uppercase tracking-wider font-semibold mb-2">Dirección</p>
-                  <p className="text-slate-800 text-sm leading-relaxed">{address}</p>
+                <div className="bg-slate-50 rounded-2xl p-4 border border-slate-100 space-y-2">
+                  <p className="text-xs text-slate-500 uppercase tracking-wider font-semibold">Dirección</p>
+                  <div className="text-slate-800 text-sm leading-relaxed space-y-0.5">
+                    {address && <p className="font-semibold">{address}</p>}
+                    {addressUnit && <p className="text-slate-600">{addressUnit}</p>}
+                    {neighborhood && <p className="text-slate-600">{neighborhood}</p>}
+                    {cityLine && <p className="text-slate-600">{cityLine}</p>}
+                  </div>
                 </div>
-                <a href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(address)}`}
+                <a href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(fullAddress)}`}
                   target="_blank" rel="noopener noreferrer"
                   className="w-full bg-rose-500 hover:bg-rose-600 active:scale-95 text-white font-bold py-3.5 rounded-2xl text-sm flex items-center justify-center gap-2 transition-all shadow-sm">
                   🗺️ Abrir en Google Maps
@@ -372,6 +392,10 @@ function CheckInInner({ bookingId }: { bookingId: string }) {
       address: string | null;
       wifiSsid: string | null;
       wifiPassword: string | null;
+      unit: string | null;
+      neighborhood: string | null;
+      city: string | null;
+      postalCode: string | null;
     };
   };
   const [step2State, setStep2State] = useState<Step2State | null>(null);
@@ -1226,6 +1250,10 @@ function CheckInInner({ bookingId }: { bookingId: string }) {
             wifiSsid={wifiSsid || undefined}
             wifiPass={wifiPass || undefined}
             address={address || undefined}
+            addressUnit={prop?.unit || undefined}
+            neighborhood={prop?.neighborhood || undefined}
+            city={prop?.city || undefined}
+            postalCode={prop?.postalCode || undefined}
             qrPayload={qrPayload}
           />
           );

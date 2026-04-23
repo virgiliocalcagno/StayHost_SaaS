@@ -124,6 +124,13 @@ function getState(row: CheckinRow) {
       address: row.property_address ?? null,
       wifiSsid: row.wifi_ssid ?? null,
       wifiPassword: row.wifi_password ?? null,
+      // Campos estructurados se inyectan desde propFull en el handler de
+      // getState. Aca quedan en null porque el snapshot de checkin_records
+      // no los tiene.
+      unit: null as string | null,
+      neighborhood: null as string | null,
+      city: null as string | null,
+      postalCode: null as string | null,
     },
   };
 }
@@ -184,13 +191,36 @@ export async function POST(req: NextRequest) {
       // snapshot, asi que la primera vez que el huesped abra su pase lo
       // hidratamos desde properties. Si la propiedad tampoco los tiene,
       // quedan en null y la UI muestra el estado vacio correspondiente.
-      if (currentRow.property_id && (!currentRow.wifi_password || !currentRow.wifi_ssid || !currentRow.property_address)) {
+      // Propiedad completa con los campos estructurados de direccion. La
+      // consultamos SIEMPRE que haya property_id (no solo en backfill) para
+      // que el gafete pueda mostrar direccion segmentada aunque el snapshot
+      // de checkin_records tenga solo `property_address` plano.
+      let propFull: {
+        name?: string | null;
+        address?: string | null;
+        address_unit?: string | null;
+        neighborhood?: string | null;
+        city?: string | null;
+        postal_code?: string | null;
+        wifi_name?: string | null;
+        wifi_password?: string | null;
+      } | null = null;
+      if (currentRow.property_id) {
         try {
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           const { data: prop } = await (supabaseAdmin.from("properties") as any)
-            .select("name, address, wifi_name, wifi_password")
+            .select("name, address, address_unit, neighborhood, city, postal_code, wifi_name, wifi_password")
             .eq("id", currentRow.property_id)
             .maybeSingle();
+          propFull = prop ?? null;
+        } catch (err) {
+          console.warn("[checkin/step2:getState] property fetch failed:", err);
+        }
+      }
+
+      if (propFull && (!currentRow.wifi_password || !currentRow.wifi_ssid || !currentRow.property_address)) {
+        try {
+          const prop = propFull;
           if (prop) {
             const propUpdates: Record<string, unknown> = {};
             if (!currentRow.wifi_ssid && prop.wifi_name) propUpdates.wifi_ssid = prop.wifi_name;
@@ -212,7 +242,18 @@ export async function POST(req: NextRequest) {
         }
       }
 
-      return NextResponse.json({ ok: true, state: getState(currentRow) });
+      const state = getState(currentRow);
+      // Inyectamos los campos estructurados de direccion que vienen siempre
+      // frescos desde properties (no snapshot). Si no hay property_id, caen
+      // en null y el frontend muestra solo lo que tenga del snapshot.
+      state.property = {
+        ...state.property,
+        unit: propFull?.address_unit ?? null,
+        neighborhood: propFull?.neighborhood ?? null,
+        city: propFull?.city ?? null,
+        postalCode: propFull?.postal_code ?? null,
+      };
+      return NextResponse.json({ ok: true, state });
     }
 
     // ── submit (foto opcional + datos manuales) ─────────────────────────────
