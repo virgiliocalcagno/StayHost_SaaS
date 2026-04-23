@@ -65,6 +65,67 @@ function copyText(text: string, cb: () => void) {
 
 // ─── Inner page ───────────────────────────────────────────────────────────────
 
+// Bloque de dato secreto (PIN, password WiFi) — oculto por default, con
+// reveal temporizado. Patron tipo app bancaria: el huesped aprieta "Mostrar",
+// ve el valor por N segundos con countdown visible, despues se oculta solo.
+// Sirve contra "shoulder surfing" en la garita/lobby.
+function SecretReveal({
+  label,
+  value,
+  icon,
+  revealSeconds = 8,
+  monoClass = "text-2xl",
+}: {
+  label: string;
+  value: string;
+  icon: string;
+  revealSeconds?: number;
+  monoClass?: string;
+}) {
+  const [shown, setShown] = useState(false);
+  const [remaining, setRemaining] = useState(0);
+  const [copied, setCopied] = useState(false);
+  useEffect(() => {
+    if (!shown) return;
+    setRemaining(revealSeconds);
+    const t = setInterval(() => {
+      setRemaining((r) => {
+        if (r <= 1) { clearInterval(t); setShown(false); return 0; }
+        return r - 1;
+      });
+    }, 1000);
+    return () => clearInterval(t);
+  }, [shown, revealSeconds]);
+  return (
+    <div className="flex items-center justify-between gap-3">
+      <span className={`font-mono font-bold text-slate-800 tracking-[0.25em] ${monoClass} select-none`}>
+        {shown ? value : "•".repeat(value.length).split("").join(" ")}
+      </span>
+      <div className="flex items-center gap-2">
+        {shown && (
+          <span className="text-[10px] font-semibold text-amber-600 bg-amber-50 border border-amber-200 rounded-full px-2 py-0.5">
+            {remaining}s
+          </span>
+        )}
+        <button type="button"
+          onClick={() => setShown((s) => !s)}
+          className="text-xs font-semibold text-slate-500 hover:text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg px-3 py-1.5 transition-colors flex items-center gap-1"
+          aria-label={shown ? `Ocultar ${label}` : `Mostrar ${label}`}>
+          <span>{shown ? "🙈" : "👁️"}</span>
+          <span>{shown ? "Ocultar" : "Mostrar"}</span>
+        </button>
+        <button type="button"
+          onClick={() => copyText(value, () => { setCopied(true); setTimeout(() => setCopied(false), 2000); })}
+          className="text-xs font-semibold text-slate-500 hover:text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg px-3 py-1.5 transition-colors"
+          title={`Copiar ${label}`}
+          aria-label={`Copiar ${label}`}>
+          {copied ? "✓" : "📋"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function CheckInInner({ bookingId }: { bookingId: string }) {
   const sp = useSearchParams();
   // Memoizamos el booking: sin esto, cada render crea un objeto nuevo (porque
@@ -935,63 +996,45 @@ function CheckInInner({ bookingId }: { bookingId: string }) {
           </div>
         )}
 
-        {step === 5 && booking && !(step2State?.waitingForAuth || waitingAuthElectric) && (
+        {step === 5 && booking && !(step2State?.waitingForAuth || waitingAuthElectric) && (() => {
+          // Nombre real del huesped con fallbacks. Evita mostrar "Reserva
+          // Confirmada" (titulo del iCal) cuando tenemos algo mejor:
+          //   1) lo que tipeo en Paso 2
+          //   2) lo que leyo el OCR del documento
+          //   3) el booking.n (ultimo recurso)
+          const displayName = (step2State?.typed?.name || step2State?.ocr?.name || booking.n || "").trim();
+          const qrPayload = JSON.stringify({
+            id: bookingId,
+            guest: `${displayName || booking.n} ${booking.l}`,
+            property: booking.p,
+            checkin: booking.ci,
+            checkout: booking.co,
+          });
+          return (
           <div className="space-y-5">
             {/* Welcome banner */}
             <div className="bg-gradient-to-br from-emerald-400 to-teal-500 rounded-3xl p-6 text-white text-center space-y-2 shadow-lg shadow-emerald-200">
               <div className="text-4xl">🎉</div>
-              <h2 className="text-2xl font-bold">¡Bienvenido, {booking.n}!</h2>
+              <h2 className="text-2xl font-bold">¡Bienvenido, {displayName || "huésped"}!</h2>
               <p className="text-emerald-100 text-sm">Todo listo para tu estadía en {booking.p}</p>
             </div>
 
-            {/* Door code — most important, shown first */}
-            <div className="bg-white rounded-2xl shadow-sm border-2 border-amber-200 p-5 text-center space-y-2">
-              <p className="text-xs font-bold text-amber-600 uppercase tracking-widest">🗝️ Código de Puerta</p>
-              <p className="text-6xl font-black text-slate-800 tracking-[0.4em] font-mono">{booking.d4}</p>
-              <p className="text-xs text-slate-400">{fmtDate(booking.ci)} — {fmtDate(booking.co)}</p>
+            {/* 1) Pase de Entrada — lo primero que usa el huesped al llegar
+                (garita antes que cerradura). QR grande y siempre visible: no
+                tiene info sensible, es solo un identificador de reserva. */}
+            <div className="bg-white rounded-2xl shadow-sm border-2 border-violet-200 p-5 space-y-3 text-center">
+              <p className="text-xs font-bold text-violet-600 uppercase tracking-widest">🏠 Pase de Entrada</p>
+              <p className="text-xs text-slate-500">Muéstrale este QR al vigilante en la entrada</p>
+              <div className="flex justify-center">
+                <div className="inline-block bg-white rounded-2xl p-3 shadow-sm border border-slate-100">
+                  <img src={qr(qrPayload)} alt="Pase QR" width={220} height={220} className="rounded-xl" />
+                </div>
+              </div>
+              <p className="text-xs font-mono text-slate-300">{bookingId.slice(-8).toUpperCase()}</p>
+              <p className="text-[11px] text-slate-400">{fmtDate(booking.ci)} — {fmtDate(booking.co)}</p>
             </div>
 
-            {/* WiFi */}
-            {booking.ws && (
-              <div className="bg-white rounded-2xl shadow-sm border border-slate-100 p-5 space-y-4">
-                <p className="text-xs font-bold text-sky-600 uppercase tracking-widest">📶 WiFi</p>
-                <div className="space-y-2">
-                  <div className="flex items-center justify-between">
-                    <span className="text-sm text-slate-500">Red</span>
-                    <div className="flex items-center gap-2">
-                      <span className="font-mono font-semibold text-slate-800">{booking.ws}</span>
-                      <button type="button" onClick={() => copyText(booking.ws!, () => { setCopiedSsid(true); setTimeout(() => setCopiedSsid(false), 2000); })}
-                        className="text-sky-400 hover:text-sky-600 transition-colors text-sm" title="Copiar red">
-                        {copiedSsid ? "✓" : "📋"}
-                      </button>
-                    </div>
-                  </div>
-                  {booking.wp && (
-                    <div className="flex items-center justify-between">
-                      <span className="text-sm text-slate-500">Contraseña</span>
-                      <div className="flex items-center gap-2">
-                        <span className="font-mono font-semibold text-slate-800">{booking.wp}</span>
-                        <button type="button" onClick={() => copyText(booking.wp!, () => { setCopiedPass(true); setTimeout(() => setCopiedPass(false), 2000); })}
-                          className="text-sky-400 hover:text-sky-600 transition-colors text-sm" title="Copiar contraseña">
-                          {copiedPass ? "✓" : "📋"}
-                        </button>
-                      </div>
-                    </div>
-                  )}
-                </div>
-                {/* WiFi QR */}
-                {booking.wp && (
-                  <div className="pt-1 text-center">
-                    <p className="text-xs text-slate-400 mb-2">Escanea para conectarte en 1 toque</p>
-                    <div className="inline-block bg-white rounded-2xl p-3 shadow-sm border border-slate-100">
-                      <img src={qr(`WIFI:T:WPA;S:${booking.ws};P:${booking.wp};;`, 160)} alt="WiFi QR" width={160} height={160} className="rounded-xl" />
-                    </div>
-                  </div>
-                )}
-              </div>
-            )}
-
-            {/* Direccion + Google Maps */}
+            {/* 2) Direccion */}
             {booking.pa && (
               <div className="bg-white rounded-2xl shadow-sm border border-slate-100 p-5 space-y-3">
                 <p className="text-xs font-bold text-rose-500 uppercase tracking-widest">📍 Cómo Llegar</p>
@@ -1004,20 +1047,55 @@ function CheckInInner({ bookingId }: { bookingId: string }) {
               </div>
             )}
 
-            {/* Access QR */}
-            <div className="bg-white rounded-2xl shadow-sm border border-slate-100 p-5 space-y-3 text-center">
-              <p className="text-xs font-bold text-violet-600 uppercase tracking-widest">🏠 Pase de Entrada</p>
-              <p className="text-xs text-slate-400">Muéstrale este QR al vigilante en la entrada</p>
-              <div className="flex justify-center">
-                <div className="inline-block bg-white rounded-2xl p-3 shadow-sm border border-slate-100">
-                  <img src={qr(JSON.stringify({ id: bookingId, guest: `${booking.n} ${booking.l}`, property: booking.p, checkin: booking.ci, checkout: booking.co }))}
-                    alt="Pase QR" width={200} height={200} className="rounded-xl" />
-                </div>
+            {/* 3) Codigo de Puerta — OCULTO por default para evitar que un
+                vigilante o alguien atras lo vea mientras el huesped se
+                autentica. Reveal temporizado (8s) con boton copiar aparte. */}
+            <div className="bg-white rounded-2xl shadow-sm border-2 border-amber-200 p-5 space-y-3">
+              <div className="flex items-center justify-between">
+                <p className="text-xs font-bold text-amber-600 uppercase tracking-widest">🗝️ Código de Puerta</p>
+                <span className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider">Privado</span>
               </div>
-              <p className="text-xs font-mono text-slate-300">{bookingId.slice(-8).toUpperCase()}</p>
+              <div className="bg-amber-50 border border-amber-100 rounded-xl px-3 py-2 text-[11px] text-amber-800 leading-relaxed">
+                ⚠️ Mostralo solo cuando estés frente a la cerradura — evitá que otros vean tu PIN.
+              </div>
+              <SecretReveal label="código de puerta" value={booking.d4} icon="🗝️" revealSeconds={8} monoClass="text-3xl" />
             </div>
+
+            {/* 4) WiFi — SSID visible (no es sensible), password con reveal */}
+            {booking.ws && (
+              <div className="bg-white rounded-2xl shadow-sm border border-slate-100 p-5 space-y-4">
+                <p className="text-xs font-bold text-sky-600 uppercase tracking-widest">📶 WiFi</p>
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm text-slate-500">Red</span>
+                    <div className="flex items-center gap-2">
+                      <span className="font-mono font-semibold text-slate-800">{booking.ws}</span>
+                      <button type="button" onClick={() => copyText(booking.ws!, () => { setCopiedSsid(true); setTimeout(() => setCopiedSsid(false), 2000); })}
+                        className="text-sky-400 hover:text-sky-600 transition-colors text-sm" title="Copiar red">
+                        {copiedSsid ? "✓" : "📋"}
+                      </button>
+                    </div>
+                  </div>
+                  {booking.wp && (
+                    <div className="space-y-1.5">
+                      <span className="text-sm text-slate-500">Contraseña</span>
+                      <SecretReveal label="contraseña WiFi" value={booking.wp} icon="📶" revealSeconds={12} monoClass="text-lg" />
+                    </div>
+                  )}
+                </div>
+                {booking.wp && (
+                  <div className="pt-1 text-center">
+                    <p className="text-xs text-slate-400 mb-2">O escaneá para conectarte en 1 toque</p>
+                    <div className="inline-block bg-white rounded-2xl p-3 shadow-sm border border-slate-100">
+                      <img src={qr(`WIFI:T:WPA;S:${booking.ws};P:${booking.wp};;`, 160)} alt="WiFi QR" width={160} height={160} className="rounded-xl" />
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
           </div>
-        )}
+          );
+        })()}
 
       </main>
 
