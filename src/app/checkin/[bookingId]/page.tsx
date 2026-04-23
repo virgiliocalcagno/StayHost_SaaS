@@ -367,6 +367,12 @@ function CheckInInner({ bookingId }: { bookingId: string }) {
     requiresManualReview: boolean;
     completed: boolean;
     completedAt: string | null;
+    property: {
+      name: string | null;
+      address: string | null;
+      wifiSsid: string | null;
+      wifiPassword: string | null;
+    };
   };
   const [step2State, setStep2State] = useState<Step2State | null>(null);
   const [idPreview, setIdPreview] = useState<string | null>(null);
@@ -1200,17 +1206,26 @@ function CheckInInner({ bookingId }: { bookingId: string }) {
             checkin: booking.ci,
             checkout: booking.co,
           });
+          // Fuente de verdad: step2State.property (viene del snapshot en
+          // checkin_records, se actualiza con los cambios del host). La URL
+          // encoded solo sirve como fallback — puede estar desactualizada
+          // si el link se genero antes de que el host configurara el WiFi.
+          const prop = step2State?.property;
+          const propertyName = prop?.name || booking.p;
+          const address = prop?.address || booking.pa;
+          const wifiSsid = prop?.wifiSsid || booking.ws;
+          const wifiPass = prop?.wifiPassword || booking.wp;
           return (
           <GuestBadge
             bookingId={bookingId}
             displayName={displayName}
-            propertyName={booking.p}
+            propertyName={propertyName}
             checkinISO={booking.ci}
             checkoutISO={booking.co}
             doorCode={booking.d4}
-            wifiSsid={booking.ws}
-            wifiPass={booking.wp}
-            address={booking.pa}
+            wifiSsid={wifiSsid || undefined}
+            wifiPass={wifiPass || undefined}
+            address={address || undefined}
             qrPayload={qrPayload}
           />
           );

@@ -45,6 +45,14 @@ type CheckinRow = {
   guest_typed_document?: string | null;
   guest_typed_nationality?: string | null;
   checkin_completed_at?: string | null;
+  // Snapshot de la propiedad (denormalizado al crear el record). Lo usamos
+  // como fuente de verdad del WiFi/direccion al renderizar el Guest Hub,
+  // por encima del payload encoded en la URL que puede estar desactualizado.
+  property_name?: string | null;
+  property_address?: string | null;
+  wifi_ssid?: string | null;
+  wifi_password?: string | null;
+  property_id?: string | null;
 };
 
 async function authGuest(id: string, code: string): Promise<CheckinRow | null> {
@@ -111,6 +119,12 @@ function getState(row: CheckinRow) {
     requiresManualReview: row.requires_manual_review ?? false,
     completed: Boolean(row.checkin_completed_at),
     completedAt: row.checkin_completed_at ?? null,
+    property: {
+      name: row.property_name ?? null,
+      address: row.property_address ?? null,
+      wifiSsid: row.wifi_ssid ?? null,
+      wifiPassword: row.wifi_password ?? null,
+    },
   };
 }
 
@@ -164,6 +178,40 @@ export async function POST(req: NextRequest) {
           console.warn("[checkin/step2:getState] retro-OCR failed:", err);
         }
       }
+
+      // Lazy backfill del WiFi/direccion desde la tabla properties. Los
+      // records creados antes del fix del lookup endpoint no tienen el
+      // snapshot, asi que la primera vez que el huesped abra su pase lo
+      // hidratamos desde properties. Si la propiedad tampoco los tiene,
+      // quedan en null y la UI muestra el estado vacio correspondiente.
+      if (currentRow.property_id && (!currentRow.wifi_password || !currentRow.wifi_ssid || !currentRow.property_address)) {
+        try {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const { data: prop } = await (supabaseAdmin.from("properties") as any)
+            .select("name, address, wifi_name, wifi_password")
+            .eq("id", currentRow.property_id)
+            .maybeSingle();
+          if (prop) {
+            const propUpdates: Record<string, unknown> = {};
+            if (!currentRow.wifi_ssid && prop.wifi_name) propUpdates.wifi_ssid = prop.wifi_name;
+            if (!currentRow.wifi_password && prop.wifi_password) propUpdates.wifi_password = prop.wifi_password;
+            if (!currentRow.property_address && prop.address) propUpdates.property_address = prop.address;
+            if (!currentRow.property_name && prop.name) propUpdates.property_name = prop.name;
+            if (Object.keys(propUpdates).length > 0) {
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any
+              const { data: updated } = await (supabaseAdmin.from("checkin_records") as any)
+                .update(propUpdates)
+                .eq("id", currentRow.id)
+                .select("*")
+                .single();
+              if (updated) currentRow = updated as CheckinRow;
+            }
+          }
+        } catch (err) {
+          console.warn("[checkin/step2:getState] property backfill failed:", err);
+        }
+      }
+
       return NextResponse.json({ ok: true, state: getState(currentRow) });
     }
 

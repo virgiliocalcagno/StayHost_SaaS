@@ -178,6 +178,13 @@ export async function POST(req: NextRequest): Promise<NextResponse<LookupResult 
     const syncUpdate: Record<string, unknown> = {
       guest_last_name: b.channel_code.toLowerCase().trim(),
       last_four_digits: phoneLast4,
+      // Refrescar snapshot del WiFi/direccion al valor actual de la
+      // propiedad. Si el host cambia el password del WiFi, queremos que el
+      // huesped vea el nuevo al abrir su pase — no el viejo del snapshot.
+      property_name: b.properties?.name ?? null,
+      property_address: b.properties?.address ?? null,
+      wifi_ssid: b.properties?.wifi_name ?? null,
+      wifi_password: b.properties?.wifi_password ?? null,
     };
     // Heredar datos OCR del booking si el host los cargo al crear la
     // reserva (escaneo con DocumentScanButton). Solo actualizamos si no
@@ -217,6 +224,10 @@ export async function POST(req: NextRequest): Promise<NextResponse<LookupResult 
       property_id: b.property_id,
       property_name: b.properties?.name ?? "Propiedad",
       property_address: b.properties?.address ?? null,
+      // Snapshot de credenciales WiFi al momento del check-in. El Guest Hub
+      // las lee de aqui para mostrarlas al huesped.
+      wifi_ssid: b.properties?.wifi_name ?? null,
+      wifi_password: b.properties?.wifi_password ?? null,
       status: "pendiente",
       id_status: "pending",
       source: channel === "ical" || channel === "airbnb" || channel === "vrbo" ? "auto_ical" : "auto_direct",
