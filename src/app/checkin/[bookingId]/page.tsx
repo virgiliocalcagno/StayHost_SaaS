@@ -126,6 +126,196 @@ function SecretReveal({
   );
 }
 
+// Pase de acceso tipo carnet / boarding pass. Una sola pantalla, sin
+// scroll en moviles tipicos. QR grande al centro (es lo que usa en la
+// garita), nombre + fechas debajo como un gafete oficial. Acciones
+// secundarias (PIN puerta, WiFi, mapa) viven en 3 pills al pie que
+// abren un bottom sheet para no saturar la vista principal.
+function GuestBadge({
+  bookingId, displayName, propertyName,
+  checkinISO, checkoutISO,
+  doorCode, wifiSsid, wifiPass, address, qrPayload,
+}: {
+  bookingId: string;
+  displayName: string;
+  propertyName: string;
+  checkinISO: string;
+  checkoutISO: string;
+  doorCode: string;
+  wifiSsid?: string;
+  wifiPass?: string;
+  address?: string;
+  qrPayload: string;
+}) {
+  type Sheet = null | "pin" | "wifi" | "map";
+  const [sheet, setSheet] = useState<Sheet>(null);
+
+  // Inicial para avatar del gafete (2 letras max).
+  const initials = (displayName || "H")
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((s) => s[0]?.toUpperCase() ?? "")
+    .join("") || "H";
+
+  const hasMap = Boolean(address);
+  const hasWifi = Boolean(wifiSsid);
+
+  return (
+    <div className="w-full">
+      {/* El gafete: una sola tarjeta vertical */}
+      <div className="relative bg-white rounded-3xl shadow-xl shadow-slate-200/60 border border-slate-100 overflow-hidden">
+        {/* Header con banda de color estilo boarding pass */}
+        <div className="bg-gradient-to-br from-emerald-500 to-teal-600 px-5 pt-5 pb-10 text-white">
+          <div className="flex items-center justify-between text-[10px] uppercase tracking-[0.2em] font-bold opacity-90">
+            <span>Pase de Acceso</span>
+            <span>StayHost</span>
+          </div>
+          <p className="mt-2 text-base font-semibold leading-tight truncate" title={propertyName}>
+            {propertyName}
+          </p>
+        </div>
+
+        {/* Muesca lateral tipo ticket (dos circulos) */}
+        <div className="absolute left-0 right-0 flex justify-between pointer-events-none" style={{ top: 108 }}>
+          <div className="w-5 h-5 -ml-2.5 rounded-full bg-sky-50" />
+          <div className="w-5 h-5 -mr-2.5 rounded-full bg-amber-50/30" />
+        </div>
+
+        {/* Linea de puntos separadora */}
+        <div className="px-6 -mt-[11px]">
+          <div className="border-t border-dashed border-slate-200" />
+        </div>
+
+        {/* Cuerpo con el QR */}
+        <div className="px-5 pt-5 pb-4 flex flex-col items-center gap-3">
+          <div className="inline-block bg-white rounded-2xl p-2 border border-slate-100 shadow-sm">
+            <img src={qr(qrPayload, 200)} alt="Pase QR" width={200} height={200} className="rounded-xl block" />
+          </div>
+          <p className="text-[11px] text-slate-400">Muéstralo al vigilante en la entrada</p>
+        </div>
+
+        {/* Franja con nombre + fechas tipo carnet */}
+        <div className="mx-5 mb-5 bg-slate-50 border border-slate-100 rounded-2xl p-3 flex items-center gap-3">
+          <div className="w-11 h-11 rounded-full bg-gradient-to-br from-emerald-400 to-teal-500 text-white flex items-center justify-center font-bold text-sm shadow-sm flex-shrink-0">
+            {initials}
+          </div>
+          <div className="flex-1 min-w-0">
+            <p className="text-[10px] uppercase tracking-wider text-slate-400 font-semibold">Huésped</p>
+            <p className="text-sm font-bold text-slate-800 truncate" title={displayName}>
+              {displayName || "Huésped"}
+            </p>
+            <p className="text-[11px] text-slate-500 mt-0.5">{fmtDate(checkinISO)} — {fmtDate(checkoutISO)}</p>
+          </div>
+          <div className="text-right flex-shrink-0">
+            <p className="text-[10px] uppercase tracking-wider text-slate-400 font-semibold">ID</p>
+            <p className="text-[11px] font-mono text-slate-600">{bookingId.slice(-6).toUpperCase()}</p>
+          </div>
+        </div>
+      </div>
+
+      {/* Barra de accesos abajo del gafete */}
+      <div className="mt-4 grid grid-cols-3 gap-2">
+        <button type="button" onClick={() => setSheet("pin")}
+          className="flex flex-col items-center gap-1 bg-white border border-slate-100 rounded-2xl py-3 px-2 shadow-sm hover:bg-amber-50 active:scale-95 transition-all">
+          <span className="text-2xl">🗝️</span>
+          <span className="text-[11px] font-bold text-slate-700">PIN Puerta</span>
+        </button>
+        <button type="button" onClick={() => setSheet("wifi")} disabled={!hasWifi}
+          className="flex flex-col items-center gap-1 bg-white border border-slate-100 rounded-2xl py-3 px-2 shadow-sm hover:bg-sky-50 active:scale-95 transition-all disabled:opacity-40 disabled:cursor-not-allowed">
+          <span className="text-2xl">📶</span>
+          <span className="text-[11px] font-bold text-slate-700">WiFi</span>
+        </button>
+        <button type="button" onClick={() => setSheet("map")} disabled={!hasMap}
+          className="flex flex-col items-center gap-1 bg-white border border-slate-100 rounded-2xl py-3 px-2 shadow-sm hover:bg-rose-50 active:scale-95 transition-all disabled:opacity-40 disabled:cursor-not-allowed">
+          <span className="text-2xl">📍</span>
+          <span className="text-[11px] font-bold text-slate-700">Cómo llegar</span>
+        </button>
+      </div>
+
+      {/* Bottom sheet modal */}
+      {sheet && (
+        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center">
+          <button type="button" aria-label="Cerrar"
+            onClick={() => setSheet(null)}
+            className="absolute inset-0 bg-slate-900/50 backdrop-blur-sm" />
+          <div className="relative w-full max-w-md bg-white rounded-t-3xl sm:rounded-3xl p-5 pb-8 shadow-2xl max-h-[85vh] overflow-y-auto">
+            <div className="flex justify-center mb-3 sm:hidden">
+              <div className="w-10 h-1 bg-slate-200 rounded-full" />
+            </div>
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-lg font-bold text-slate-800">
+                {sheet === "pin" && "🗝️ Código de Puerta"}
+                {sheet === "wifi" && "📶 WiFi"}
+                {sheet === "map" && "📍 Cómo llegar"}
+              </h3>
+              <button type="button" onClick={() => setSheet(null)}
+                className="w-8 h-8 rounded-full bg-slate-100 hover:bg-slate-200 text-slate-600 flex items-center justify-center text-lg"
+                aria-label="Cerrar">×</button>
+            </div>
+
+            {sheet === "pin" && (
+              <div className="space-y-4">
+                <div className="bg-amber-50 border border-amber-200 rounded-xl px-3 py-2 text-[12px] text-amber-800 leading-relaxed">
+                  ⚠️ Mostralo solo cuando estés frente a la cerradura. Evitá que otros vean tu PIN.
+                </div>
+                <div className="bg-slate-50 rounded-2xl p-4 border border-slate-100">
+                  <SecretReveal label="código de puerta" value={doorCode} icon="🗝️" revealSeconds={8} monoClass="text-3xl" />
+                </div>
+                <p className="text-[11px] text-slate-400 text-center">Válido durante tu estadía. Expira automáticamente al hacer check-out.</p>
+              </div>
+            )}
+
+            {sheet === "wifi" && wifiSsid && (
+              <div className="space-y-4">
+                <div className="bg-slate-50 rounded-2xl p-4 border border-slate-100 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs text-slate-500 uppercase tracking-wider font-semibold">Red</span>
+                    <div className="flex items-center gap-2">
+                      <span className="font-mono font-semibold text-slate-800 text-sm">{wifiSsid}</span>
+                      <button type="button" onClick={() => copyText(wifiSsid, () => {})}
+                        className="text-slate-500 hover:text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg px-2 py-1 text-xs"
+                        title="Copiar red">📋</button>
+                    </div>
+                  </div>
+                  {wifiPass && (
+                    <div className="space-y-1.5">
+                      <span className="text-xs text-slate-500 uppercase tracking-wider font-semibold">Contraseña</span>
+                      <SecretReveal label="contraseña WiFi" value={wifiPass} icon="📶" revealSeconds={12} monoClass="text-base" />
+                    </div>
+                  )}
+                </div>
+                {wifiPass && (
+                  <div className="text-center">
+                    <p className="text-[11px] text-slate-400 mb-2">O escaneá este QR para conectarte en 1 toque</p>
+                    <div className="inline-block bg-white rounded-2xl p-3 border border-slate-100">
+                      <img src={qr(`WIFI:T:WPA;S:${wifiSsid};P:${wifiPass};;`, 160)} alt="WiFi QR" width={160} height={160} className="rounded-xl" />
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {sheet === "map" && address && (
+              <div className="space-y-4">
+                <div className="bg-slate-50 rounded-2xl p-4 border border-slate-100">
+                  <p className="text-xs text-slate-500 uppercase tracking-wider font-semibold mb-2">Dirección</p>
+                  <p className="text-slate-800 text-sm leading-relaxed">{address}</p>
+                </div>
+                <a href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(address)}`}
+                  target="_blank" rel="noopener noreferrer"
+                  className="w-full bg-rose-500 hover:bg-rose-600 active:scale-95 text-white font-bold py-3.5 rounded-2xl text-sm flex items-center justify-center gap-2 transition-all shadow-sm">
+                  🗺️ Abrir en Google Maps
+                </a>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function CheckInInner({ bookingId }: { bookingId: string }) {
   const sp = useSearchParams();
   // Memoizamos el booking: sin esto, cada render crea un objeto nuevo (porque
@@ -1011,89 +1201,18 @@ function CheckInInner({ bookingId }: { bookingId: string }) {
             checkout: booking.co,
           });
           return (
-          <div className="space-y-5">
-            {/* Welcome banner */}
-            <div className="bg-gradient-to-br from-emerald-400 to-teal-500 rounded-3xl p-6 text-white text-center space-y-2 shadow-lg shadow-emerald-200">
-              <div className="text-4xl">🎉</div>
-              <h2 className="text-2xl font-bold">¡Bienvenido, {displayName || "huésped"}!</h2>
-              <p className="text-emerald-100 text-sm">Todo listo para tu estadía en {booking.p}</p>
-            </div>
-
-            {/* 1) Pase de Entrada — lo primero que usa el huesped al llegar
-                (garita antes que cerradura). QR grande y siempre visible: no
-                tiene info sensible, es solo un identificador de reserva. */}
-            <div className="bg-white rounded-2xl shadow-sm border-2 border-violet-200 p-5 space-y-3 text-center">
-              <p className="text-xs font-bold text-violet-600 uppercase tracking-widest">🏠 Pase de Entrada</p>
-              <p className="text-xs text-slate-500">Muéstrale este QR al vigilante en la entrada</p>
-              <div className="flex justify-center">
-                <div className="inline-block bg-white rounded-2xl p-3 shadow-sm border border-slate-100">
-                  <img src={qr(qrPayload)} alt="Pase QR" width={220} height={220} className="rounded-xl" />
-                </div>
-              </div>
-              <p className="text-xs font-mono text-slate-300">{bookingId.slice(-8).toUpperCase()}</p>
-              <p className="text-[11px] text-slate-400">{fmtDate(booking.ci)} — {fmtDate(booking.co)}</p>
-            </div>
-
-            {/* 2) Direccion */}
-            {booking.pa && (
-              <div className="bg-white rounded-2xl shadow-sm border border-slate-100 p-5 space-y-3">
-                <p className="text-xs font-bold text-rose-500 uppercase tracking-widest">📍 Cómo Llegar</p>
-                <p className="text-slate-700 text-sm">{booking.pa}</p>
-                <a href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(booking.pa)}`}
-                  target="_blank" rel="noopener noreferrer"
-                  className="w-full bg-rose-500 hover:bg-rose-600 active:scale-95 text-white font-bold py-3 rounded-xl text-sm flex items-center justify-center gap-2 transition-all shadow-sm">
-                  🗺️ Abrir en Google Maps
-                </a>
-              </div>
-            )}
-
-            {/* 3) Codigo de Puerta — OCULTO por default para evitar que un
-                vigilante o alguien atras lo vea mientras el huesped se
-                autentica. Reveal temporizado (8s) con boton copiar aparte. */}
-            <div className="bg-white rounded-2xl shadow-sm border-2 border-amber-200 p-5 space-y-3">
-              <div className="flex items-center justify-between">
-                <p className="text-xs font-bold text-amber-600 uppercase tracking-widest">🗝️ Código de Puerta</p>
-                <span className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider">Privado</span>
-              </div>
-              <div className="bg-amber-50 border border-amber-100 rounded-xl px-3 py-2 text-[11px] text-amber-800 leading-relaxed">
-                ⚠️ Mostralo solo cuando estés frente a la cerradura — evitá que otros vean tu PIN.
-              </div>
-              <SecretReveal label="código de puerta" value={booking.d4} icon="🗝️" revealSeconds={8} monoClass="text-3xl" />
-            </div>
-
-            {/* 4) WiFi — SSID visible (no es sensible), password con reveal */}
-            {booking.ws && (
-              <div className="bg-white rounded-2xl shadow-sm border border-slate-100 p-5 space-y-4">
-                <p className="text-xs font-bold text-sky-600 uppercase tracking-widest">📶 WiFi</p>
-                <div className="space-y-3">
-                  <div className="flex items-center justify-between">
-                    <span className="text-sm text-slate-500">Red</span>
-                    <div className="flex items-center gap-2">
-                      <span className="font-mono font-semibold text-slate-800">{booking.ws}</span>
-                      <button type="button" onClick={() => copyText(booking.ws!, () => { setCopiedSsid(true); setTimeout(() => setCopiedSsid(false), 2000); })}
-                        className="text-sky-400 hover:text-sky-600 transition-colors text-sm" title="Copiar red">
-                        {copiedSsid ? "✓" : "📋"}
-                      </button>
-                    </div>
-                  </div>
-                  {booking.wp && (
-                    <div className="space-y-1.5">
-                      <span className="text-sm text-slate-500">Contraseña</span>
-                      <SecretReveal label="contraseña WiFi" value={booking.wp} icon="📶" revealSeconds={12} monoClass="text-lg" />
-                    </div>
-                  )}
-                </div>
-                {booking.wp && (
-                  <div className="pt-1 text-center">
-                    <p className="text-xs text-slate-400 mb-2">O escaneá para conectarte en 1 toque</p>
-                    <div className="inline-block bg-white rounded-2xl p-3 shadow-sm border border-slate-100">
-                      <img src={qr(`WIFI:T:WPA;S:${booking.ws};P:${booking.wp};;`, 160)} alt="WiFi QR" width={160} height={160} className="rounded-xl" />
-                    </div>
-                  </div>
-                )}
-              </div>
-            )}
-          </div>
+          <GuestBadge
+            bookingId={bookingId}
+            displayName={displayName}
+            propertyName={booking.p}
+            checkinISO={booking.ci}
+            checkoutISO={booking.co}
+            doorCode={booking.d4}
+            wifiSsid={booking.ws}
+            wifiPass={booking.wp}
+            address={booking.pa}
+            qrPayload={qrPayload}
+          />
           );
         })()}
 
