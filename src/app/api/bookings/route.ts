@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getAuthenticatedTenant } from "@/lib/supabase/server";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { cascadeCancelBooking } from "@/lib/bookings/cleanup";
+import { syncPinToLock } from "@/lib/ttlock/sync-pin";
 
 // All three handlers read the tenant_id from the authenticated session
 // cookie. They no longer accept `tenantEmail` in the body or `?email=` in
@@ -175,20 +176,34 @@ export async function POST(req: NextRequest) {
           const coTime = prop?.check_out_time ?? "12:00";
 
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          await (supabaseAdmin.from("access_pins") as any).insert({
-            tenant_id: tenantId,
-            property_id: propertyId,
-            booking_id: bookingId,
-            ttlock_lock_id: prop?.ttlock_lock_id ? String(prop.ttlock_lock_id) : null,
-            guest_name: guestName ?? "Huésped",
-            guest_phone: guestPhone,
-            pin: last4,
-            source: source === "block" ? "manual" : "direct_booking",
-            status: "active",
-            delivery_status: "pending",
-            valid_from: new Date(`${checkIn}T${ciTime}:00`).toISOString(),
-            valid_to: new Date(`${checkOut}T${coTime}:00`).toISOString(),
-          });
+          const { data: insertedPin } = await (supabaseAdmin.from("access_pins") as any)
+            .insert({
+              tenant_id: tenantId,
+              property_id: propertyId,
+              booking_id: bookingId,
+              ttlock_lock_id: prop?.ttlock_lock_id ? String(prop.ttlock_lock_id) : null,
+              guest_name: guestName ?? "Huésped",
+              guest_phone: guestPhone,
+              pin: last4,
+              source: source === "block" ? "manual" : "direct_booking",
+              status: "active",
+              delivery_status: "pending",
+              valid_from: new Date(`${checkIn}T${ciTime}:00`).toISOString(),
+              valid_to: new Date(`${checkOut}T${coTime}:00`).toISOString(),
+              // sync_status default 'pending' lo pone la BD si la migracion corrio.
+              // Si no corrio, el insert igual funciona (el campo queda omitido).
+            })
+            .select("id")
+            .single();
+
+          // Fire & forget: disparamos el sync a TTLock en background. No
+          // bloqueamos la respuesta al host — si falla, el worker de retry
+          // lo agarra en el proximo ciclo.
+          if (prop?.ttlock_lock_id && insertedPin?.id) {
+            void syncPinToLock(insertedPin.id).catch((err) => {
+              console.warn("[bookings/POST] initial pin sync failed (will retry):", err);
+            });
+          }
         }
       } catch (pinErr) {
         console.error("[bookings/POST] auto-PIN creation failed (non-fatal):", pinErr);

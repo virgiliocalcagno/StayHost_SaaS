@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getAuthenticatedTenant } from "@/lib/supabase/server";
+import { syncPinToLock } from "@/lib/ttlock/sync-pin";
 
 /**
  * /api/access-pins — CRUD de códigos de acceso.
@@ -22,6 +23,7 @@ export async function GET() {
       ttlock_lock_id, ttlock_pwd_id,
       guest_name, guest_phone, pin,
       source, status, delivery_status,
+      sync_status, sync_attempts, sync_last_error, sync_next_retry_at,
       valid_from, valid_to,
       created_at,
       properties:property_id ( name )
@@ -29,7 +31,41 @@ export async function GET() {
     .order("created_at", { ascending: false });
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
-  return NextResponse.json({ pins: data ?? [] });
+
+  // Fire & forget: cuando el host abre el panel, re-intentamos sync de
+  // todos los pending/retry cuya ventana de backoff ya venció. Reemplaza
+  // el cron de Vercel (limitado a 2/dia en plan free).
+  const pins = (data ?? []) as Array<{
+    id: string;
+    sync_status?: string | null;
+    sync_next_retry_at?: string | null;
+    status?: string | null;
+  }>;
+  const now = Date.now();
+  const pendingIds = pins
+    .filter((p) => {
+      if (p.status !== "active") return false;
+      if (!p.sync_status || p.sync_status === "synced" || p.sync_status === "syncing") return false;
+      if (p.sync_status === "failed") return false;
+      if (!p.sync_next_retry_at) return true;
+      return new Date(p.sync_next_retry_at).getTime() <= now;
+    })
+    .slice(0, 10) // tope pequeño para no bloquear la respuesta
+    .map((p) => p.id);
+
+  if (pendingIds.length > 0) {
+    // void: no esperamos. El usuario ve la lista actual; el siguiente
+    // refetch del panel mostrara los nuevos estados.
+    void Promise.all(
+      pendingIds.map((id) =>
+        syncPinToLock(id).catch((err) => {
+          console.warn("[access-pins/GET] background sync failed:", err);
+        }),
+      ),
+    );
+  }
+
+  return NextResponse.json({ pins });
 }
 
 // POST /api/access-pins → crea un PIN
@@ -149,6 +185,17 @@ export async function PATCH(req: NextRequest) {
     return NextResponse.json({ error: "No updatable fields" }, { status: 400 });
   }
 
+  // Si cambia algo que afecta la cerradura (pin, fechas, revocacion),
+  // marcamos para re-sync. El worker se encarga de borrar el pwd viejo
+  // en TTLock y crear el nuevo.
+  const needsResync = ["pin", "valid_from", "valid_to", "status"].some((k) => k in patch);
+  if (needsResync) {
+    patch.sync_status = "pending";
+    patch.sync_attempts = 0;
+    patch.sync_next_retry_at = null;
+    patch.sync_last_error = null;
+  }
+
   const { error, count } = await supabase
     .from("access_pins")
     .update(patch as never, { count: "exact" })
@@ -156,6 +203,15 @@ export async function PATCH(req: NextRequest) {
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
   if (!count) return NextResponse.json({ error: "Not found" }, { status: 404 });
+
+  // Fire & forget: si marcamos para resync, disparamos inmediatamente.
+  // No bloqueamos la respuesta al host — si falla, el worker retry agarra.
+  if (needsResync) {
+    void syncPinToLock(id).catch((err) => {
+      console.warn("[access-pins/PATCH] resync failed (will retry):", err);
+    });
+  }
+
   return NextResponse.json({ ok: true });
 }
 
