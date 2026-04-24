@@ -15,6 +15,7 @@ export type ScannedDoc = {
   expirationDate?: string;
   source: "gemini";
   rawText: string;
+  photoPath?: string;
 };
 
 type Props = {

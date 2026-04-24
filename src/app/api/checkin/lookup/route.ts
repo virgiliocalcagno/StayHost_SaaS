@@ -88,7 +88,7 @@ export async function POST(req: NextRequest): Promise<NextResponse<LookupResult 
   const { data, error } = await supabaseAdmin
     .from("bookings")
     .select(
-      "id, tenant_id, channel_code, phone_last4, property_id, guest_name, guest_doc, guest_nationality, check_in, check_out, source, properties:property_id(name, address, wifi_name, wifi_password, electricity_enabled, electricity_rate), tenants:tenant_id(owner_whatsapp)"
+      "id, tenant_id, channel_code, phone_last4, property_id, guest_name, guest_doc, guest_nationality, guest_doc_photo_path, check_in, check_out, source, properties:property_id(name, address, wifi_name, wifi_password, electricity_enabled, electricity_rate), tenants:tenant_id(owner_whatsapp)"
     )
     .eq("channel_code", code)
     .eq("status", "confirmed")
@@ -124,6 +124,7 @@ export async function POST(req: NextRequest): Promise<NextResponse<LookupResult 
     guest_name: string | null;
     guest_doc: string | null;
     guest_nationality: string | null;
+    guest_doc_photo_path: string | null;
     check_in: string;
     check_out: string;
     source: string | null;
@@ -191,7 +192,7 @@ export async function POST(req: NextRequest): Promise<NextResponse<LookupResult 
     // hay ya datos OCR (no pisar si el huesped ya subio foto propia).
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const { data: existing } = await (supabaseAdmin.from("checkin_records") as any)
-      .select("ocr_name, ocr_document, ocr_nationality")
+      .select("ocr_name, ocr_document, ocr_nationality, id_photo_path")
       .eq("id", checkinRecordId)
       .single();
     const hasOcr = existing && (existing.ocr_name || existing.ocr_document);
@@ -202,6 +203,13 @@ export async function POST(req: NextRequest): Promise<NextResponse<LookupResult 
       if (b.guest_doc) syncUpdate.ocr_document = b.guest_doc;
       if (b.guest_nationality) syncUpdate.ocr_nationality = b.guest_nationality;
       syncUpdate.ocr_confidence = 1.0; // datos del host → confianza alta
+    }
+    // Heredar la foto del ID escaneada por el host si el record todavía no
+    // tiene una. Con id_status='validated' el Paso 2 del check-in no
+    // le vuelve a pedir foto al huésped.
+    if (b.guest_doc_photo_path && !existing?.id_photo_path) {
+      syncUpdate.id_photo_path = b.guest_doc_photo_path;
+      syncUpdate.id_status = "validated";
     }
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     await (supabaseAdmin.from("checkin_records") as any)
@@ -246,6 +254,13 @@ export async function POST(req: NextRequest): Promise<NextResponse<LookupResult 
     if (b.guest_doc) insertRow.ocr_document = b.guest_doc;
     if (b.guest_nationality) insertRow.ocr_nationality = b.guest_nationality;
     if (b.guest_doc || b.guest_nationality) insertRow.ocr_confidence = 1.0;
+
+    // Heredar foto del ID (si el host la capturo al crear la reserva).
+    // id_status='validated' evita que el huésped suba foto de nuevo en Paso 2.
+    if (b.guest_doc_photo_path) {
+      insertRow.id_photo_path = b.guest_doc_photo_path;
+      insertRow.id_status = "validated";
+    }
 
     const { error: insertErr } = await supabaseAdmin
       .from("checkin_records")

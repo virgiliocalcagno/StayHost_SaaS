@@ -117,6 +117,7 @@ export default function MultiCalendarPanel() {
     guest: "",
     docIdentidad: "",
     nacionalidad: "",
+    docPhotoPath: "" as string,
     telefono: "",
     numHuespedes: 2,
     start: "",
@@ -224,6 +225,7 @@ export default function MultiCalendarPanel() {
           guestPhone: newBooking.telefono || null,
           guestDoc: newBooking.docIdentidad || null,
           guestNationality: newBooking.nacionalidad || null,
+          guestDocPhotoPath: newBooking.docPhotoPath || null,
           source: newBooking.channel,
           numGuests: newBooking.numHuespedes,
           totalPrice: newBooking.price,
@@ -245,7 +247,7 @@ export default function MultiCalendarPanel() {
             propertyName: prop?.name ?? "",
           });
         }
-        setNewBooking({ propertyId: "1", guest: "", docIdentidad: "", nacionalidad: "", telefono: "", numHuespedes: 2, start: "", end: "", channel: "direct", status: "confirmed", price: 0 });
+        setNewBooking({ propertyId: "1", guest: "", docIdentidad: "", nacionalidad: "", docPhotoPath: "", telefono: "", numHuespedes: 2, start: "", end: "", channel: "direct", status: "confirmed", price: 0 });
         loadData();
       }
     } catch {}
@@ -551,6 +553,7 @@ export default function MultiCalendarPanel() {
                         guest: doc.guestName ?? prev.guest,
                         docIdentidad: doc.docNumber ?? prev.docIdentidad,
                         nacionalidad: doc.nationality ?? prev.nacionalidad,
+                        docPhotoPath: doc.photoPath ?? prev.docPhotoPath,
                       }));
                     }}
                   />
