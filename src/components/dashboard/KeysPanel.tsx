@@ -68,13 +68,22 @@ interface PinRow {
   ttlock_pwd_id: string | null;
   valid_from: string;
   valid_to: string;
+  sync_status?: SyncStatus | null;
+  sync_last_error?: string | null;
+  sync_next_retry_at?: string | null;
+  sync_attempts?: number | null;
 }
+
+type SyncStatus = "pending" | "syncing" | "synced" | "retry" | "failed" | "offline_lock";
 
 interface Entry extends BookingLite {
   pinId: string | null; // null si todavía no se persistió
   accessCode: string;
   deliveryStatus: DeliveryStatus;
   hasTtlock: boolean;
+  syncStatus: SyncStatus | null;
+  syncLastError: string | null;
+  syncNextRetryAt: string | null;
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
@@ -154,6 +163,31 @@ const StatusBadge = ({ status }: { status: DeliveryStatus }) => {
   );
 };
 
+/**
+ * Badge del estado de sync con TTLock. Refleja si el PIN que vive en BD
+ * ya esta programado en la cerradura fisica. Tooltip muestra detalle.
+ */
+const SyncBadge = ({ status, error }: { status: SyncStatus | null; error: string | null }) => {
+  if (!status) return null;
+  const map: Record<SyncStatus, { label: string; color: string; title: string }> = {
+    pending:      { label: "En cola",      color: "bg-slate-100 text-slate-700", title: "Esperando primer intento de sync con la cerradura" },
+    syncing:      { label: "Sincronizando", color: "bg-sky-100 text-sky-700",    title: "Enviando el PIN a la cerradura…" },
+    synced:       { label: "En cerradura", color: "bg-emerald-100 text-emerald-700", title: "Confirmado en la cerradura TTLock" },
+    retry:        { label: "Reintentando", color: "bg-amber-100 text-amber-700", title: error ?? "Reintentará en unos minutos" },
+    offline_lock: { label: "Cerradura offline", color: "bg-orange-100 text-orange-700", title: "La cerradura no responde. Reintenta cada 10 min." },
+    failed:       { label: "Error — reintentar", color: "bg-rose-100 text-rose-700", title: error ?? "Agotó los reintentos. Revisá la cuenta TTLock o la cerradura." },
+  };
+  const info = map[status];
+  return (
+    <span
+      className={cn("text-[10px] font-bold px-2 py-0.5 rounded-full", info.color)}
+      title={info.title}
+    >
+      {info.label}
+    </span>
+  );
+};
+
 // ─── Component ──────────────────────────────────────────────────────────────
 
 export default function KeysPanel() {
@@ -220,6 +254,9 @@ export default function KeysPanel() {
             accessCode: pin?.pin ?? suggestCode({ phone4: b.phone4, checkIn: b.start }),
             deliveryStatus: pin?.delivery_status ?? "pending",
             hasTtlock,
+            syncStatus: (pin?.sync_status as SyncStatus | undefined) ?? null,
+            syncLastError: pin?.sync_last_error ?? null,
+            syncNextRetryAt: pin?.sync_next_retry_at ?? null,
           });
         }
       }
@@ -233,14 +270,36 @@ export default function KeysPanel() {
   };
 
   useEffect(() => {
-    fetchData();
+    let cancelled = false;
+    (async () => {
+      await fetchData();
+      if (cancelled) return;
+      // Disparar sync de pending/retry/stuck desde el cliente.
+      // En Vercel serverless los background tasks (void fn()) mueren
+      // cuando la request GET cierra, asi que el trigger tiene que ser
+      // una request HTTP explicita del navegador — aca.
+      try {
+        const syncRes = await fetch("/api/cron/sync-pins", { credentials: "include" });
+        if (syncRes.ok && !cancelled) {
+          const syncData = (await syncRes.json()) as { processed?: number; synced?: number };
+          if ((syncData.processed ?? 0) > 0) {
+            // Re-fetch solo si el sync procesó algo — asi el panel refleja
+            // los nuevos sync_status.
+            await fetchData();
+          }
+        }
+      } catch {
+        // Silent — el badge del PIN ya muestra el estado actual de la BD.
+      }
+    })();
+    return () => { cancelled = true; };
   }, []);
 
   // Programa el PIN en la cerradura TTLock. Silencioso — solo devuelve el
   // keyboardPwdId si todo salió bien, o null si falló. Los errores no
   // bloquean el guardado del PIN en DB, solo quedan como warning en UI.
   const programOnLock = async (entry: Entry, code: string): Promise<string | null> => {
-    if (!entry.hasTtlock) return null;
+    if (!false /* programLock: lo hace el backend auto-sync ahora */) return null;
     try {
       const res = await fetch("/api/ttlock/accounts", {
         method: "POST",
@@ -373,7 +432,7 @@ export default function KeysPanel() {
     // Al enviar por WhatsApp, marcamos como "enviado" y — si tiene TTLock —
     // programamos el PIN en la cerradura para que el código funcione.
     if (entry.deliveryStatus === "pending") {
-      void saveEntry(entry, entry.accessCode, "sent", entry.hasTtlock);
+      void saveEntry(entry, entry.accessCode, "sent", false /* programLock: lo hace el backend auto-sync ahora */);
     }
   };
 
@@ -527,7 +586,7 @@ export default function KeysPanel() {
                             onKeyDown={(e) => {
                               if (e.key === "Enter") {
                                 if (editingCode.length >= 4) {
-                                  void saveEntry(entry, editingCode, entry.deliveryStatus, entry.hasTtlock);
+                                  void saveEntry(entry, editingCode, entry.deliveryStatus, false /* programLock: lo hace el backend auto-sync ahora */);
                                 }
                                 setEditingId(null);
                               }
@@ -538,7 +597,7 @@ export default function KeysPanel() {
                                 editingCode.length >= 4 &&
                                 editingCode !== entry.accessCode
                               ) {
-                                void saveEntry(entry, editingCode, entry.deliveryStatus, entry.hasTtlock);
+                                void saveEntry(entry, editingCode, entry.deliveryStatus, false /* programLock: lo hace el backend auto-sync ahora */);
                               }
                               setEditingId(null);
                             }}
@@ -588,6 +647,9 @@ export default function KeysPanel() {
                             <Lock className="h-3 w-3" />
                             TTLock
                           </span>
+                        )}
+                        {entry.hasTtlock && entry.pinId && (
+                          <SyncBadge status={entry.syncStatus} error={entry.syncLastError} />
                         )}
                         {isUrgent && entry.deliveryStatus === "pending" && (
                           <span className="flex items-center gap-1 text-[10px] font-bold text-amber-700 bg-amber-100 px-2 py-0.5 rounded-full">
@@ -687,7 +749,7 @@ export default function KeysPanel() {
                             disabled={saving}
                             className="h-7 px-2 rounded-lg text-[11px] text-blue-700 border-blue-200 hover:bg-blue-50"
                             onClick={() =>
-                              saveEntry(entry, entry.accessCode, "sent", entry.hasTtlock)
+                              saveEntry(entry, entry.accessCode, "sent", false /* programLock: lo hace el backend auto-sync ahora */)
                             }
                           >
                             Marcar enviado
@@ -699,7 +761,7 @@ export default function KeysPanel() {
                             disabled={saving}
                             className="h-7 px-2 rounded-lg text-[11px] bg-emerald-600 hover:bg-emerald-700"
                             onClick={() =>
-                              saveEntry(entry, entry.accessCode, "confirmed", entry.hasTtlock)
+                              saveEntry(entry, entry.accessCode, "confirmed", false /* programLock: lo hace el backend auto-sync ahora */)
                             }
                           >
                             <Check className="h-3 w-3 mr-1" />

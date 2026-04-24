@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getAuthenticatedTenant } from "@/lib/supabase/server";
+import { syncPinToLock } from "@/lib/ttlock/sync-pin";
 
 /**
  * /api/access-pins — CRUD de códigos de acceso.
@@ -22,6 +23,7 @@ export async function GET() {
       ttlock_lock_id, ttlock_pwd_id,
       guest_name, guest_phone, pin,
       source, status, delivery_status,
+      sync_status, sync_attempts, sync_last_error, sync_next_retry_at, sync_last_attempt_at,
       valid_from, valid_to,
       created_at,
       properties:property_id ( name )
@@ -29,6 +31,11 @@ export async function GET() {
     .order("created_at", { ascending: false });
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+
+  // NOTA: el trigger de sync del GET se movio al cliente (KeysPanel llama
+  // explicitamente a /api/cron/sync-pins). Fire-and-forget aca no funciona
+  // en Vercel serverless — el background task muere al cerrar la request y
+  // la fila queda stuck en 'syncing'.
   return NextResponse.json({ pins: data ?? [] });
 }
 
@@ -149,6 +156,25 @@ export async function PATCH(req: NextRequest) {
     return NextResponse.json({ error: "No updatable fields" }, { status: 400 });
   }
 
+  // Si cambia algo que afecta la cerradura (pin, fechas, revocacion),
+  // marcamos para re-sync. El worker se encarga de borrar el pwd viejo
+  // en TTLock y crear el nuevo.
+  const needsResync = ["pin", "valid_from", "valid_to", "status"].some((k) => k in patch);
+  if (needsResync) {
+    patch.sync_status = "pending";
+    patch.sync_attempts = 0;
+    patch.sync_next_retry_at = null;
+    patch.sync_last_error = null;
+  } else if ("ttlock_pwd_id" in patch && patch.ttlock_pwd_id) {
+    // Caso especial: algun flow externo (ej. SmartDevicesPanel createPin manual)
+    // ya programo el PIN en la cerradura y reporta el ttlock_pwd_id via PATCH.
+    // Lo damos por sincronizado para que el badge refleje la realidad.
+    patch.sync_status = "synced";
+    patch.sync_attempts = 1;
+    patch.sync_last_error = null;
+    patch.sync_next_retry_at = null;
+  }
+
   const { error, count } = await supabase
     .from("access_pins")
     .update(patch as never, { count: "exact" })
@@ -156,6 +182,19 @@ export async function PATCH(req: NextRequest) {
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
   if (!count) return NextResponse.json({ error: "Not found" }, { status: 404 });
+
+  // Sync sincronico al editar. Misma razon que en /api/bookings/POST:
+  // fire-and-forget en Vercel serverless puede quedar stuck si la function
+  // muere. Esperamos al resultado — tipicamente 3-6s. Si falla, la fila
+  // queda en 'retry' y el worker la retoma despues.
+  if (needsResync) {
+    try {
+      await syncPinToLock(id);
+    } catch (err) {
+      console.warn("[access-pins/PATCH] resync threw (will retry):", err);
+    }
+  }
+
   return NextResponse.json({ ok: true });
 }
 
