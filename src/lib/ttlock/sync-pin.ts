@@ -27,6 +27,21 @@ import { deleteTTLockPin } from "./delete-pin";
 const TTLOCK_API = process.env.TTLOCK_API_URL ?? "https://euapi.ttlock.com";
 const MAX_ATTEMPTS = 6;
 
+// Timeout por request a TTLock. Hobby plan de Vercel mata la function a los
+// 10s — con 3 fetches (oauth + delete + add) necesitamos que cada uno termine
+// rapido para que syncPinToLock no se cuelgue y deje la fila en 'syncing'.
+const TTLOCK_REQUEST_TIMEOUT_MS = 4000;
+
+async function fetchWithTimeout(url: string, init: RequestInit): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), TTLOCK_REQUEST_TIMEOUT_MS);
+  try {
+    return await fetch(url, { ...init, signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 // Backoff en milisegundos indexado por numero de intentos previos.
 const BACKOFF_MS = [0, 2 * 60_000, 5 * 60_000, 15 * 60_000, 60 * 60_000, 4 * 60 * 60_000];
 
@@ -76,7 +91,7 @@ async function oauthRefresh(refreshToken: string): Promise<TokenResponse | null>
     refresh_token: refreshToken,
   });
 
-  const res = await fetch(`${TTLOCK_API}/oauth2/token`, {
+  const res = await fetchWithTimeout(`${TTLOCK_API}/oauth2/token`, {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: body.toString(),
@@ -219,18 +234,24 @@ export async function syncPinToLock(pinId: string): Promise<SyncPinResult> {
     return { ok: false, reason: "no_token" };
   }
 
-  // 4) Borrar el PIN viejo si existe (best-effort — si falla, seguimos)
+  // 4) Borrar el PIN viejo si existe (best-effort — si falla, seguimos).
+  //    Envolvemos en timeout de 3s — no queremos gastar el budget del serverless
+  //    esperando un delete que puede no llegar nunca.
   if (pin.ttlock_pwd_id) {
     try {
-      await deleteTTLockPin({
+      const deletePromise = deleteTTLockPin({
         tenantId: pin.tenant_id,
         propertyId: pin.property_id,
         accountId,
         lockId: pin.ttlock_lock_id,
         keyboardPwdId: pin.ttlock_pwd_id,
       });
+      const timeoutPromise = new Promise<null>((resolve) =>
+        setTimeout(() => resolve(null), 3000),
+      );
+      await Promise.race([deletePromise, timeoutPromise]);
       // Pausa corta — TTLock a veces no registra el delete antes del add.
-      await new Promise((r) => setTimeout(r, 500));
+      await new Promise((r) => setTimeout(r, 300));
     } catch (err) {
       console.warn("[ttlock/sync-pin] delete old pwd failed (continuing):", err);
     }
@@ -252,7 +273,7 @@ export async function syncPinToLock(pinId: string): Promise<SyncPinResult> {
   });
 
   try {
-    const res = await fetch(`${TTLOCK_API}/v3/keyboardPwd/add`, {
+    const res = await fetchWithTimeout(`${TTLOCK_API}/v3/keyboardPwd/add`, {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
       body: params.toString(),
@@ -293,13 +314,17 @@ export async function syncPinToLock(pinId: string): Promise<SyncPinResult> {
   } catch (err) {
     const nextAttempts = pin.sync_attempts + 1;
     const retryAt = scheduleRetry(nextAttempts);
+    const isAbort = err instanceof Error && (err.name === "AbortError" || err.message.includes("aborted"));
+    const errMsg = isAbort
+      ? `TTLock no respondió en ${TTLOCK_REQUEST_TIMEOUT_MS}ms (timeout)`
+      : `Error de red: ${err instanceof Error ? err.message : String(err)}`;
     await updateSyncState(pinId, {
       sync_status: retryAt ? "retry" : "failed",
       sync_attempts: nextAttempts,
       sync_next_retry_at: retryAt,
-      sync_last_error: `Error de red: ${err instanceof Error ? err.message : String(err)}`,
+      sync_last_error: errMsg,
     });
-    return { ok: false, reason: "network_error", detail: String(err) };
+    return { ok: false, reason: "network_error", detail: errMsg };
   }
 }
 
