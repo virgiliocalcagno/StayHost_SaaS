@@ -35,12 +35,15 @@ export async function GET(req: NextRequest) {
   }
 
   const now = new Date().toISOString();
+  const staleCutoff = new Date(Date.now() - 2 * 60 * 1000).toISOString();
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const { data: pending } = await (supabaseAdmin.from("access_pins") as any)
     .select("id")
-    .in("sync_status", ["pending", "retry", "offline_lock"])
-    .or(`sync_next_retry_at.is.null,sync_next_retry_at.lte.${now}`)
     .eq("status", "active")
+    .or(
+      `and(sync_status.in.(pending,retry,offline_lock),or(sync_next_retry_at.is.null,sync_next_retry_at.lte.${now})),` +
+      `and(sync_status.eq.syncing,or(sync_last_attempt_at.is.null,sync_last_attempt_at.lt.${staleCutoff}))`,
+    )
     .order("sync_next_retry_at", { ascending: true, nullsFirst: true })
     .limit(BATCH_SIZE);
 

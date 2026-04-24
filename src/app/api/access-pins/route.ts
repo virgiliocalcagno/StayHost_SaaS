@@ -23,7 +23,7 @@ export async function GET() {
       ttlock_lock_id, ttlock_pwd_id,
       guest_name, guest_phone, pin,
       source, status, delivery_status,
-      sync_status, sync_attempts, sync_last_error, sync_next_retry_at,
+      sync_status, sync_attempts, sync_last_error, sync_next_retry_at, sync_last_attempt_at,
       valid_from, valid_to,
       created_at,
       properties:property_id ( name )
@@ -34,19 +34,28 @@ export async function GET() {
 
   // Fire & forget: cuando el host abre el panel, re-intentamos sync de
   // todos los pending/retry cuya ventana de backoff ya venció. Reemplaza
-  // el cron de Vercel (limitado a 2/dia en plan free).
+  // el cron de Vercel (limitado a 2/dia en plan free). Tambien incluimos
+  // filas stuck en 'syncing' por >2 min — Vercel puede matar background
+  // tasks a mitad y el sync queda trabado.
   const pins = (data ?? []) as Array<{
     id: string;
     sync_status?: string | null;
     sync_next_retry_at?: string | null;
+    sync_last_attempt_at?: string | null;
     status?: string | null;
   }>;
   const now = Date.now();
+  const staleCutoff = now - 2 * 60 * 1000;
   const pendingIds = pins
     .filter((p) => {
       if (p.status !== "active") return false;
-      if (!p.sync_status || p.sync_status === "synced" || p.sync_status === "syncing") return false;
-      if (p.sync_status === "failed") return false;
+      if (!p.sync_status || p.sync_status === "synced" || p.sync_status === "failed") return false;
+      // 'syncing' stuck: contarlo como pendiente si lleva >2 min sin progreso
+      if (p.sync_status === "syncing") {
+        if (!p.sync_last_attempt_at) return true;
+        return new Date(p.sync_last_attempt_at).getTime() < staleCutoff;
+      }
+      // pending / retry / offline_lock con backoff vencido
       if (!p.sync_next_retry_at) return true;
       return new Date(p.sync_next_retry_at).getTime() <= now;
     })
@@ -204,12 +213,16 @@ export async function PATCH(req: NextRequest) {
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
   if (!count) return NextResponse.json({ error: "Not found" }, { status: 404 });
 
-  // Fire & forget: si marcamos para resync, disparamos inmediatamente.
-  // No bloqueamos la respuesta al host — si falla, el worker retry agarra.
+  // Sync sincronico al editar. Misma razon que en /api/bookings/POST:
+  // fire-and-forget en Vercel serverless puede quedar stuck si la function
+  // muere. Esperamos al resultado — tipicamente 3-6s. Si falla, la fila
+  // queda en 'retry' y el worker la retoma despues.
   if (needsResync) {
-    void syncPinToLock(id).catch((err) => {
-      console.warn("[access-pins/PATCH] resync failed (will retry):", err);
-    });
+    try {
+      await syncPinToLock(id);
+    } catch (err) {
+      console.warn("[access-pins/PATCH] resync threw (will retry):", err);
+    }
   }
 
   return NextResponse.json({ ok: true });

@@ -196,13 +196,17 @@ export async function POST(req: NextRequest) {
             .select("id")
             .single();
 
-          // Fire & forget: disparamos el sync a TTLock en background. No
-          // bloqueamos la respuesta al host — si falla, el worker de retry
-          // lo agarra en el proximo ciclo.
+          // Sync sincronico (no fire-and-forget) — Vercel serverless puede
+          // matar background tasks al cerrar la request, lo que dejaba la
+          // fila stuck en 'syncing'. Esperamos hasta que termine (tipicamente
+          // 3-6s). Si falla, syncPinToLock ya marca la fila como retry con
+          // backoff, asi que el worker/panel la retoma despues.
           if (prop?.ttlock_lock_id && insertedPin?.id) {
-            void syncPinToLock(insertedPin.id).catch((err) => {
-              console.warn("[bookings/POST] initial pin sync failed (will retry):", err);
-            });
+            try {
+              await syncPinToLock(insertedPin.id);
+            } catch (err) {
+              console.warn("[bookings/POST] initial pin sync threw (will retry):", err);
+            }
           }
         }
       } catch (pinErr) {

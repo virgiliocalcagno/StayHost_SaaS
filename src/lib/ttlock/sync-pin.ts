@@ -166,12 +166,16 @@ export async function syncPinToLock(pinId: string): Promise<SyncPinResult> {
     return { ok: false, reason: "no_lock" };
   }
 
-  // 2) Marcar 'syncing' (lock optimista: si otro worker ya lo tomo, no lo pisamos)
+  // 2) Marcar 'syncing' (lock optimista). Aceptamos tambien recuperar
+  //    filas stuck en 'syncing' por mas de 2 min — Vercel puede matar un
+  //    fire-and-forget a mitad de camino y dejar la fila trabada. Sin este
+  //    recovery, el PIN queda en 'syncing' para siempre y nadie lo retoma.
+  const staleCutoff = new Date(Date.now() - 2 * 60 * 1000).toISOString();
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const { count: locked } = await (supabaseAdmin.from("access_pins") as any)
     .update({ sync_status: "syncing", sync_last_attempt_at: new Date().toISOString() }, { count: "exact" })
     .eq("id", pinId)
-    .in("sync_status", ["pending", "retry", "offline_lock"]);
+    .or(`sync_status.in.(pending,retry,offline_lock),and(sync_status.eq.syncing,sync_last_attempt_at.lt.${staleCutoff}),and(sync_status.eq.syncing,sync_last_attempt_at.is.null)`);
 
   if (!locked) {
     // Otro worker ya lo tomo (o ya esta synced). Salida silenciosa.
