@@ -26,6 +26,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getAuthenticatedTenant } from "@/lib/supabase/server";
 import { supabaseAdmin } from "@/lib/supabase/admin";
+import { deleteTTLockPin } from "@/lib/ttlock/delete-pin";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -468,27 +469,86 @@ async function staffSetIdStatus(
 }
 
 async function staffResetId(data: Record<string, unknown>) {
-  // Host resetea el documento del checkin: borra la foto, los datos OCR
-  // y vuelve el id_status a "pending". Usado cuando:
+  // Host resetea el check-in completo. Usado cuando:
   //  - El host dio rechazar/validar por accidente
   //  - Los datos OCR quedaron contaminados de otra reserva
-  //  - Queremos darle al huesped la oportunidad de subir foto nueva
+  //  - Sospecha de PIN comprometido → queremos revocar acceso YA
+  //
+  // Acciones (en orden):
+  //  1) Borra foto del Storage
+  //  2) Revoca el PIN físico en TTLock (para que el código deje de abrir)
+  //  3) Borra access_pins de BD vinculados al booking_ref
+  //  4) Limpia TODO el estado del huésped en checkin_records, incluido
+  //     `checkin_completed_at` — sin esto la UI salta al gafete porque
+  //     `state.completed=true` aunque no haya foto (bug HMKSYNCPDQ).
+  //
+  // El booking en `bookings` NO se toca: la reserva sigue viva. Si el
+  // huésped vuelve a hacer check-in, se le genera un PIN nuevo.
   const { tenantId, supabase } = await getAuthenticatedTenant();
   if (!tenantId) return bad(401, "No autenticado");
   const id = String(data.id ?? "");
   if (!id) return bad(400, "Falta id");
 
-  // Obtenemos el path de la foto actual para borrarla del Storage
+  // Sacamos booking_ref + id_photo_path en una sola query.
   const { data: current } = await supabase
     .from("checkin_records")
-    .select("id_photo_path")
+    .select("id_photo_path, booking_ref")
     .eq("id", id)
-    .single<Pick<CheckinRow, "id_photo_path">>();
+    .maybeSingle<Pick<CheckinRow, "id_photo_path" | "booking_ref">>();
+  if (!current) return bad(404, "No encontrado");
 
-  if (current?.id_photo_path) {
+  // 1) Foto
+  if (current.id_photo_path) {
     await supabaseAdmin.storage.from("checkin-ids").remove([current.id_photo_path]);
   }
 
+  // 2) + 3) TTLock físico y access_pins de BD. Solo si el record está
+  // asociado a un booking — los records "legacy" sin booking_ref no tienen
+  // PIN vinculado en BD.
+  let ttlockRevoked = 0;
+  let ttlockFailed = 0;
+  let pinsDeleted = 0;
+  if (current.booking_ref) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const { data: pinRows } = await (supabaseAdmin.from("access_pins") as any)
+      .select("id, tenant_id, property_id, ttlock_lock_id, ttlock_pwd_id")
+      .eq("booking_id", current.booking_ref);
+    const pins = (pinRows ?? []) as Array<{
+      id: string;
+      tenant_id: string;
+      property_id: string | null;
+      ttlock_lock_id: string | null;
+      ttlock_pwd_id: string | null;
+    }>;
+
+    await Promise.all(
+      pins.map(async (p) => {
+        if (!p.ttlock_pwd_id || !p.ttlock_lock_id) return;
+        const result = await deleteTTLockPin({
+          tenantId: p.tenant_id,
+          propertyId: p.property_id,
+          lockId: p.ttlock_lock_id,
+          keyboardPwdId: p.ttlock_pwd_id,
+        });
+        if (result.ok) ttlockRevoked++;
+        else {
+          ttlockFailed++;
+          console.warn(`[resetId] TTLock delete failed for pin ${p.id}:`, result.reason, result.detail ?? "");
+        }
+      })
+    );
+
+    const { count } = await supabaseAdmin
+      .from("access_pins")
+      .delete({ count: "exact" })
+      .eq("booking_id", current.booking_ref);
+    pinsDeleted = count ?? 0;
+  }
+
+  // 4) Reset del record. Además de foto/OCR ahora limpiamos también el
+  // completed_at, typed, waiting_for_auth, email/whatsapp/guest_count y el
+  // consent — así el huésped al recargar arranca desde el Paso 2 con todo
+  // pendiente, no con el gafete bloqueado.
   const patch = {
     id_photo_path: null,
     id_status: "pending" as IdStatus,
@@ -504,6 +564,11 @@ async function staffResetId(data: Record<string, unknown>) {
     waiting_for_auth: false,
     auth_reason: null,
     requires_manual_review: false,
+    checkin_completed_at: null,
+    guest_typed_name: null,
+    guest_typed_document: null,
+    guest_typed_nationality: null,
+    consent_accepted_at: null,
   };
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -520,6 +585,9 @@ async function staffResetId(data: Record<string, unknown>) {
   return NextResponse.json({
     success: true,
     record: rowToApi(updated as CheckinRow, { exposeWifi: false }),
+    ttlockRevoked,
+    ttlockFailed,
+    pinsDeleted,
   });
 }
 

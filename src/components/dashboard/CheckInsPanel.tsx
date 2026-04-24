@@ -982,13 +982,34 @@ export default function CheckInsPanel() {
   // Usar cuando se dio validar/rechazar por accidente o cuando los datos
   // OCR quedaron contaminados de otra reserva.
   async function resetDocument(r: LocalCheckIn) {
-    if (!confirm(`¿Resetear el documento de ${r.guestName || "este huésped"}?\n\nSe borra la foto y los datos leídos. El huésped va a tener que subir su documento de nuevo.`)) return;
+    if (!confirm(
+      `¿Reiniciar el check-in de ${r.guestName || "este huésped"}?\n\n` +
+      `• Se borra la foto y los datos del documento.\n` +
+      `• Se revoca el PIN en la cerradura (deja de abrir inmediatamente).\n` +
+      `• El huésped vuelve al Paso 2 si abre el link.\n\n` +
+      `La reserva NO se cancela — si vuelve a hacer check-in se le genera PIN nuevo.`
+    )) return;
     try {
-      await apiCheckin("resetId", { id: r.id });
-      toast.success("Documento reseteado. El huésped puede subirlo de nuevo.");
+      const res = await apiCheckin<{
+        success: boolean;
+        ttlockRevoked?: number;
+        ttlockFailed?: number;
+        pinsDeleted?: number;
+      }>("resetId", { id: r.id });
+      const ttlockFailed = res.ttlockFailed ?? 0;
+      const ttlockRevoked = res.ttlockRevoked ?? 0;
+      if (ttlockFailed > 0) {
+        toast.warning(
+          `Check-in reiniciado, pero ${ttlockFailed} PIN${ttlockFailed > 1 ? "es" : ""} no se pudo revocar en la cerradura. Revisá TTLock manualmente.`
+        );
+      } else if (ttlockRevoked > 0) {
+        toast.success(`Check-in reiniciado. PIN revocado en la cerradura.`);
+      } else {
+        toast.success("Check-in reiniciado. El huésped puede empezar de nuevo.");
+      }
       await refreshRecords();
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : "No se pudo resetear");
+      toast.error(err instanceof Error ? err.message : "No se pudo reiniciar");
     }
   }
 
