@@ -7,6 +7,7 @@
  */
 import { NextRequest, NextResponse } from "next/server";
 import { getAuthenticatedTenant } from "@/lib/supabase/server";
+import { supabaseAdmin } from "@/lib/supabase/admin";
 import { scanDocumentWithGemini } from "@/lib/ocr/gemini";
 
 export const maxDuration = 60;
@@ -19,6 +20,9 @@ export type ScannedDoc = {
   expirationDate?: string;
   source: "gemini";
   rawText: string;
+  // Path en el bucket `checkin-ids` donde guardamos la imagen escaneada
+  // para que el huésped no tenga que volver a subir la foto en el check-in.
+  photoPath?: string;
 };
 
 export async function POST(req: NextRequest) {
@@ -50,13 +54,37 @@ export async function POST(req: NextRequest) {
 
     const arrayBuffer = await image.arrayBuffer();
     const base64 = Buffer.from(arrayBuffer).toString("base64");
-    const result = await scanDocumentWithGemini(base64, image.type || "image/jpeg");
+    const mime = image.type || "image/jpeg";
+    const result = await scanDocumentWithGemini(base64, mime);
 
     if (!result.ok || !result.doc) {
       return NextResponse.json(
         { error: result.error ?? "Error en OCR" },
         { status: result.status ?? 500 },
       );
+    }
+
+    // Subimos la imagen al bucket `checkin-ids` para que el huésped la herede
+    // en el check-in y no tenga que volver a subir foto. La subida es
+    // best-effort: si falla, el OCR igual devuelve los datos.
+    let photoPath: string | undefined;
+    try {
+      const ext = mime.includes("png") ? "png" : "jpg";
+      const uuid = crypto.randomUUID();
+      const path = `${tenantId}/scans/${uuid}.${ext}`;
+      const { error: uploadErr } = await supabaseAdmin.storage
+        .from("checkin-ids")
+        .upload(path, Buffer.from(arrayBuffer), {
+          contentType: mime,
+          upsert: false,
+        });
+      if (!uploadErr) {
+        photoPath = path;
+      } else {
+        console.error("[ocr/scan-document] upload to Storage failed (non-fatal):", uploadErr);
+      }
+    } catch (uploadErr) {
+      console.error("[ocr/scan-document] upload to Storage threw (non-fatal):", uploadErr);
     }
 
     const doc: ScannedDoc = {
@@ -67,6 +95,7 @@ export async function POST(req: NextRequest) {
       expirationDate: result.doc.expirationDate,
       source: "gemini",
       rawText: result.doc.rawText,
+      photoPath,
     };
     return NextResponse.json({ ok: true, doc });
   } catch (err) {

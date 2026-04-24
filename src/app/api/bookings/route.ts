@@ -31,7 +31,7 @@ export async function POST(req: NextRequest) {
     const body = await req.json();
     const {
       propertyId, checkIn, checkOut,
-      guestName, guestPhone, guestDoc, guestNationality,
+      guestName, guestPhone, guestDoc, guestNationality, guestDocPhotoPath,
       source, note, numGuests, totalPrice,
       sourceUid: clientSourceUid,
     } = body;
@@ -122,6 +122,7 @@ export async function POST(req: NextRequest) {
       guest_phone: guestPhone ?? null,
       guest_doc: guestDoc ?? null,
       guest_nationality: guestNationality ?? null,
+      guest_doc_photo_path: guestDocPhotoPath ?? null,
       check_in: checkIn,
       check_out: checkOut,
       status: isBlock ? "blocked" : "confirmed",
@@ -135,10 +136,12 @@ export async function POST(req: NextRequest) {
     let insertRes = await supabase.from("bookings").insert(insertRow as never).select("id").single();
 
     // Fallback: si las columnas nuevas no existen todavía en prod, reintentar
-    // sin ellas. Una vez corrida la migración 20260421 esto es no-op.
-    if (insertRes.error?.message?.includes("channel_code") || insertRes.error?.message?.includes("phone_last4")) {
+    // sin ellas. Una vez corridas las migraciones esto es no-op.
+    const errMsg = insertRes.error?.message ?? "";
+    if (errMsg.includes("channel_code") || errMsg.includes("phone_last4") || errMsg.includes("guest_doc_photo_path")) {
       delete insertRow.channel_code;
       delete insertRow.phone_last4;
+      delete insertRow.guest_doc_photo_path;
       insertRes = await supabase.from("bookings").insert(insertRow as never).select("id").single();
     }
 
@@ -254,6 +257,15 @@ export async function POST(req: NextRequest) {
         if (guestNationality) insertRow.ocr_nationality = guestNationality;
         if (guestDoc || guestNationality) insertRow.ocr_confidence = 1.0;
 
+        // Heredar la foto del ID escaneada por el host → el huésped no
+        // vuelve a subirla en el Paso 2 del check-in. id_status='validated'
+        // hace que el Step2State.needsPhoto sea false y el flujo salte
+        // directo a los datos de contacto.
+        if (guestDocPhotoPath) {
+          insertRow.id_photo_path = guestDocPhotoPath;
+          insertRow.id_status = "validated";
+        }
+
         // Chequear primero si ya existe (el UNIQUE en booking_ref puede no
         // estar aplicado en prod, por eso no usamos onConflict). Este POST
         // corre una vez por reserva, la race condition real es minima.
@@ -310,6 +322,7 @@ export async function PATCH(req: NextRequest) {
       guestPhone: "guest_phone",
       guestDoc: "guest_doc",
       guestNationality: "guest_nationality",
+      guestDocPhotoPath: "guest_doc_photo_path",
       checkIn: "check_in",
       checkOut: "check_out",
       totalPrice: "total_price",
