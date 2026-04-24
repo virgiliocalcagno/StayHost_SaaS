@@ -705,11 +705,15 @@ async function staffBackfillCheckins() {
     return NextResponse.json({ success: true, scanned: bookings.length, created: 0 });
   }
 
+  // Insert plain (no upsert con onConflict porque el UNIQUE en booking_ref
+  // puede no estar aplicado todavia en prod). Ya filtramos duplicados arriba
+  // con existingRefs. Si dos requests concurrentes pasan el filtro, el peor
+  // caso es un duplicado raro que se limpia despues — no un 500.
   const { error: insertErr } = await supabase
     .from("checkin_records")
-    .upsert(rowsToInsert as never, { onConflict: "booking_ref", ignoreDuplicates: true });
+    .insert(rowsToInsert as never);
   if (insertErr) {
-    console.error("[backfill] upsert failed:", insertErr);
+    console.error("[backfill] insert failed:", insertErr);
     return bad(500, `No se pudieron crear los check-ins: ${insertErr.message}`);
   }
 
@@ -834,16 +838,45 @@ async function staffUpsertBatch(data: Record<string, unknown>) {
     };
   });
 
-  // `onConflict: booking_ref` evita que el mismo booking se sincronice dos
-  // veces creando records duplicados. Antes usabamos "id" pero el cliente
-  // genera ids nuevos en cada corrida del autoSync (ci-${timestamp}-${rand}),
-  // asi que 2 corridas del mismo booking terminaban creando 2 records.
-  // Con booking_ref como clave de conflicto, si ya existe, se hace patch.
-  // Requiere UNIQUE constraint en checkin_records(booking_ref) — migracion
-  // 20260422_checkin_records_booking_ref_unique.
+  // Dedupe manual (el UNIQUE en checkin_records.booking_ref puede no estar
+  // aplicado en prod — migracion 20260422 aun no corrio). Antes usabamos
+  // upsert con onConflict: booking_ref pero PostgREST tira
+  // "there is no unique or exclusion constraint matching the ON CONFLICT
+  // specification" cuando falta el constraint.
+  //
+  // Estrategia: listamos los booking_refs que ya existen en BD, filtramos
+  // los rows que chocan, y hacemos insert plain de los nuevos. Si los rows
+  // del batch duplican entre si (mismo ref en la misma corrida), nos
+  // quedamos con el primero.
+  const refs = rows.map((r) => r.booking_ref).filter((x): x is string => Boolean(x));
+  let existingRefs = new Set<string>();
+  if (refs.length > 0) {
+    const { data: existingData } = await supabase
+      .from("checkin_records")
+      .select("booking_ref")
+      .in("booking_ref", refs);
+    existingRefs = new Set(
+      ((existingData ?? []) as Array<{ booking_ref: string | null }>)
+        .map((r) => r.booking_ref)
+        .filter((x): x is string => Boolean(x))
+    );
+  }
+  const seenInBatch = new Set<string>();
+  const newRows = rows.filter((r) => {
+    if (!r.booking_ref) return true; // sin ref, dejar pasar (raro)
+    if (existingRefs.has(r.booking_ref)) return false;
+    if (seenInBatch.has(r.booking_ref)) return false;
+    seenInBatch.add(r.booking_ref);
+    return true;
+  });
+
+  if (newRows.length === 0) {
+    return NextResponse.json({ success: true, inserted: 0, records: [] });
+  }
+
   const { data: inserted, error } = await supabase
     .from("checkin_records")
-    .upsert(rows, { onConflict: "booking_ref", ignoreDuplicates: false })
+    .insert(newRows)
     .select("*");
 
   if (error) {

@@ -254,13 +254,21 @@ export async function POST(req: NextRequest) {
         if (guestNationality) insertRow.ocr_nationality = guestNationality;
         if (guestDoc || guestNationality) insertRow.ocr_confidence = 1.0;
 
-        // upsert con onConflict en booking_ref → idempotente si por cualquier
-        // motivo se llama dos veces o si autoSync del frontend ya lo creó.
-        const { error: ciErr } = await supabaseAdmin
+        // Chequear primero si ya existe (el UNIQUE en booking_ref puede no
+        // estar aplicado en prod, por eso no usamos onConflict). Este POST
+        // corre una vez por reserva, la race condition real es minima.
+        const { data: existingCi } = await supabaseAdmin
           .from("checkin_records")
-          .upsert(insertRow as never, { onConflict: "booking_ref", ignoreDuplicates: true });
-        if (ciErr) {
-          console.error("[bookings/POST] auto-checkin creation failed (non-fatal):", ciErr);
+          .select("id")
+          .eq("booking_ref", bookingId)
+          .limit(1);
+        if (!existingCi || existingCi.length === 0) {
+          const { error: ciErr } = await supabaseAdmin
+            .from("checkin_records")
+            .insert(insertRow as never);
+          if (ciErr) {
+            console.error("[bookings/POST] auto-checkin creation failed (non-fatal):", ciErr);
+          }
         }
       } catch (ciErr) {
         console.error("[bookings/POST] auto-checkin creation failed (non-fatal):", ciErr);
