@@ -165,6 +165,14 @@ export async function PATCH(req: NextRequest) {
     patch.sync_attempts = 0;
     patch.sync_next_retry_at = null;
     patch.sync_last_error = null;
+  } else if ("ttlock_pwd_id" in patch && patch.ttlock_pwd_id) {
+    // Caso especial: algun flow externo (ej. SmartDevicesPanel createPin manual)
+    // ya programo el PIN en la cerradura y reporta el ttlock_pwd_id via PATCH.
+    // Lo damos por sincronizado para que el badge refleje la realidad.
+    patch.sync_status = "synced";
+    patch.sync_attempts = 1;
+    patch.sync_last_error = null;
+    patch.sync_next_retry_at = null;
   }
 
   const { error, count } = await supabase
