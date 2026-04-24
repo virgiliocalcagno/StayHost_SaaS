@@ -253,6 +253,30 @@ export async function POST(req: NextRequest) {
         city: propFull?.city ?? null,
         postalCode: propFull?.postal_code ?? null,
       };
+
+      // PIN actual desde access_pins — fuente única de verdad. El gafete
+      // del huesped usa esto en vez del `d4` del base64 (que queda
+      // desactualizado si el host edita el PIN desde el panel).
+      // Preferimos el PIN 'active' mas reciente del booking; si no hay
+      // booking_ref, devolvemos null y el front cae al fallback.
+      (state as unknown as Record<string, unknown>).pin = null;
+      if (currentRow.booking_ref) {
+        try {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const { data: pinRow } = await (supabaseAdmin.from("access_pins") as any)
+            .select("pin, status")
+            .eq("booking_id", currentRow.booking_ref)
+            .eq("status", "active")
+            .order("created_at", { ascending: false })
+            .limit(1)
+            .maybeSingle();
+          if (pinRow?.pin) {
+            (state as unknown as Record<string, unknown>).pin = pinRow.pin as string;
+          }
+        } catch (err) {
+          console.warn("[checkin/step2:getState] access_pins fetch failed:", err);
+        }
+      }
       return NextResponse.json({ ok: true, state });
     }
 

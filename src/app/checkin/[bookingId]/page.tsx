@@ -400,6 +400,10 @@ function CheckInInner({ bookingId }: { bookingId: string }) {
       city: string | null;
       postalCode: string | null;
     };
+    // PIN actual leido desde access_pins. Fuente de verdad viva: si el host
+    // edita el PIN en el panel, el polling del Paso 5 lo refleja en segundos.
+    // null si el booking todavia no tiene PIN o el endpoint no lo devuelve.
+    pin?: string | null;
   };
   const [step2State, setStep2State] = useState<Step2State | null>(null);
   const [idPreview, setIdPreview] = useState<string | null>(null);
@@ -1267,7 +1271,7 @@ function CheckInInner({ bookingId }: { bookingId: string }) {
             propertyName={propertyName}
             checkinISO={booking.ci}
             checkoutISO={booking.co}
-            doorCode={booking.d4}
+            doorCode={step2State?.pin || booking.d4}
             wifiSsid={wifiSsid || undefined}
             wifiPass={wifiPass || undefined}
             address={address || undefined}
