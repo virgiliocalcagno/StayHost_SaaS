@@ -205,6 +205,7 @@ export async function POST(req: NextRequest) {
       case "upsertBatch":  return staffUpsertBatch(data);
       case "authorize":    return staffAuthorize(data);
       case "reviewDetail": return staffReviewDetail(data);
+      case "backfill":     return staffBackfillCheckins();
 
       // ── Guest actions (no session, soft token required) ───────────────────
       case "auth":              return guestAuth(data);
@@ -567,6 +568,155 @@ async function staffAuthorize(data: Record<string, unknown>) {
   return NextResponse.json({
     success: true,
     record: rowToApi(updated as CheckinRow, { exposeWifi: true }),
+  });
+}
+
+async function staffBackfillCheckins() {
+  // Recorre todos los bookings del tenant (status=confirmed) y crea un
+  // checkin_record por cada uno que no tenga. Es el "camino duro" para el
+  // boton Sincronizar: en lugar de confiar en la logica del frontend que
+  // puede fallar por cualquier edge case (propiedad no cargada, dedupe por
+  // fechas falso positivo, etc.), el backend garantiza que lo que existe
+  // en bookings aparezca en checkin_records.
+  const { tenantId, supabase } = await getAuthenticatedTenant();
+  if (!tenantId) return bad(401, "No autenticado");
+
+  // Bookings confirmed del tenant (RLS ya scopea por tenant via supabase client).
+  const { data: bookingsData, error: bkErr } = await supabase
+    .from("bookings")
+    .select("id, property_id, guest_name, guest_phone, guest_doc, guest_nationality, check_in, check_out, source, channel_code, phone_last4")
+    .eq("status", "confirmed");
+  if (bkErr) {
+    console.error("[backfill] bookings query failed:", bkErr);
+    return bad(500, "No se pudieron leer las reservas");
+  }
+  const bookings = (bookingsData ?? []) as Array<{
+    id: string;
+    property_id: string;
+    guest_name: string | null;
+    guest_phone: string | null;
+    guest_doc: string | null;
+    guest_nationality: string | null;
+    check_in: string;
+    check_out: string;
+    source: string | null;
+    channel_code: string | null;
+    phone_last4: string | null;
+  }>;
+  if (bookings.length === 0) {
+    return NextResponse.json({ success: true, scanned: 0, created: 0 });
+  }
+
+  // Records existentes — para saltar los que ya estan sincronizados.
+  const { data: existingData } = await supabase
+    .from("checkin_records")
+    .select("booking_ref")
+    .not("booking_ref", "is", null);
+  const existingRefs = new Set(
+    ((existingData ?? []) as Array<{ booking_ref: string | null }>)
+      .map((r) => r.booking_ref)
+      .filter((x): x is string => Boolean(x))
+  );
+
+  // Cache de properties para no hacer 1 query por booking.
+  const propIds = Array.from(new Set(bookings.map((b) => b.property_id).filter(Boolean)));
+  const { data: propsData } = await supabase
+    .from("properties")
+    .select("id, name, address, wifi_name, wifi_password, electricity_enabled, electricity_rate")
+    .in("id", propIds);
+  const propsById = new Map(
+    ((propsData ?? []) as Array<{
+      id: string;
+      name: string | null;
+      address: string | null;
+      wifi_name: string | null;
+      wifi_password: string | null;
+      electricity_enabled: boolean | null;
+      electricity_rate: number | null;
+    }>).map((p) => [p.id, p])
+  );
+
+  const rowsToInsert: Record<string, unknown>[] = [];
+  for (const b of bookings) {
+    if (existingRefs.has(b.id)) continue;
+    const prop = propsById.get(b.property_id);
+    const nights = Math.max(
+      1,
+      Math.round((new Date(b.check_out).getTime() - new Date(b.check_in).getTime()) / 86_400_000)
+    );
+    const chan = String(b.source ?? "manual").toLowerCase();
+    const isVrbo = chan === "vrbo";
+    const propertyElectricityEnabled = prop?.electricity_enabled ?? true;
+    const electricityRate = prop?.electricity_rate ?? 0;
+    const electricityEnabledForGuest = propertyElectricityEnabled && !isVrbo && electricityRate > 0;
+    const electricityTotal = electricityEnabledForGuest ? electricityRate * nights : 0;
+
+    // Soft-token: channel_code (SHxxxxxxxx o HMxxxxxxxx) si existe, sino apellido
+    // extraido del guest_name como fallback. Si no hay nada, dejamos "".
+    const lastNameFromGuest = (() => {
+      const parts = String(b.guest_name ?? "").trim().split(/\s+/);
+      return parts.length > 1 ? parts.slice(1).join(" ") : "";
+    })();
+    const lastName = b.channel_code
+      ? b.channel_code.toLowerCase().trim()
+      : lastNameFromGuest.toLowerCase().trim();
+    const firstName = (() => {
+      const parts = String(b.guest_name ?? "").trim().split(/\s+/);
+      return parts[0] ?? "";
+    })();
+
+    const row: Record<string, unknown> = {
+      id: `ci-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      tenant_id: tenantId,
+      guest_name: firstName || b.guest_name || "Huésped",
+      guest_last_name: lastName,
+      last_four_digits: b.phone_last4 ?? "0000",
+      checkin: b.check_in,
+      checkout: b.check_out,
+      nights,
+      property_id: b.property_id,
+      property_name: prop?.name ?? "Propiedad",
+      property_address: prop?.address ?? null,
+      wifi_ssid: prop?.wifi_name ?? null,
+      wifi_password: prop?.wifi_password ?? null,
+      status: "pendiente",
+      id_status: "pending",
+      source: chan === "ical" || chan === "airbnb" || chan === "vrbo" ? "auto_ical" : "auto_direct",
+      channel: chan === "manual" ? "direct" : chan,
+      booking_ref: b.id,
+      access_granted: false,
+      electricity_enabled: electricityEnabledForGuest,
+      electricity_rate: electricityRate,
+      electricity_paid: false,
+      electricity_total: electricityTotal,
+      paypal_fee_included: true,
+      missing_data: false,
+    };
+    if (b.guest_name && b.guest_name !== "Reserva Confirmada" && b.guest_name !== "Huésped") {
+      row.ocr_name = b.guest_name;
+    }
+    if (b.guest_doc) row.ocr_document = b.guest_doc;
+    if (b.guest_nationality) row.ocr_nationality = b.guest_nationality;
+    if (b.guest_doc || b.guest_nationality) row.ocr_confidence = 1.0;
+    rowsToInsert.push(row);
+  }
+
+  if (rowsToInsert.length === 0) {
+    return NextResponse.json({ success: true, scanned: bookings.length, created: 0 });
+  }
+
+  const { error: insertErr } = await supabase
+    .from("checkin_records")
+    .upsert(rowsToInsert as never, { onConflict: "booking_ref", ignoreDuplicates: true });
+  if (insertErr) {
+    console.error("[backfill] upsert failed:", insertErr);
+    return bad(500, `No se pudieron crear los check-ins: ${insertErr.message}`);
+  }
+
+  return NextResponse.json({
+    success: true,
+    scanned: bookings.length,
+    created: rowsToInsert.length,
   });
 }
 

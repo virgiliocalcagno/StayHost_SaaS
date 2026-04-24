@@ -1169,6 +1169,44 @@ export default function CheckInsPanel() {
     setReviewDetail(null);
   }
 
+  // ─── Sincronizar (backend-first) ────────────────────────────────────────
+  // El autoSync del cliente tiene logica compleja con 3 fuentes (localStorage,
+  // iCal, bookings). Para el boton "Sincronizar" vamos directo al backend:
+  // staffBackfillCheckins recorre todos los bookings confirmed del tenant y
+  // crea los checkin_records faltantes. Mas robusto — no depende de que el
+  // estado del cliente este fresco.
+  async function handleSync() {
+    if (syncing) return;
+    setSyncing(true);
+    try {
+      const res = await fetch("/api/checkin", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "backfill" }),
+        credentials: "include",
+      });
+      const json = await res.json();
+      if (!res.ok) {
+        toast.error(json.error || "No se pudo sincronizar");
+        return;
+      }
+      if (json.created > 0) {
+        toast.success(`${json.created} check-in${json.created > 1 ? "s" : ""} creado${json.created > 1 ? "s" : ""} de ${json.scanned} reserva${json.scanned > 1 ? "s" : ""}`);
+      } else {
+        toast.success(`Todo al día — ${json.scanned} reserva${json.scanned !== 1 ? "s" : ""} revisada${json.scanned !== 1 ? "s" : ""}`);
+      }
+      await refreshRecords();
+      // Seguimos corriendo el autoSync del cliente para cubrir localStorage
+      // legacy (iCal viejos que no estan en bookings todavia).
+      await autoSync(true);
+    } catch (err) {
+      console.error("[CheckInsPanel] handleSync failed:", err);
+      toast.error("Error de conexión al sincronizar");
+    } finally {
+      setSyncing(false);
+    }
+  }
+
   async function handleEnrich() {
     if (!enrichRecord) return;
     if (!enrichForm.firstName || !enrichForm.lastName || enrichForm.last4.length !== 4) return;
@@ -1277,7 +1315,7 @@ export default function CheckInsPanel() {
           </div>
           <Button
             variant="outline"
-            onClick={() => autoSync(false)}
+            onClick={() => handleSync()}
             disabled={syncing}
             className="gap-2"
           >
