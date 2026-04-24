@@ -109,8 +109,11 @@ export interface AmenitiesConfig {
 interface Property {
   id: string;
   name: string;
-  address: string;
-  city: string;
+  address: string;           // calle y numero (ej: "Calle Danubio White Sand")
+  addressUnit?: string;      // apto/piso/edificio (ej: "Edificio 3 Apt 3C1")
+  neighborhood?: string;     // distrito/barrio (ej: "Bavaro")
+  city: string;              // ciudad/pueblo (ej: "Punta Cana")
+  postalCode?: string;       // codigo postal (ej: "23000")
   image: string;
   type: "apartment" | "house" | "villa" | "loft" | "cabin";
   price: number;
@@ -476,39 +479,12 @@ function DevicesTabContent({ formData, setFormData }: { formData: any; setFormDa
         </div>
       </div>
 
-      {/* ── Monitoreo de Energía ─────────────────────────────────── */}
-      <div className="space-y-4 pt-2">
-        <div className="flex items-center justify-between">
-          <h4 className="text-sm font-bold flex items-center gap-2">
-            <Zap className="h-4 w-4 text-amber-500 fill-amber-500" /> Monitoreo de Electricidad
-          </h4>
-          <div className="flex items-center gap-2 scale-90 origin-right">
-            <span className="text-xs font-medium text-muted-foreground">{formData.electricityEnabled ? "Activo" : "Inactivo"}</span>
-            <button
-              type="button"
-              onClick={() => setFormData((p: any) => ({ ...p, electricityEnabled: !p.electricityEnabled }))}
-              className={`relative inline-flex h-5 w-10 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2 ${formData.electricityEnabled ? "bg-primary" : "bg-muted"}`}
-            >
-              <span className={`${formData.electricityEnabled ? "translate-x-5" : "translate-x-1"} inline-block h-3.5 w-3.5 transform rounded-full bg-white transition-transform`} />
-            </button>
-          </div>
-        </div>
-        <div className={`transition-all duration-300 ${formData.electricityEnabled ? "opacity-100 max-h-40" : "opacity-40 pointer-events-none grayscale"}`}>
-          <div className="grid grid-cols-2 gap-4 p-4 rounded-2xl bg-amber-50/30 border border-amber-100">
-            <div className="space-y-2">
-              <Label className="text-xs">Costo por kWh</Label>
-              <div className="relative">
-                <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground text-sm">$</span>
-                <Input type="number" step="0.01" className="pl-7 bg-white" placeholder="0.15" value={formData.electricityRate} onChange={(e) => setFormData((p: any) => ({ ...p, electricityRate: e.target.value }))} />
-              </div>
-            </div>
-            <div className="space-y-2">
-              <Label className="text-xs">Unidad de Medida</Label>
-              <div className="h-10 flex items-center px-3 rounded-md bg-white border text-sm text-muted-foreground font-medium">Kilovatios (kWh)</div>
-            </div>
-          </div>
-        </div>
-      </div>
+      {/*
+        Nota: el control de "Cargo Eléctrico al Huésped" vive en el tab
+        Comercial junto a las otras tarifas — ver sección "Tarifas" de ese tab.
+        Evitamos duplicarlo aquí para no confundir al host con 2 campos que
+        hacen lo mismo.
+      */}
     </div>
   );
 }
@@ -546,7 +522,10 @@ export default function PropertiesPanel() {
           id: p.id,
           name: p.name,
           address: p.address ?? "",
+          addressUnit: p.address_unit ?? "",
+          neighborhood: p.neighborhood ?? "",
           city: p.city ?? "",
+          postalCode: p.postal_code ?? "",
           image: p.cover_image ?? "",
           type: (p.property_type ?? "apartment") as Property["type"],
           price: p.price ?? 0,
@@ -630,7 +609,10 @@ export default function PropertiesPanel() {
   const [formData, setFormData] = useState({
     name: "",
     address: "",
+    addressUnit: "",
+    neighborhood: "",
     city: "",
+    postalCode: "",
     type: "apartment" as Property["type"],
     price: "",
     beds: "",
@@ -827,7 +809,7 @@ export default function PropertiesPanel() {
     setModalTab("propiedad");
     setCreationStep("options");
     setAirbnbImportLink("");
-    setFormData({ name: "", address: "", city: "", type: "apartment", price: "", beds: "", baths: "", maxGuests: "", airbnbUrl: "", airbnbIcal: "", bookingUrl: "", bookingIcal: "", vrboUrl: "", vrboIcal: "", directaEnabled: false, cleaningFeeOneDay: "", cleaningFeeMoreDays: "", weeklyDiscountPercent: "", energyFeePerDay: "", additionalServicesFee: "", recurringSupplies: [], autoAssignCleaner: false, cleanerPriorities: [], bedConfiguration: "", standardInstructions: "", evidenceCriteria: ["Cocina", "Habitación", "Baño"], descriptionEN: "", descriptionES: "", photoTour: [], amenitiesConfig: { popular: [], bathroom: [], bedroom: [], kitchen: [], outdoor: [] }, wifiSsid: "", wifiPassword: "", electricityEnabled: false, electricityRate: "", checkInTime: "14:00", checkOutTime: "12:00", ttlockLockId: "" });
+    setFormData({ name: "", address: "", addressUnit: "", neighborhood: "", city: "", postalCode: "", type: "apartment", price: "", beds: "", baths: "", maxGuests: "", airbnbUrl: "", airbnbIcal: "", bookingUrl: "", bookingIcal: "", vrboUrl: "", vrboIcal: "", directaEnabled: false, cleaningFeeOneDay: "", cleaningFeeMoreDays: "", weeklyDiscountPercent: "", energyFeePerDay: "", additionalServicesFee: "", recurringSupplies: [], autoAssignCleaner: false, cleanerPriorities: [], bedConfiguration: "", standardInstructions: "", evidenceCriteria: ["Cocina", "Habitación", "Baño"], descriptionEN: "", descriptionES: "", photoTour: [], amenitiesConfig: { popular: [], bathroom: [], bedroom: [], kitchen: [], outdoor: [] }, wifiSsid: "", wifiPassword: "", electricityEnabled: false, electricityRate: "", checkInTime: "14:00", checkOutTime: "12:00", ttlockLockId: "" });
     setShowModal(true);
   };
 
@@ -838,7 +820,10 @@ export default function PropertiesPanel() {
     setFormData({
       name: p.name,
       address: p.address,
+      addressUnit: p.addressUnit || "",
+      neighborhood: p.neighborhood || "",
       city: p.city,
+      postalCode: p.postalCode || "",
       type: p.type,
       price: p.price.toString(),
       beds: p.beds.toString(),
@@ -912,13 +897,16 @@ export default function PropertiesPanel() {
     let finalProp: Property;
 
     if (editingProperty) {
-      finalProp = { ...editingProperty, name: formData.name, address: formData.address, city: formData.city, type: formData.type, price: Number(formData.price) || editingProperty.price, beds: Number(formData.beds) || editingProperty.beds, baths: Number(formData.baths) || editingProperty.baths, maxGuests: Number(formData.maxGuests) || editingProperty.maxGuests, channels: updatedChannels, cleaningFeeOneDay: Number(formData.cleaningFeeOneDay) || 0, cleaningFeeMoreDays: Number(formData.cleaningFeeMoreDays) || 0, weeklyDiscountPercent: Number(formData.weeklyDiscountPercent) || 0, energyFeePerDay: Number(formData.energyFeePerDay) || 0, additionalServicesFee: Number(formData.additionalServicesFee) || 0, recurringSupplies: formData.recurringSupplies, autoAssignCleaner: formData.autoAssignCleaner, cleanerPriorities: formData.cleanerPriorities, bedConfiguration: formData.bedConfiguration, standardInstructions: formData.standardInstructions, evidenceCriteria: formData.evidenceCriteria, descriptionES: formData.descriptionES, descriptionEN: formData.descriptionEN, photoTour: formData.photoTour, amenitiesConfig: formData.amenitiesConfig, wifiSsid: formData.wifiSsid, wifiPassword: formData.wifiPassword, electricityEnabled: formData.electricityEnabled, electricityRate: Number(formData.electricityRate) || 0, checkInTime: formData.checkInTime, checkOutTime: formData.checkOutTime, ttlockLockId: formData.ttlockLockId };
+      finalProp = { ...editingProperty, name: formData.name, address: formData.address, addressUnit: formData.addressUnit, neighborhood: formData.neighborhood, city: formData.city, postalCode: formData.postalCode, type: formData.type, price: Number(formData.price) || editingProperty.price, beds: Number(formData.beds) || editingProperty.beds, baths: Number(formData.baths) || editingProperty.baths, maxGuests: Number(formData.maxGuests) || editingProperty.maxGuests, channels: updatedChannels, cleaningFeeOneDay: Number(formData.cleaningFeeOneDay) || 0, cleaningFeeMoreDays: Number(formData.cleaningFeeMoreDays) || 0, weeklyDiscountPercent: Number(formData.weeklyDiscountPercent) || 0, energyFeePerDay: Number(formData.energyFeePerDay) || 0, additionalServicesFee: Number(formData.additionalServicesFee) || 0, recurringSupplies: formData.recurringSupplies, autoAssignCleaner: formData.autoAssignCleaner, cleanerPriorities: formData.cleanerPriorities, bedConfiguration: formData.bedConfiguration, standardInstructions: formData.standardInstructions, evidenceCriteria: formData.evidenceCriteria, descriptionES: formData.descriptionES, descriptionEN: formData.descriptionEN, photoTour: formData.photoTour, amenitiesConfig: formData.amenitiesConfig, wifiSsid: formData.wifiSsid, wifiPassword: formData.wifiPassword, electricityEnabled: formData.electricityEnabled, electricityRate: Number(formData.electricityRate) || 0, checkInTime: formData.checkInTime, checkOutTime: formData.checkOutTime, ttlockLockId: formData.ttlockLockId };
     } else {
       finalProp = {
         id: crypto.randomUUID(),
         name: formData.name,
         address: formData.address,
+        addressUnit: formData.addressUnit,
+        neighborhood: formData.neighborhood,
         city: formData.city,
+        postalCode: formData.postalCode,
         type: formData.type,
         image: "https://images.unsplash.com/photo-1560448204-e02f11c3d0e2?w=600&h=400&fit=crop",
         price: Number(formData.price) || 100,
@@ -1621,12 +1609,26 @@ export default function PropertiesPanel() {
                     <Input placeholder="Ej: Villa Mar Azul" value={formData.name} onChange={(e) => setFormData((p) => ({ ...p, name: e.target.value }))} />
                   </div>
                   <div className="space-y-2">
-                    <Label>Dirección</Label>
-                    <Input placeholder="Calle, número, colonia" value={formData.address} onChange={(e) => setFormData((p) => ({ ...p, address: e.target.value }))} />
+                    <Label>Dirección (calle y número)</Label>
+                    <Input placeholder="Ej: Calle Danubio White Sand" value={formData.address} onChange={(e) => setFormData((p) => ({ ...p, address: e.target.value }))} />
                   </div>
                   <div className="space-y-2">
-                    <Label>Ciudad</Label>
-                    <Input placeholder="Ej: Cancún, Quintana Roo" value={formData.city} onChange={(e) => setFormData((p) => ({ ...p, city: e.target.value }))} />
+                    <Label className="text-muted-foreground">Apartamento, piso, edificio <span className="text-xs">(si corresponde)</span></Label>
+                    <Input placeholder="Ej: Edificio 3 Apartamento 3C1" value={formData.addressUnit} onChange={(e) => setFormData((p) => ({ ...p, addressUnit: e.target.value }))} />
+                  </div>
+                  <div className="space-y-2">
+                    <Label className="text-muted-foreground">Distrito/vecindario <span className="text-xs">(si corresponde)</span></Label>
+                    <Input placeholder="Ej: Bávaro" value={formData.neighborhood} onChange={(e) => setFormData((p) => ({ ...p, neighborhood: e.target.value }))} />
+                  </div>
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="space-y-2">
+                      <Label>Ciudad/pueblo</Label>
+                      <Input placeholder="Ej: Punta Cana" value={formData.city} onChange={(e) => setFormData((p) => ({ ...p, city: e.target.value }))} />
+                    </div>
+                    <div className="space-y-2">
+                      <Label className="text-muted-foreground">Código postal <span className="text-xs">(si corresponde)</span></Label>
+                      <Input placeholder="Ej: 23000" value={formData.postalCode} onChange={(e) => setFormData((p) => ({ ...p, postalCode: e.target.value }))} />
+                    </div>
                   </div>
                   <div className="space-y-2">
                     <Label>Tipo de propiedad</Label>
@@ -2028,8 +2030,29 @@ export default function PropertiesPanel() {
                       </div>
                       <div className="grid grid-cols-2 gap-4">
                         <div className="space-y-2">
-                          <Label>Tarifa energía (Por noche)</Label>
-                          <Input type="number" placeholder="Ej: 15" value={formData.energyFeePerDay} onChange={(e) => setFormData((p) => ({ ...p, energyFeePerDay: e.target.value }))} />
+                          <div className="flex items-center justify-between">
+                            <Label className="flex items-center gap-1.5"><Zap className="h-3.5 w-3.5 text-amber-500 fill-amber-500" />Cargo eléctrico al huésped</Label>
+                            <div className="flex items-center gap-2 scale-90 origin-right">
+                              <span className="text-[10px] font-medium text-muted-foreground">{formData.electricityEnabled ? "Activo" : "Inactivo"}</span>
+                              <button
+                                type="button"
+                                onClick={() => setFormData((p: any) => ({ ...p, electricityEnabled: !p.electricityEnabled }))}
+                                className={`relative inline-flex h-5 w-10 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2 ${formData.electricityEnabled ? "bg-amber-500" : "bg-muted"}`}
+                              >
+                                <span className={`${formData.electricityEnabled ? "translate-x-5" : "translate-x-1"} inline-block h-3.5 w-3.5 transform rounded-full bg-white transition-transform`} />
+                              </button>
+                            </div>
+                          </div>
+                          <div className={`transition-opacity ${formData.electricityEnabled ? "" : "opacity-40 pointer-events-none"}`}>
+                            <div className="relative">
+                              <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground text-sm">$</span>
+                              <Input type="number" step="0.01" className="pl-7" placeholder="5.00" value={formData.electricityRate} onChange={(e) => setFormData((p: any) => ({ ...p, electricityRate: e.target.value }))} />
+                              <span className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground text-xs">/ noche</span>
+                            </div>
+                            <p className="text-[10px] text-muted-foreground mt-1 leading-snug">
+                              Total = tarifa × noches. Airbnb con opción de autorización, VRBO omite.
+                            </p>
+                          </div>
                         </div>
                         <div className="space-y-2">
                           <Label>Servicios Extra (Por estadía)</Label>

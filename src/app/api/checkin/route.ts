@@ -26,6 +26,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getAuthenticatedTenant } from "@/lib/supabase/server";
 import { supabaseAdmin } from "@/lib/supabase/admin";
+import { deleteTTLockPin } from "@/lib/ttlock/delete-pin";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -64,6 +65,17 @@ interface CheckinRow {
   missing_data: boolean;
   created_at: string;
   updated_at: string;
+  // v3 — Paso 2 adaptativo + Sala de Espera
+  guest_email?: string | null;
+  guest_whatsapp?: string | null;
+  guest_count?: number | null;
+  ocr_name?: string | null;
+  ocr_document?: string | null;
+  ocr_nationality?: string | null;
+  ocr_confidence?: number | null;
+  waiting_for_auth?: boolean | null;
+  auth_reason?: string | null;
+  requires_manual_review?: boolean | null;
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -114,6 +126,15 @@ function rowToApi(row: CheckinRow, opts: { exposeWifi: boolean }) {
     missingData: row.missing_data,
     // idPhotoBase64 intentionally omitted — use a signed Storage URL.
     idPhotoPath: row.id_photo_path ?? undefined,
+    // v3 — para el dashboard de autorizaciones pendientes
+    waitingForAuth: row.waiting_for_auth ?? false,
+    authReason: row.auth_reason ?? null,
+    guestEmail: row.guest_email ?? null,
+    guestWhatsapp: row.guest_whatsapp ?? null,
+    guestCount: row.guest_count ?? null,
+    ocrName: row.ocr_name ?? null,
+    ocrDocument: row.ocr_document ?? null,
+    ocrNationality: row.ocr_nationality ?? null,
   };
 }
 
@@ -129,8 +150,14 @@ async function fetchRecordForGuest(
     .maybeSingle<CheckinRow>();
   if (!data) return null;
 
-  // El último dígito siempre debe coincidir — es la credencial primaria.
-  if (data.last_four_digits !== last4.trim()) return null;
+  // El soft-token primario es el código de reserva (channel_code o apellido).
+  // Los últimos 4 del teléfono se validan SOLO si vienen — algunas reservas
+  // de VRBO o directas no tienen teléfono, y el lookup ya no los pide al
+  // huésped. El channel_code Airbnb/SH es suficientemente único por sí solo.
+  const last4Trimmed = last4.trim();
+  if (last4Trimmed && data.last_four_digits && data.last_four_digits !== last4Trimmed) {
+    return null;
+  }
 
   const credLC = lastName.toLowerCase().trim();
 
@@ -175,7 +202,11 @@ export async function POST(req: NextRequest) {
       case "delete":       return staffDelete(data);
       case "validateId":   return staffSetIdStatus(data, "validated");
       case "rejectId":     return staffSetIdStatus(data, "rejected");
+      case "resetId":      return staffResetId(data);
       case "upsertBatch":  return staffUpsertBatch(data);
+      case "authorize":    return staffAuthorize(data);
+      case "reviewDetail": return staffReviewDetail(data);
+      case "backfill":     return staffBackfillCheckins();
 
       // ── Guest actions (no session, soft token required) ───────────────────
       case "auth":              return guestAuth(data);
@@ -272,9 +303,28 @@ async function staffList() {
     return bad(500, "No se pudo listar check-ins");
   }
 
-  const records = ((data ?? []) as CheckinRow[]).map((r) =>
-    rowToApi(r, { exposeWifi: false })
-  );
+  const rows = (data ?? []) as CheckinRow[];
+
+  // Traer channel_code de cada booking vinculado para poder mostrar
+  // "Reserva #HMXXXXXX" en el dashboard. Hacemos una sola query con IN.
+  const bookingRefs = rows
+    .map((r) => r.booking_ref)
+    .filter((x): x is string => Boolean(x));
+  const channelCodeByBookingId = new Map<string, string>();
+  if (bookingRefs.length > 0) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const { data: bks } = await (supabase.from("bookings") as any)
+      .select("id, channel_code")
+      .in("id", bookingRefs);
+    for (const b of ((bks ?? []) as { id: string; channel_code: string | null }[])) {
+      if (b.channel_code) channelCodeByBookingId.set(b.id, b.channel_code);
+    }
+  }
+
+  const records = rows.map((r) => ({
+    ...rowToApi(r, { exposeWifi: false }),
+    channelCode: r.booking_ref ? channelCodeByBookingId.get(r.booking_ref) ?? null : null,
+  }));
   return NextResponse.json({ records });
 }
 
@@ -418,6 +468,393 @@ async function staffSetIdStatus(
   });
 }
 
+async function staffResetId(data: Record<string, unknown>) {
+  // Host resetea el check-in completo. Usado cuando:
+  //  - El host dio rechazar/validar por accidente
+  //  - Los datos OCR quedaron contaminados de otra reserva
+  //  - Sospecha de PIN comprometido → queremos revocar acceso YA
+  //
+  // Acciones (en orden):
+  //  1) Borra foto del Storage
+  //  2) Revoca el PIN físico en TTLock (para que el código deje de abrir)
+  //  3) Borra access_pins de BD vinculados al booking_ref
+  //  4) Limpia TODO el estado del huésped en checkin_records, incluido
+  //     `checkin_completed_at` — sin esto la UI salta al gafete porque
+  //     `state.completed=true` aunque no haya foto (bug HMKSYNCPDQ).
+  //
+  // El booking en `bookings` NO se toca: la reserva sigue viva. Si el
+  // huésped vuelve a hacer check-in, se le genera un PIN nuevo.
+  const { tenantId, supabase } = await getAuthenticatedTenant();
+  if (!tenantId) return bad(401, "No autenticado");
+  const id = String(data.id ?? "");
+  if (!id) return bad(400, "Falta id");
+
+  // Sacamos booking_ref + id_photo_path en una sola query.
+  const { data: current } = await supabase
+    .from("checkin_records")
+    .select("id_photo_path, booking_ref")
+    .eq("id", id)
+    .maybeSingle<Pick<CheckinRow, "id_photo_path" | "booking_ref">>();
+  if (!current) return bad(404, "No encontrado");
+
+  // 1) Foto
+  if (current.id_photo_path) {
+    await supabaseAdmin.storage.from("checkin-ids").remove([current.id_photo_path]);
+  }
+
+  // 2) + 3) TTLock físico y access_pins de BD. Solo si el record está
+  // asociado a un booking — los records "legacy" sin booking_ref no tienen
+  // PIN vinculado en BD.
+  let ttlockRevoked = 0;
+  let ttlockFailed = 0;
+  let pinsDeleted = 0;
+  if (current.booking_ref) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const { data: pinRows } = await (supabaseAdmin.from("access_pins") as any)
+      .select("id, tenant_id, property_id, ttlock_lock_id, ttlock_pwd_id")
+      .eq("booking_id", current.booking_ref);
+    const pins = (pinRows ?? []) as Array<{
+      id: string;
+      tenant_id: string;
+      property_id: string | null;
+      ttlock_lock_id: string | null;
+      ttlock_pwd_id: string | null;
+    }>;
+
+    await Promise.all(
+      pins.map(async (p) => {
+        if (!p.ttlock_pwd_id || !p.ttlock_lock_id) return;
+        const result = await deleteTTLockPin({
+          tenantId: p.tenant_id,
+          propertyId: p.property_id,
+          lockId: p.ttlock_lock_id,
+          keyboardPwdId: p.ttlock_pwd_id,
+        });
+        if (result.ok) ttlockRevoked++;
+        else {
+          ttlockFailed++;
+          console.warn(`[resetId] TTLock delete failed for pin ${p.id}:`, result.reason, result.detail ?? "");
+        }
+      })
+    );
+
+    const { count } = await supabaseAdmin
+      .from("access_pins")
+      .delete({ count: "exact" })
+      .eq("booking_id", current.booking_ref);
+    pinsDeleted = count ?? 0;
+  }
+
+  // 4) Reset del record. Además de foto/OCR ahora limpiamos también el
+  // completed_at, typed, waiting_for_auth, email/whatsapp/guest_count y el
+  // consent — así el huésped al recargar arranca desde el Paso 2 con todo
+  // pendiente, no con el gafete bloqueado.
+  const patch = {
+    id_photo_path: null,
+    id_status: "pending" as IdStatus,
+    access_granted: false,
+    status: "pendiente" as Status,
+    ocr_raw: null,
+    ocr_name: null,
+    ocr_document: null,
+    ocr_nationality: null,
+    ocr_language: null,
+    ocr_confidence: null,
+    ocr_attempts: 0,
+    waiting_for_auth: false,
+    auth_reason: null,
+    requires_manual_review: false,
+    checkin_completed_at: null,
+    guest_typed_name: null,
+    guest_typed_document: null,
+    guest_typed_nationality: null,
+    consent_accepted_at: null,
+  };
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const { data: updated, error } = await (supabase.from("checkin_records") as any)
+    .update(patch)
+    .eq("id", id)
+    .select("*")
+    .single();
+
+  if (error || !updated) {
+    console.error("[/api/checkin:resetId] failed:", error);
+    return bad(500, "No se pudo resetear");
+  }
+  return NextResponse.json({
+    success: true,
+    record: rowToApi(updated as CheckinRow, { exposeWifi: false }),
+    ttlockRevoked,
+    ttlockFailed,
+    pinsDeleted,
+  });
+}
+
+async function staffAuthorize(data: Record<string, unknown>) {
+  // El host aprueba manualmente un checkin que estaba en Sala de Espera
+  // (OCR no legible o pago electrico por autorizacion). Libera el acceso:
+  // waiting_for_auth=false, access_granted=true, y marca electricity_paid
+  // si el motivo era electricidad.
+  const { tenantId, supabase } = await getAuthenticatedTenant();
+  if (!tenantId) return bad(401, "No autenticado");
+  const id = String(data.id ?? "");
+  if (!id) return bad(400, "Falta id");
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const { data: current } = await (supabase.from("checkin_records") as any)
+    .select("auth_reason")
+    .eq("id", id)
+    .single();
+  const reason = (current as { auth_reason?: string | null } | null)?.auth_reason ?? null;
+
+  const patch: Record<string, unknown> = {
+    waiting_for_auth: false,
+    auth_reason: null,
+    access_granted: true,
+    status: "validado",
+  };
+  if (reason === "electricity_pending") {
+    patch.electricity_paid = true;
+  }
+  if (reason === "ocr_failed") {
+    patch.id_status = "validated";
+    patch.requires_manual_review = true;
+  }
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const { data: updated, error } = await (supabase.from("checkin_records") as any)
+    .update(patch)
+    .eq("id", id)
+    .select("*")
+    .single();
+
+  if (error || !updated) {
+    console.error("[/api/checkin:authorize] failed:", error);
+    return bad(500, "No se pudo autorizar");
+  }
+  return NextResponse.json({
+    success: true,
+    record: rowToApi(updated as CheckinRow, { exposeWifi: true }),
+  });
+}
+
+async function staffBackfillCheckins() {
+  // Recorre todos los bookings del tenant (status=confirmed) y crea un
+  // checkin_record por cada uno que no tenga. Es el "camino duro" para el
+  // boton Sincronizar: en lugar de confiar en la logica del frontend que
+  // puede fallar por cualquier edge case (propiedad no cargada, dedupe por
+  // fechas falso positivo, etc.), el backend garantiza que lo que existe
+  // en bookings aparezca en checkin_records.
+  const { tenantId, supabase } = await getAuthenticatedTenant();
+  if (!tenantId) return bad(401, "No autenticado");
+
+  // Bookings confirmed del tenant (RLS ya scopea por tenant via supabase client).
+  const { data: bookingsData, error: bkErr } = await supabase
+    .from("bookings")
+    .select("id, property_id, guest_name, guest_phone, guest_doc, guest_nationality, check_in, check_out, source, channel_code, phone_last4")
+    .eq("status", "confirmed");
+  if (bkErr) {
+    console.error("[backfill] bookings query failed:", bkErr);
+    return bad(500, "No se pudieron leer las reservas");
+  }
+  const bookings = (bookingsData ?? []) as Array<{
+    id: string;
+    property_id: string;
+    guest_name: string | null;
+    guest_phone: string | null;
+    guest_doc: string | null;
+    guest_nationality: string | null;
+    check_in: string;
+    check_out: string;
+    source: string | null;
+    channel_code: string | null;
+    phone_last4: string | null;
+  }>;
+  if (bookings.length === 0) {
+    return NextResponse.json({ success: true, scanned: 0, created: 0 });
+  }
+
+  // Records existentes — para saltar los que ya estan sincronizados.
+  const { data: existingData } = await supabase
+    .from("checkin_records")
+    .select("booking_ref")
+    .not("booking_ref", "is", null);
+  const existingRefs = new Set(
+    ((existingData ?? []) as Array<{ booking_ref: string | null }>)
+      .map((r) => r.booking_ref)
+      .filter((x): x is string => Boolean(x))
+  );
+
+  // Cache de properties para no hacer 1 query por booking.
+  const propIds = Array.from(new Set(bookings.map((b) => b.property_id).filter(Boolean)));
+  const { data: propsData } = await supabase
+    .from("properties")
+    .select("id, name, address, wifi_name, wifi_password, electricity_enabled, electricity_rate")
+    .in("id", propIds);
+  const propsById = new Map(
+    ((propsData ?? []) as Array<{
+      id: string;
+      name: string | null;
+      address: string | null;
+      wifi_name: string | null;
+      wifi_password: string | null;
+      electricity_enabled: boolean | null;
+      electricity_rate: number | null;
+    }>).map((p) => [p.id, p])
+  );
+
+  const rowsToInsert: Record<string, unknown>[] = [];
+  for (const b of bookings) {
+    if (existingRefs.has(b.id)) continue;
+    const prop = propsById.get(b.property_id);
+    const nights = Math.max(
+      1,
+      Math.round((new Date(b.check_out).getTime() - new Date(b.check_in).getTime()) / 86_400_000)
+    );
+    const chan = String(b.source ?? "manual").toLowerCase();
+    const isVrbo = chan === "vrbo";
+    const propertyElectricityEnabled = prop?.electricity_enabled ?? true;
+    const electricityRate = prop?.electricity_rate ?? 0;
+    const electricityEnabledForGuest = propertyElectricityEnabled && !isVrbo && electricityRate > 0;
+    const electricityTotal = electricityEnabledForGuest ? electricityRate * nights : 0;
+
+    // Soft-token: channel_code (SHxxxxxxxx o HMxxxxxxxx) si existe, sino apellido
+    // extraido del guest_name como fallback. Si no hay nada, dejamos "".
+    const lastNameFromGuest = (() => {
+      const parts = String(b.guest_name ?? "").trim().split(/\s+/);
+      return parts.length > 1 ? parts.slice(1).join(" ") : "";
+    })();
+    const lastName = b.channel_code
+      ? b.channel_code.toLowerCase().trim()
+      : lastNameFromGuest.toLowerCase().trim();
+    const firstName = (() => {
+      const parts = String(b.guest_name ?? "").trim().split(/\s+/);
+      return parts[0] ?? "";
+    })();
+
+    const row: Record<string, unknown> = {
+      id: `ci-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      tenant_id: tenantId,
+      guest_name: firstName || b.guest_name || "Huésped",
+      guest_last_name: lastName,
+      last_four_digits: b.phone_last4 ?? "0000",
+      checkin: b.check_in,
+      checkout: b.check_out,
+      nights,
+      property_id: b.property_id,
+      property_name: prop?.name ?? "Propiedad",
+      property_address: prop?.address ?? null,
+      wifi_ssid: prop?.wifi_name ?? null,
+      wifi_password: prop?.wifi_password ?? null,
+      status: "pendiente",
+      id_status: "pending",
+      source: chan === "ical" || chan === "airbnb" || chan === "vrbo" ? "auto_ical" : "auto_direct",
+      channel: chan === "manual" ? "direct" : chan,
+      booking_ref: b.id,
+      access_granted: false,
+      electricity_enabled: electricityEnabledForGuest,
+      electricity_rate: electricityRate,
+      electricity_paid: false,
+      electricity_total: electricityTotal,
+      paypal_fee_included: true,
+      missing_data: false,
+    };
+    if (b.guest_name && b.guest_name !== "Reserva Confirmada" && b.guest_name !== "Huésped") {
+      row.ocr_name = b.guest_name;
+    }
+    if (b.guest_doc) row.ocr_document = b.guest_doc;
+    if (b.guest_nationality) row.ocr_nationality = b.guest_nationality;
+    if (b.guest_doc || b.guest_nationality) row.ocr_confidence = 1.0;
+    rowsToInsert.push(row);
+  }
+
+  if (rowsToInsert.length === 0) {
+    return NextResponse.json({ success: true, scanned: bookings.length, created: 0 });
+  }
+
+  // Insert plain (no upsert con onConflict porque el UNIQUE en booking_ref
+  // puede no estar aplicado todavia en prod). Ya filtramos duplicados arriba
+  // con existingRefs. Si dos requests concurrentes pasan el filtro, el peor
+  // caso es un duplicado raro que se limpia despues — no un 500.
+  const { error: insertErr } = await supabase
+    .from("checkin_records")
+    .insert(rowsToInsert as never);
+  if (insertErr) {
+    console.error("[backfill] insert failed:", insertErr);
+    return bad(500, `No se pudieron crear los check-ins: ${insertErr.message}`);
+  }
+
+  return NextResponse.json({
+    success: true,
+    scanned: bookings.length,
+    created: rowsToInsert.length,
+  });
+}
+
+async function staffReviewDetail(data: Record<string, unknown>) {
+  // Devuelve todo lo necesario para revisar un documento: signed URL de la
+  // foto (60s, acceso privado al bucket), datos OCR, datos tipeados por el
+  // huésped, contacto y datos de reserva. Scope: el staff autenticado solo
+  // ve records de su propio tenant (RLS del select ya lo fuerza).
+  const { tenantId, supabase } = await getAuthenticatedTenant();
+  if (!tenantId) return bad(401, "No autenticado");
+  const id = String(data.id ?? "");
+  if (!id) return bad(400, "Falta id");
+
+  const { data: row, error } = await supabase
+    .from("checkin_records")
+    .select("*")
+    .eq("id", id)
+    .maybeSingle<CheckinRow & {
+      guest_typed_name?: string | null;
+      guest_typed_document?: string | null;
+      guest_typed_nationality?: string | null;
+      ocr_attempts?: number | null;
+    }>();
+  if (error || !row) return bad(404, "No encontrado");
+
+  let photoUrl: string | null = null;
+  if (row.id_photo_path) {
+    const { data: signed } = await supabaseAdmin.storage
+      .from("checkin-ids")
+      .createSignedUrl(row.id_photo_path, 60 * 10); // 10 min, suficiente para revisar
+    photoUrl = signed?.signedUrl ?? null;
+  }
+
+  return NextResponse.json({
+    id: row.id,
+    photoUrl,
+    hasPhoto: Boolean(row.id_photo_path),
+    ocr: {
+      name: row.ocr_name ?? null,
+      document: row.ocr_document ?? null,
+      nationality: row.ocr_nationality ?? null,
+      confidence: row.ocr_confidence ?? null,
+      attempts: row.ocr_attempts ?? 0,
+    },
+    typed: {
+      name: row.guest_typed_name ?? null,
+      document: row.guest_typed_document ?? null,
+      nationality: row.guest_typed_nationality ?? null,
+    },
+    contact: {
+      email: row.guest_email ?? null,
+      whatsapp: row.guest_whatsapp ?? null,
+      guests: row.guest_count ?? null,
+    },
+    booking: {
+      guestName: row.guest_name,
+      checkin: row.checkin,
+      checkout: row.checkout,
+      nights: row.nights,
+      propertyName: row.property_name,
+      channel: row.channel ?? null,
+    },
+    idStatus: row.id_status,
+  });
+}
+
 async function staffUpsertBatch(data: Record<string, unknown>) {
   const { tenantId, supabase } = await getAuthenticatedTenant();
   if (!tenantId) return bad(401, "No autenticado");
@@ -469,11 +906,45 @@ async function staffUpsertBatch(data: Record<string, unknown>) {
     };
   });
 
-  // `onConflict: id` makes re-running autoSync idempotent — existing records
-  // get a patch update instead of erroring on the primary key.
+  // Dedupe manual (el UNIQUE en checkin_records.booking_ref puede no estar
+  // aplicado en prod — migracion 20260422 aun no corrio). Antes usabamos
+  // upsert con onConflict: booking_ref pero PostgREST tira
+  // "there is no unique or exclusion constraint matching the ON CONFLICT
+  // specification" cuando falta el constraint.
+  //
+  // Estrategia: listamos los booking_refs que ya existen en BD, filtramos
+  // los rows que chocan, y hacemos insert plain de los nuevos. Si los rows
+  // del batch duplican entre si (mismo ref en la misma corrida), nos
+  // quedamos con el primero.
+  const refs = rows.map((r) => r.booking_ref).filter((x): x is string => Boolean(x));
+  let existingRefs = new Set<string>();
+  if (refs.length > 0) {
+    const { data: existingData } = await supabase
+      .from("checkin_records")
+      .select("booking_ref")
+      .in("booking_ref", refs);
+    existingRefs = new Set(
+      ((existingData ?? []) as Array<{ booking_ref: string | null }>)
+        .map((r) => r.booking_ref)
+        .filter((x): x is string => Boolean(x))
+    );
+  }
+  const seenInBatch = new Set<string>();
+  const newRows = rows.filter((r) => {
+    if (!r.booking_ref) return true; // sin ref, dejar pasar (raro)
+    if (existingRefs.has(r.booking_ref)) return false;
+    if (seenInBatch.has(r.booking_ref)) return false;
+    seenInBatch.add(r.booking_ref);
+    return true;
+  });
+
+  if (newRows.length === 0) {
+    return NextResponse.json({ success: true, inserted: 0, records: [] });
+  }
+
   const { data: inserted, error } = await supabase
     .from("checkin_records")
-    .upsert(rows, { onConflict: "id" })
+    .insert(newRows)
     .select("*");
 
   if (error) {
@@ -517,7 +988,7 @@ async function guestGet(data: Record<string, unknown>) {
   // never expose wifi credentials. The guest must pass `auth` to unlock them.
   if (!id) return bad(400, "Falta id");
 
-  if (lastName && last4) {
+  if (lastName) {
     const row = await fetchRecordForGuest(id, lastName, last4);
     if (!row) return bad(404, "No encontrado");
     return NextResponse.json({
@@ -544,10 +1015,15 @@ async function guestUploadId(data: Record<string, unknown>) {
 
   // Guest must authenticate with their soft token BEFORE uploading — this
   // prevents randos from dumping files into Storage by brute-forcing ids.
-  const row = lastName && last4
+  // El token primario es el código de reserva (lastName). last4 es opcional:
+  // reservas sin teléfono (VRBO, algunas directas) no lo envían.
+  const row = lastName
     ? await fetchRecordForGuest(id, lastName, last4)
     : null;
-  if (!row) return bad(401, "No autorizado");
+  if (!row) {
+    console.warn("[/api/checkin:uploadId] auth failed", { id, lastName, hasLast4: Boolean(last4) });
+    return bad(401, "No autorizado");
+  }
 
   // Strip the data URL prefix if present (`data:image/jpeg;base64,...`).
   const [header, b64Payload] = photo.includes(",")
@@ -585,7 +1061,7 @@ async function guestPayElectricity(data: Record<string, unknown>) {
   const last4 = String(data.last4 ?? "");
   if (!id) return bad(400, "Falta id");
 
-  const row = lastName && last4
+  const row = lastName
     ? await fetchRecordForGuest(id, lastName, last4)
     : null;
   if (!row) return bad(401, "No autorizado");

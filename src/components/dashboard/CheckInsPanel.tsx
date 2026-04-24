@@ -19,6 +19,7 @@
  */
 
 import React, { useState, useEffect, useCallback, useRef } from "react";
+import { toast } from "sonner";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -64,6 +65,17 @@ export interface LocalCheckIn {
   bookingRef?: string;       // id in stayhost_direct_bookings or iCal UID
   encodedData: string;       // base64 for URL ?d=
   link: string;              // full check-in URL
+
+  // v3 — Sala de Espera
+  waitingForAuth?: boolean;  // el huesped pidio autorizacion manual
+  authReason?: string | null;// "ocr_failed" | "electricity_pending"
+  guestEmail?: string | null;
+  guestWhatsapp?: string | null;
+  guestCount?: number | null;
+  ocrName?: string | null;
+  ocrDocument?: string | null;
+  ocrNationality?: string | null;
+  channelCodeReal?: string | null;  // traido del booking vinculado (HMXXXXXX / SHXXXXXX)
 }
 
 interface WifiConfig {
@@ -134,8 +146,11 @@ function encodeData(data: Record<string, unknown>): string {
 }
 
 function buildLink(id: string, encoded: string): string {
-  if (typeof window === "undefined") return `/checkin/${id}`;
-  return `${window.location.origin}/checkin/${id}?d=${encoded}`;
+  // v=2 indica que el huesped ya se identifico (o viene de un link directo
+  // del host): el flow salta la pantalla vieja de apellido+4digitos y va
+  // directo al Paso 2 de documento + datos de contacto.
+  if (typeof window === "undefined") return `/checkin/${id}?d=${encoded}&v=2`;
+  return `${window.location.origin}/checkin/${id}?d=${encoded}&v=2`;
 }
 
 function qrUrl(data: string, size = 180) {
@@ -181,6 +196,15 @@ interface ApiCheckin {
   createdAt: string;
   updatedAt: string;
   idPhotoPath?: string;
+  waitingForAuth?: boolean;
+  authReason?: string | null;
+  guestEmail?: string | null;
+  guestWhatsapp?: string | null;
+  guestCount?: number | null;
+  ocrName?: string | null;
+  ocrDocument?: string | null;
+  ocrNationality?: string | null;
+  channelCode?: string | null;
 }
 
 async function apiCheckin<T = unknown>(action: string, payload: Record<string, unknown> = {}): Promise<T> {
@@ -206,9 +230,30 @@ function fromApi(
   upsellsByProperty: (propertyId: string) => { id: string; n: string; p: number; d: string }[]
 ): LocalCheckIn {
   const upsells = upsellsByProperty(r.propertyId);
+
+  // Datos "limpios" para el payload del URL. Preferimos:
+  // - name: ocrName (si el doc fue escaneado) > guestName (si no es placeholder)
+  //         > fallback "Huésped"
+  // - lastName (soft-token): channelCode real del booking > guestLastName
+  //         (con filtro para evitar basura tipo "confirmada" de records viejos)
+  const nonCodeWords = new Set(["confirmada", "confirmado", "reserva", "huesped", "huésped"]);
+  const cleanGuestName = (() => {
+    if (r.ocrName && r.ocrName.trim()) return r.ocrName.trim();
+    const n = (r.guestName ?? "").trim();
+    const nLow = n.toLowerCase();
+    if (!n || nLow === "huésped" || nLow === "huesped" || /^reserva( confirmada)?$/i.test(n)) return "Huésped";
+    return n;
+  })();
+  const cleanLastName = (() => {
+    if (r.channelCode && r.channelCode.trim()) return r.channelCode.toLowerCase().trim();
+    const l = (r.guestLastName ?? "").trim().toLowerCase();
+    if (!l || nonCodeWords.has(l)) return "";
+    return l;
+  })();
+
   const encoded = r.missingData ? "" : encodeData({
-    n: r.guestName,
-    l: r.guestLastName,
+    n: cleanGuestName,
+    l: cleanLastName,
     d4: r.lastFourDigits,
     ci: r.checkin,
     co: r.checkout,
@@ -251,7 +296,60 @@ function fromApi(
     bookingRef: r.bookingRef,
     encodedData: encoded,
     link,
+    waitingForAuth: r.waitingForAuth ?? false,
+    authReason: r.authReason ?? null,
+    guestEmail: r.guestEmail ?? null,
+    guestWhatsapp: r.guestWhatsapp ?? null,
+    guestCount: r.guestCount ?? null,
+    ocrName: r.ocrName ?? null,
+    ocrDocument: r.ocrDocument ?? null,
+    ocrNationality: r.ocrNationality ?? null,
+    channelCodeReal: r.channelCode ?? null,
   };
+}
+
+/**
+ * Nombre a mostrar del huesped en la lista. Prioridades:
+ *  1. Si hay OCR name (del escaneo del host o del huesped) → usarlo
+ *  2. Si guest_name es un nombre real (no "Huésped" / "Reserva*") → usarlo solo
+ *  3. Sino → "Reserva #[CODIGO]" (forma consistente)
+ *
+ * El viejo display concatenaba guest_last_name que en el schema actual
+ * contiene el channel_code en lowercase, dando cosas raras como
+ * "Reserva hmdxfmfs9t" o "Reserva confirmada" (split incorrecto historico).
+ */
+function guestDisplayName(r: LocalCheckIn): string {
+  // Prioridad 1: nombre real leido por OCR (del host o del huesped)
+  if (r.ocrName && r.ocrName.trim()) return r.ocrName;
+
+  const name = (r.guestName || "").trim();
+  const nameLow = name.toLowerCase();
+  const isPlaceholder =
+    !name ||
+    nameLow === "huésped" ||
+    nameLow === "huesped" ||
+    /^reserva( confirmada)?$/i.test(name);
+
+  // Prioridad 2: si tenemos nombre real de otra fuente, usarlo sin sufijo
+  if (!isPlaceholder) return name;
+
+  // Prioridad 3: "Reserva #CODIGO" con el channel_code REAL del booking
+  // vinculado (viene del API en `channelCodeReal`). Fallback al encodedData
+  // si por algun motivo no llego del API.
+  if (r.channelCodeReal && r.channelCodeReal.trim()) {
+    return `Reserva #${r.channelCodeReal.toUpperCase()}`;
+  }
+  try {
+    if (r.encodedData) {
+      const decoded = atob(r.encodedData);
+      const parsed = JSON.parse(decodeURIComponent(escape(decoded))) as { l?: string };
+      const nonCodes = new Set(["confirmada", "confirmado", "huesped", "huésped", "reserva"]);
+      if (parsed.l && !nonCodes.has(parsed.l.toLowerCase())) {
+        return `Reserva #${parsed.l.toUpperCase()}`;
+      }
+    }
+  } catch { /* ignore */ }
+  return "Reserva";
 }
 
 // ─── Status Badge ─────────────────────────────────────────────────────────────
@@ -880,6 +978,41 @@ export default function CheckInsPanel() {
     }
   }
 
+  // Resetear documento — borra foto + OCR + vuelve id_status a pending.
+  // Usar cuando se dio validar/rechazar por accidente o cuando los datos
+  // OCR quedaron contaminados de otra reserva.
+  async function resetDocument(r: LocalCheckIn) {
+    if (!confirm(
+      `¿Reiniciar el check-in de ${r.guestName || "este huésped"}?\n\n` +
+      `• Se borra la foto y los datos del documento.\n` +
+      `• Se revoca el PIN en la cerradura (deja de abrir inmediatamente).\n` +
+      `• El huésped vuelve al Paso 2 si abre el link.\n\n` +
+      `La reserva NO se cancela — si vuelve a hacer check-in se le genera PIN nuevo.`
+    )) return;
+    try {
+      const res = await apiCheckin<{
+        success: boolean;
+        ttlockRevoked?: number;
+        ttlockFailed?: number;
+        pinsDeleted?: number;
+      }>("resetId", { id: r.id });
+      const ttlockFailed = res.ttlockFailed ?? 0;
+      const ttlockRevoked = res.ttlockRevoked ?? 0;
+      if (ttlockFailed > 0) {
+        toast.warning(
+          `Check-in reiniciado, pero ${ttlockFailed} PIN${ttlockFailed > 1 ? "es" : ""} no se pudo revocar en la cerradura. Revisá TTLock manualmente.`
+        );
+      } else if (ttlockRevoked > 0) {
+        toast.success(`Check-in reiniciado. PIN revocado en la cerradura.`);
+      } else {
+        toast.success("Check-in reiniciado. El huésped puede empezar de nuevo.");
+      }
+      await refreshRecords();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "No se pudo reiniciar");
+    }
+  }
+
   // ─── Copy link ────────────────────────────────────────────────────────────
 
   function copyLink(r: LocalCheckIn) {
@@ -896,7 +1029,7 @@ export default function CheckInsPanel() {
   function shareWhatsApp(r: LocalCheckIn) {
     const origin = typeof window !== "undefined" ? window.location.origin : "";
     // Preferir el channel_code real del booking vinculado (HMXXXXXXXX de
-    // Airbnb o D-XXXXXXXX de reserva directa). Si no hay match en el
+    // Airbnb o SHXXXXXXXX de reserva directa). Si no hay match en el
     // mapa (caso raro: booking sin code), no pre-rellenamos nada y el
     // huésped escribe manualmente.
     const channelCode = r.bookingRef ? bookingCodeMap.get(r.bookingRef) : undefined;
@@ -993,6 +1126,108 @@ export default function CheckInsPanel() {
   const [enrichRecord, setEnrichRecord] = useState(null as LocalCheckIn | null);
   const [enrichForm, setEnrichForm] = useState({ firstName: "", lastName: "", last4: "" });
 
+  // ─── Review Document Modal ──────────────────────────────────────────────
+  // Al revisar un ID necesitamos ver la foto y los datos leidos/tipeados
+  // antes de aprobar o rechazar. El backend devuelve una signed URL (10 min)
+  // al bucket privado checkin-ids + OCR + lo que el huesped tipeo a mano.
+  type ReviewDetail = {
+    id: string;
+    photoUrl: string | null;
+    hasPhoto: boolean;
+    ocr: { name: string | null; document: string | null; nationality: string | null; confidence: number | null; attempts: number };
+    typed: { name: string | null; document: string | null; nationality: string | null };
+    contact: { email: string | null; whatsapp: string | null; guests: number | null };
+    booking: { guestName: string; checkin: string; checkout: string; nights: number; propertyName: string; channel: string | null };
+    idStatus: "pending" | "uploaded" | "validated" | "rejected";
+  };
+  const [reviewRecord, setReviewRecord] = useState(null as LocalCheckIn | null);
+  const [reviewDetail, setReviewDetail] = useState(null as ReviewDetail | null);
+  const [reviewLoading, setReviewLoading] = useState(false);
+
+  async function openReview(r: LocalCheckIn) {
+    setReviewRecord(r);
+    setReviewDetail(null);
+    setReviewLoading(true);
+    try {
+      const res = await fetch("/api/checkin", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "reviewDetail", id: r.id }),
+        credentials: "include",
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ error: "" }));
+        toast.error(err.error || "No se pudo cargar el documento");
+        setReviewRecord(null);
+        return;
+      }
+      const detail = (await res.json()) as ReviewDetail;
+      setReviewDetail(detail);
+    } catch {
+      toast.error("Error de conexión al cargar el documento");
+      setReviewRecord(null);
+    } finally {
+      setReviewLoading(false);
+    }
+  }
+
+  async function approveFromModal() {
+    if (!reviewRecord) return;
+    await updateRecord(reviewRecord.id, { idStatus: "validated" });
+    setReviewRecord(null);
+    setReviewDetail(null);
+  }
+  async function rejectFromModal() {
+    if (!reviewRecord) return;
+    await updateRecord(reviewRecord.id, { idStatus: "rejected" });
+    setReviewRecord(null);
+    setReviewDetail(null);
+  }
+  async function resetFromModal() {
+    if (!reviewRecord) return;
+    await resetDocument(reviewRecord);
+    setReviewRecord(null);
+    setReviewDetail(null);
+  }
+
+  // ─── Sincronizar (backend-first) ────────────────────────────────────────
+  // El autoSync del cliente tiene logica compleja con 3 fuentes (localStorage,
+  // iCal, bookings). Para el boton "Sincronizar" vamos directo al backend:
+  // staffBackfillCheckins recorre todos los bookings confirmed del tenant y
+  // crea los checkin_records faltantes. Mas robusto — no depende de que el
+  // estado del cliente este fresco.
+  async function handleSync() {
+    if (syncing) return;
+    setSyncing(true);
+    try {
+      const res = await fetch("/api/checkin", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "backfill" }),
+        credentials: "include",
+      });
+      const json = await res.json();
+      if (!res.ok) {
+        toast.error(json.error || "No se pudo sincronizar");
+        return;
+      }
+      if (json.created > 0) {
+        toast.success(`${json.created} check-in${json.created > 1 ? "s" : ""} creado${json.created > 1 ? "s" : ""} de ${json.scanned} reserva${json.scanned > 1 ? "s" : ""}`);
+      } else {
+        toast.success(`Todo al día — ${json.scanned} reserva${json.scanned !== 1 ? "s" : ""} revisada${json.scanned !== 1 ? "s" : ""}`);
+      }
+      await refreshRecords();
+      // Seguimos corriendo el autoSync del cliente para cubrir localStorage
+      // legacy (iCal viejos que no estan en bookings todavia).
+      await autoSync(true);
+    } catch (err) {
+      console.error("[CheckInsPanel] handleSync failed:", err);
+      toast.error("Error de conexión al sincronizar");
+    } finally {
+      setSyncing(false);
+    }
+  }
+
   async function handleEnrich() {
     if (!enrichRecord) return;
     if (!enrichForm.firstName || !enrichForm.lastName || enrichForm.last4.length !== 4) return;
@@ -1035,8 +1270,63 @@ export default function CheckInsPanel() {
     return "bg-slate-400";
   }
 
+  // Autorizaciones pendientes — huespedes que presionaron "Solicitar
+  // autorizacion" en el Paso 2 (OCR) o Paso 3 (electricidad) y estan en
+  // la Sala de Espera hasta que el host apruebe desde este panel.
+  const pendingAuth = records.filter(r => r.waitingForAuth);
+  async function handleAuthorize(r: LocalCheckIn) {
+    const reason = r.authReason === "ocr_failed" ? "identidad" : "pago eléctrico";
+    if (!confirm(`Autorizar el ${reason} de ${r.guestName || "este huésped"}? Se le liberará el acceso al PIN y WiFi.`)) return;
+    try {
+      const res = await fetch("/api/checkin", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "authorize", id: r.id }),
+      });
+      if (!res.ok) {
+        const msg = await res.json().catch(() => ({ error: "" }));
+        toast.error(msg.error || "No se pudo autorizar");
+        return;
+      }
+      toast.success("Huésped autorizado. Ya puede ver su acceso.");
+      await autoSync(false);
+    } catch {
+      toast.error("Error de conexión");
+    }
+  }
+
   return (
     <div className="space-y-6">
+      {/* Autorizaciones pendientes (Sala de Espera) */}
+      {pendingAuth.length > 0 && (
+        <div className="bg-gradient-to-br from-amber-50 to-orange-50 border-2 border-amber-300 rounded-2xl p-4 space-y-3">
+          <div className="flex items-center gap-2">
+            <Clock className="h-5 w-5 text-amber-600" />
+            <h3 className="font-bold text-amber-900">
+              {pendingAuth.length} huésped{pendingAuth.length > 1 ? "es" : ""} en Sala de Espera
+            </h3>
+          </div>
+          <p className="text-xs text-amber-800">Solicitaron autorización manual. No ven su PIN ni WiFi hasta que apruebes.</p>
+          <div className="space-y-2">
+            {pendingAuth.map(r => (
+              <div key={r.id} className="bg-white rounded-xl border border-amber-200 p-3 flex items-center gap-3">
+                <div className="flex-1 min-w-0">
+                  <p className="font-semibold text-sm truncate">{r.guestName || "Huésped"} · {r.propertyName}</p>
+                  <p className="text-xs text-muted-foreground">
+                    {r.authReason === "ocr_failed" ? "📷 OCR no legible" : "⚡ Pago eléctrico pendiente"}
+                    {r.guestEmail && ` · ${r.guestEmail}`}
+                    {r.guestWhatsapp && ` · ${r.guestWhatsapp}`}
+                  </p>
+                </div>
+                <Button size="sm" onClick={() => handleAuthorize(r)} className="bg-emerald-600 hover:bg-emerald-700 text-white">
+                  <CheckCircle2 className="h-3.5 w-3.5 mr-1" />Autorizar
+                </Button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* Header */}
       <div className="space-y-4">
         <div className="flex items-center justify-between">
@@ -1046,7 +1336,7 @@ export default function CheckInsPanel() {
           </div>
           <Button
             variant="outline"
-            onClick={() => autoSync(false)}
+            onClick={() => handleSync()}
             disabled={syncing}
             className="gap-2"
           >
@@ -1186,7 +1476,7 @@ export default function CheckInsPanel() {
                     </div>
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-2 flex-wrap">
-                        <span className="font-semibold text-base leading-tight">{r.guestName} {r.guestLastName}</span>
+                        <span className="font-semibold text-base leading-tight">{guestDisplayName(r)}</span>
                         <StatusBadge r={r} />
                         <SourceBadge r={r} />
                       </div>
@@ -1227,26 +1517,41 @@ export default function CheckInsPanel() {
                   </div>
                   )}
 
-                  {/* Approve/Reject inline when ID uploaded */}
+                  {/* Revisar documento — abre modal con foto + datos OCR/tipeados
+                      para que el host pueda ver qué esta aprobando antes de decidir. */}
                   {r.idStatus === "uploaded" && !r.missingData && (
-                    <div className="flex items-center gap-2 px-1 py-2 bg-amber-50 dark:bg-amber-950/20 border border-amber-200 dark:border-amber-800 rounded-lg">
+                    <button
+                      type="button"
+                      onClick={() => openReview(r)}
+                      className="w-full flex items-center gap-2 px-3 py-2.5 bg-amber-50 dark:bg-amber-950/20 border border-amber-200 dark:border-amber-800 rounded-lg hover:bg-amber-100 dark:hover:bg-amber-950/40 transition-colors"
+                    >
                       <Eye className="w-4 h-4 text-amber-600 shrink-0" />
-                      <span className="text-xs text-amber-700 dark:text-amber-400 flex-1">ID enviado — requiere revisión</span>
+                      <span className="text-xs font-semibold text-amber-800 dark:text-amber-300 flex-1 text-left">ID enviado — revisar documento</span>
+                      <span className="text-xs text-amber-700 dark:text-amber-400 font-medium">Ver y decidir →</span>
+                    </button>
+                  )}
+
+                  {/* Reiniciar check-in — disponible siempre que la reserva tenga
+                      datos (no missingData). Cubre todos los casos: validado,
+                      rechazado, o pending con check-in completado que necesita
+                      forzar reset (revoca PIN TTLock, borra foto, huesped vuelve
+                      al Paso 2). */}
+                  {!r.missingData && (
+                    <div className="flex items-center gap-2 px-1 py-2 bg-slate-50 dark:bg-slate-900/30 border border-slate-200 dark:border-slate-700 rounded-lg">
+                      <span className="text-xs text-slate-600 flex-1">
+                        {r.idStatus === "validated" && "✓ ID aprobado"}
+                        {r.idStatus === "rejected" && "✗ ID rechazado"}
+                        {r.idStatus === "pending" && "Sin documento subido aún"}
+                        {r.idStatus === "uploaded" && "ID pendiente de revisión"}
+                      </span>
                       <Button
                         size="sm"
                         variant="outline"
-                        onClick={() => updateRecord(r.id, { idStatus: "validated" })}
-                        className="h-7 px-3 text-xs border-emerald-400 text-emerald-700 hover:bg-emerald-50 gap-1"
+                        onClick={() => resetDocument(r)}
+                        className="h-7 px-3 text-xs border-slate-300 text-slate-700 hover:bg-slate-100 gap-1"
+                        title="Borra foto, revoca PIN en la cerradura, y manda al huésped al Paso 2"
                       >
-                        <ShieldCheck className="w-3.5 h-3.5" />Aprobar
-                      </Button>
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        onClick={() => updateRecord(r.id, { idStatus: "rejected" })}
-                        className="h-7 px-3 text-xs border-red-400 text-red-600 hover:bg-red-50 gap-1"
-                      >
-                        <ShieldX className="w-3.5 h-3.5" />Rechazar
+                        <RefreshCw className="w-3.5 h-3.5" />Reiniciar check-in
                       </Button>
                     </div>
                   )}
@@ -1720,8 +2025,8 @@ export default function CheckInsPanel() {
             </div>
             <div className="pt-4 flex justify-end gap-2">
               <Button variant="outline" onClick={() => setEnrichRecord(null)}>Cancelar</Button>
-              <Button 
-                onClick={handleEnrich} 
+              <Button
+                onClick={handleEnrich}
                 disabled={!enrichForm.firstName || !enrichForm.lastName || enrichForm.last4.length !== 4}
               >
                 Guardar y Activar
@@ -1730,6 +2035,140 @@ export default function CheckInsPanel() {
           </div>
         </DialogContent>
       </Dialog>
+
+      {/* ── Review Document Modal ──────────────────────────────────────────── */}
+      <Dialog open={!!reviewRecord} onOpenChange={(open) => { if (!open) { setReviewRecord(null); setReviewDetail(null); } }}>
+        <DialogContent className="sm:max-w-2xl max-h-[90vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Eye className="w-5 h-5 text-amber-600" />
+              Revisar Documento de Identidad
+            </DialogTitle>
+          </DialogHeader>
+
+          {reviewLoading && (
+            <div className="py-12 text-center text-sm text-muted-foreground">
+              Cargando documento…
+            </div>
+          )}
+
+          {!reviewLoading && reviewDetail && reviewRecord && (
+            <div className="space-y-5 pt-2">
+              {/* Header con datos de la reserva */}
+              <div className="bg-slate-50 dark:bg-slate-900/40 border border-slate-200 dark:border-slate-800 rounded-xl p-3 space-y-1">
+                <p className="text-sm font-semibold text-slate-800 dark:text-slate-200">
+                  {reviewDetail.booking.propertyName}
+                  {reviewDetail.booking.channel && (
+                    <span className="ml-2 text-xs font-normal text-slate-500 uppercase">· {reviewDetail.booking.channel}</span>
+                  )}
+                </p>
+                <p className="text-xs text-slate-600 dark:text-slate-400">
+                  {reviewDetail.booking.checkin} → {reviewDetail.booking.checkout} ({reviewDetail.booking.nights}n)
+                </p>
+              </div>
+
+              {/* Foto del ID */}
+              <div className="space-y-2">
+                <Label className="text-xs uppercase tracking-wider text-slate-500 font-semibold">Foto del documento</Label>
+                {reviewDetail.photoUrl ? (
+                  <a href={reviewDetail.photoUrl} target="_blank" rel="noopener noreferrer"
+                    className="block bg-slate-900 rounded-xl overflow-hidden border border-slate-200 dark:border-slate-700">
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img
+                      src={reviewDetail.photoUrl}
+                      alt="Documento de identidad"
+                      className="w-full max-h-[480px] object-contain"
+                    />
+                  </a>
+                ) : (
+                  <div className="bg-slate-50 dark:bg-slate-900/40 border border-dashed border-slate-300 dark:border-slate-700 rounded-xl p-6 text-center text-sm text-slate-500">
+                    {reviewDetail.hasPhoto
+                      ? "No se pudo generar el link firmado. Probá refrescar."
+                      : "El huésped aún no subió la foto del documento."}
+                  </div>
+                )}
+                {reviewDetail.photoUrl && (
+                  <p className="text-[11px] text-slate-400 text-center">Tocá la imagen para abrirla en tamaño completo. El link firmado expira en 10 minutos.</p>
+                )}
+              </div>
+
+              {/* Datos leidos (OCR) vs tipeados por el huesped */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                <div className="bg-white dark:bg-slate-900 border border-emerald-200 dark:border-emerald-900 rounded-xl p-3 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <Label className="text-xs uppercase tracking-wider text-emerald-700 dark:text-emerald-400 font-semibold">
+                      Leído por OCR
+                    </Label>
+                    {typeof reviewDetail.ocr.confidence === "number" && (
+                      <Badge className="bg-emerald-500/20 text-emerald-700 border-emerald-500/30 text-[10px]">
+                        {Math.round(reviewDetail.ocr.confidence * 100)}% conf.
+                      </Badge>
+                    )}
+                  </div>
+                  <DataRow label="Nombre" value={reviewDetail.ocr.name} />
+                  <DataRow label="Documento" value={reviewDetail.ocr.document} />
+                  <DataRow label="Nacionalidad" value={reviewDetail.ocr.nationality} />
+                </div>
+                <div className="bg-white dark:bg-slate-900 border border-sky-200 dark:border-sky-900 rounded-xl p-3 space-y-2">
+                  <Label className="text-xs uppercase tracking-wider text-sky-700 dark:text-sky-400 font-semibold">
+                    Tipeado por el huésped
+                  </Label>
+                  <DataRow label="Nombre" value={reviewDetail.typed.name} />
+                  <DataRow label="Documento" value={reviewDetail.typed.document} />
+                  <DataRow label="Nacionalidad" value={reviewDetail.typed.nationality} />
+                </div>
+              </div>
+
+              {/* Contacto */}
+              <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-3 space-y-2">
+                <Label className="text-xs uppercase tracking-wider text-slate-500 font-semibold">Contacto</Label>
+                <DataRow label="Email" value={reviewDetail.contact.email} />
+                <DataRow label="WhatsApp" value={reviewDetail.contact.whatsapp} />
+                <DataRow label="Cantidad de huéspedes" value={reviewDetail.contact.guests != null ? String(reviewDetail.contact.guests) : null} />
+              </div>
+
+              {/* Acciones */}
+              <div className="flex flex-col sm:flex-row gap-2 pt-2">
+                <Button
+                  onClick={approveFromModal}
+                  className="flex-1 bg-emerald-600 hover:bg-emerald-700 text-white gap-2"
+                >
+                  <ShieldCheck className="w-4 h-4" />Aprobar documento
+                </Button>
+                <Button
+                  onClick={rejectFromModal}
+                  variant="outline"
+                  className="flex-1 border-red-400 text-red-600 hover:bg-red-50 gap-2"
+                >
+                  <ShieldX className="w-4 h-4" />Rechazar
+                </Button>
+                <Button
+                  onClick={resetFromModal}
+                  variant="outline"
+                  className="sm:w-auto border-slate-300 text-slate-700 hover:bg-slate-100 gap-2"
+                  title="Borra la foto y los datos OCR. El huésped va a tener que subir su documento de nuevo."
+                >
+                  <RefreshCw className="w-4 h-4" />Resetear
+                </Button>
+              </div>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
+    </div>
+  );
+}
+
+// Fila clave/valor reusada en el modal de revision. Muestra "—" si el
+// valor esta vacio para que quede claro visualmente que falto captura.
+function DataRow({ label, value }: { label: string; value: string | null | undefined }) {
+  const empty = !value || !value.trim();
+  return (
+    <div className="flex items-baseline justify-between gap-2">
+      <span className="text-[11px] uppercase tracking-wider text-slate-500 shrink-0">{label}</span>
+      <span className={`text-sm text-right font-medium ${empty ? "text-slate-400 italic" : "text-slate-800 dark:text-slate-200"}`}>
+        {empty ? "—" : value}
+      </span>
     </div>
   );
 }

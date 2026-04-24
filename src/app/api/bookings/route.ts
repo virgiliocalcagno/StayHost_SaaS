@@ -192,6 +192,89 @@ export async function POST(req: NextRequest) {
       }
     }
 
+    // Auto-crear checkin_record para que la reserva aparezca de una en el
+    // panel de Check-ins sin tener que esperar al autoSync del frontend.
+    // Espeja la lógica de /api/checkin/lookup para que los dos caminos
+    // (host crea reserva / huésped busca por código) generen el mismo
+    // registro. Idempotente: si ya existe un record con booking_ref = este
+    // booking, no hace nada.
+    if (!isBlock) {
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const { data: prop } = await (supabaseAdmin.from("properties") as any)
+          .select("name, address, wifi_name, wifi_password, electricity_enabled, electricity_rate")
+          .eq("id", propertyId)
+          .single();
+
+        const nights = Math.max(
+          1,
+          Math.round((new Date(checkOut).getTime() - new Date(checkIn).getTime()) / 86_400_000)
+        );
+        const chan = String(source ?? "manual").toLowerCase();
+        const isVrbo = chan === "vrbo";
+        const propertyElectricityEnabled = prop?.electricity_enabled ?? true;
+        const electricityRate = prop?.electricity_rate ?? 0;
+        const electricityEnabledForGuest = propertyElectricityEnabled && !isVrbo && electricityRate > 0;
+        const electricityTotal = electricityEnabledForGuest ? electricityRate * nights : 0;
+
+        const insertRow: Record<string, unknown> = {
+          id: `ci-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+          tenant_id: tenantId,
+          guest_name: guestName ?? "Huésped",
+          // Soft-token: usamos el channel_code SHXXXX (lowercased). El auth
+          // del huesped hace match contra esto cuando viene de un link v=2.
+          guest_last_name: (channelCode ?? "").toLowerCase().trim(),
+          last_four_digits: phoneLast4 ?? "0000",
+          checkin: checkIn,
+          checkout: checkOut,
+          nights,
+          property_id: propertyId,
+          property_name: prop?.name ?? "Propiedad",
+          property_address: prop?.address ?? null,
+          wifi_ssid: prop?.wifi_name ?? null,
+          wifi_password: prop?.wifi_password ?? null,
+          status: "pendiente",
+          id_status: "pending",
+          source: chan === "ical" || chan === "airbnb" || chan === "vrbo" ? "auto_ical" : "auto_direct",
+          channel: chan === "manual" ? "direct" : chan,
+          booking_ref: bookingId,
+          access_granted: false,
+          electricity_enabled: electricityEnabledForGuest,
+          electricity_rate: electricityRate,
+          electricity_paid: false,
+          electricity_total: electricityTotal,
+          paypal_fee_included: true,
+          missing_data: false,
+        };
+        // Heredar datos OCR si el host los cargo (escaneo al crear reserva)
+        if (guestName && guestName !== "Reserva Confirmada" && guestName !== "Huésped") {
+          insertRow.ocr_name = guestName;
+        }
+        if (guestDoc) insertRow.ocr_document = guestDoc;
+        if (guestNationality) insertRow.ocr_nationality = guestNationality;
+        if (guestDoc || guestNationality) insertRow.ocr_confidence = 1.0;
+
+        // Chequear primero si ya existe (el UNIQUE en booking_ref puede no
+        // estar aplicado en prod, por eso no usamos onConflict). Este POST
+        // corre una vez por reserva, la race condition real es minima.
+        const { data: existingCi } = await supabaseAdmin
+          .from("checkin_records")
+          .select("id")
+          .eq("booking_ref", bookingId)
+          .limit(1);
+        if (!existingCi || existingCi.length === 0) {
+          const { error: ciErr } = await supabaseAdmin
+            .from("checkin_records")
+            .insert(insertRow as never);
+          if (ciErr) {
+            console.error("[bookings/POST] auto-checkin creation failed (non-fatal):", ciErr);
+          }
+        }
+      } catch (ciErr) {
+        console.error("[bookings/POST] auto-checkin creation failed (non-fatal):", ciErr);
+      }
+    }
+
     return NextResponse.json({
       ok: true,
       id: bookingId,

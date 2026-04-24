@@ -2,22 +2,19 @@ import { NextRequest, NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 
 // POST /api/checkin/lookup
-// Body: { code: string, phoneLast4: string }
+// Body: { code: string }
 //
 // Endpoint PÚBLICO — el huésped NO está autenticado todavía. Su credencial
-// viene del código de reserva (que recibió en su canal: Airbnb, VRBO,
-// Booking, o el que le mandó el host si es directa) combinado con los
-// últimos 4 dígitos del teléfono que registró al reservar.
+// es el código de reserva (que recibió en su canal: Airbnb, VRBO, Booking,
+// o el que le mandó el host si es directa).
 //
 // Usamos service_role porque:
 //   1. No hay sesión del huésped.
 //   2. El lookup tiene que atravesar RLS (cada tenant tiene sus bookings).
-//   3. La seguridad viene del match exacto (código + 4 dígitos), no de RLS.
+//   3. La seguridad viene del match exacto del código + rate-limit, no de RLS.
 //
-// Los códigos Airbnb (HMXXXXXXXX) son ~36^8 combinaciones. Combinados con
-// los últimos 4 dígitos del teléfono (10^4) el espacio es suficientemente
-// grande para descartar ataques de fuerza bruta, y además se agrega
-// rate-limit por IP abajo.
+// Los códigos Airbnb (HMXXXXXXXX) son ~36^8 combinaciones — espacio sobrado
+// contra fuerza bruta combinado con rate-limit agresivo por IP (20/15min).
 
 type LookupResult = {
   ok: true;
@@ -32,6 +29,14 @@ type LookupResult = {
     nights: number;
     guestName: string | null;
     tenantId: string;
+    phoneLast4: string | null;
+    channel: string;
+    electricityEnabled: boolean;
+    electricityRate: number;
+    electricityTotal: number;
+    wifiSsid: string | null;
+    wifiPassword: string | null;
+    ownerWhatsapp: string | null;
   };
 };
 
@@ -64,7 +69,7 @@ export async function POST(req: NextRequest): Promise<NextResponse<LookupResult 
     );
   }
 
-  let body: { code?: string; phoneLast4?: string };
+  let body: { code?: string };
   try {
     body = await req.json();
   } catch {
@@ -72,7 +77,6 @@ export async function POST(req: NextRequest): Promise<NextResponse<LookupResult 
   }
 
   const code = String(body.code ?? "").trim().toUpperCase();
-  const phoneLast4 = String(body.phoneLast4 ?? "").trim();
 
   if (!code || code.length < 6) {
     return NextResponse.json(
@@ -80,20 +84,13 @@ export async function POST(req: NextRequest): Promise<NextResponse<LookupResult 
       { status: 400 }
     );
   }
-  if (!/^\d{4}$/.test(phoneLast4)) {
-    return NextResponse.json(
-      { ok: false, error: "Los últimos 4 dígitos deben ser numéricos" },
-      { status: 400 }
-    );
-  }
 
   const { data, error } = await supabaseAdmin
     .from("bookings")
     .select(
-      "id, tenant_id, channel_code, property_id, guest_name, check_in, check_out, properties:property_id(name, address)"
+      "id, tenant_id, channel_code, phone_last4, property_id, guest_name, guest_doc, guest_nationality, check_in, check_out, source, properties:property_id(name, address, wifi_name, wifi_password, electricity_enabled, electricity_rate), tenants:tenant_id(owner_whatsapp)"
     )
     .eq("channel_code", code)
-    .eq("phone_last4", phoneLast4)
     .eq("status", "confirmed")
     .limit(2);
 
@@ -104,14 +101,14 @@ export async function POST(req: NextRequest): Promise<NextResponse<LookupResult 
 
   if (!data || data.length === 0) {
     return NextResponse.json(
-      { ok: false, error: "No encontramos una reserva con ese código y teléfono." },
+      { ok: false, error: "No encontramos una reserva con ese código." },
       { status: 404 }
     );
   }
 
-  // Más de un match = colisión (improbable) → rechazamos por seguridad.
+  // Más de un match = colisión (improbable con códigos Airbnb/SH únicos).
   if (data.length > 1) {
-    console.warn("[/api/checkin/lookup] multiple matches for", { code, phoneLast4 });
+    console.warn("[/api/checkin/lookup] multiple matches for", { code });
     return NextResponse.json(
       { ok: false, error: "No pudimos verificar tu reserva. Contacta al anfitrión." },
       { status: 409 }
@@ -122,12 +119,25 @@ export async function POST(req: NextRequest): Promise<NextResponse<LookupResult 
     id: string;
     tenant_id: string;
     channel_code: string;
+    phone_last4: string | null;
     property_id: string;
     guest_name: string | null;
+    guest_doc: string | null;
+    guest_nationality: string | null;
     check_in: string;
     check_out: string;
-    properties: { name: string | null; address: string | null } | null;
+    source: string | null;
+    properties: {
+      name: string | null;
+      address: string | null;
+      wifi_name: string | null;
+      wifi_password: string | null;
+      electricity_enabled: boolean | null;
+      electricity_rate: number | null;
+    } | null;
+    tenants: { owner_whatsapp: string | null } | null;
   };
+  const phoneLast4 = b.phone_last4 ?? "";
 
   const nights = Math.max(
     1,
@@ -135,6 +145,18 @@ export async function POST(req: NextRequest): Promise<NextResponse<LookupResult 
       (new Date(b.check_out).getTime() - new Date(b.check_in).getTime()) / (1000 * 60 * 60 * 24)
     )
   );
+
+  // Tarifa electrica — reactiva por canal (spec 2026-04-22):
+  //   VRBO    → energia incluida, NO se cobra en el check-in
+  //   Airbnb  → se muestra con opcion PayPal o "Solicitar Autorizacion"
+  //   Directa → se muestra con opcion Online o "Solicitar Autorizacion"
+  // Si la propiedad tiene electricity_enabled=false, se omite tambien.
+  const channel = String(b.source ?? "").toLowerCase();
+  const propertyElectricityEnabled = b.properties?.electricity_enabled ?? true;
+  const electricityRate = b.properties?.electricity_rate ?? 0;
+  const isVrbo = channel === "vrbo";
+  const electricityEnabledForGuest = propertyElectricityEnabled && !isVrbo && electricityRate > 0;
+  const electricityTotal = electricityEnabledForGuest ? electricityRate * nights : 0;
 
   // Buscar/crear checkin_record para este booking. La API de huésped
   // (uploadId, payElectricity, etc.) usa checkin_records.id como identidad,
@@ -153,43 +175,81 @@ export async function POST(req: NextRequest): Promise<NextResponse<LookupResult 
     // Si fue creado por autoSync antes de que el booking tuviera
     // channel_code, su guest_last_name podría no coincidir — el uploadId
     // fallaría con 401. Actualizamos para dejar auth consistente.
-    await supabaseAdmin
-      .from("checkin_records")
-      .update({
-        guest_last_name: b.channel_code.toLowerCase().trim(),
-        last_four_digits: phoneLast4,
-      } as never)
+    const syncUpdate: Record<string, unknown> = {
+      guest_last_name: b.channel_code.toLowerCase().trim(),
+      last_four_digits: phoneLast4,
+      // Refrescar snapshot del WiFi/direccion al valor actual de la
+      // propiedad. Si el host cambia el password del WiFi, queremos que el
+      // huesped vea el nuevo al abrir su pase — no el viejo del snapshot.
+      property_name: b.properties?.name ?? null,
+      property_address: b.properties?.address ?? null,
+      wifi_ssid: b.properties?.wifi_name ?? null,
+      wifi_password: b.properties?.wifi_password ?? null,
+    };
+    // Heredar datos OCR del booking si el host los cargo al crear la
+    // reserva (escaneo con DocumentScanButton). Solo actualizamos si no
+    // hay ya datos OCR (no pisar si el huesped ya subio foto propia).
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const { data: existing } = await (supabaseAdmin.from("checkin_records") as any)
+      .select("ocr_name, ocr_document, ocr_nationality")
+      .eq("id", checkinRecordId)
+      .single();
+    const hasOcr = existing && (existing.ocr_name || existing.ocr_document);
+    if (!hasOcr && (b.guest_doc || b.guest_nationality)) {
+      if (b.guest_name && b.guest_name !== "Reserva Confirmada" && b.guest_name !== "Huésped") {
+        syncUpdate.ocr_name = b.guest_name;
+      }
+      if (b.guest_doc) syncUpdate.ocr_document = b.guest_doc;
+      if (b.guest_nationality) syncUpdate.ocr_nationality = b.guest_nationality;
+      syncUpdate.ocr_confidence = 1.0; // datos del host → confianza alta
+    }
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await (supabaseAdmin.from("checkin_records") as any)
+      .update(syncUpdate)
       .eq("id", checkinRecordId);
   } else {
     // Crear uno nuevo al vuelo. Usamos channel_code como guest_last_name
     // (soft-token) y phoneLast4 como last_four_digits para que los demás
     // endpoints de huésped autentiquen sin pedir nada más.
     const newId = `ci-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+    const insertRow: Record<string, unknown> = {
+      id: newId,
+      tenant_id: b.tenant_id,
+      guest_name: b.guest_name ?? "Huésped",
+      guest_last_name: b.channel_code.toLowerCase().trim(),
+      last_four_digits: phoneLast4,
+      checkin: b.check_in,
+      checkout: b.check_out,
+      nights,
+      property_id: b.property_id,
+      property_name: b.properties?.name ?? "Propiedad",
+      property_address: b.properties?.address ?? null,
+      // Snapshot de credenciales WiFi al momento del check-in. El Guest Hub
+      // las lee de aqui para mostrarlas al huesped.
+      wifi_ssid: b.properties?.wifi_name ?? null,
+      wifi_password: b.properties?.wifi_password ?? null,
+      status: "pendiente",
+      id_status: "pending",
+      source: channel === "ical" || channel === "airbnb" || channel === "vrbo" ? "auto_ical" : "auto_direct",
+      booking_ref: b.id,
+      access_granted: false,
+      electricity_enabled: electricityEnabledForGuest,
+      electricity_rate: electricityRate,
+      electricity_paid: false,
+      electricity_total: electricityTotal,
+      paypal_fee_included: true,
+    };
+    // Heredar datos OCR del booking si el host los cargo al crear la reserva
+    if (b.guest_name && b.guest_name !== "Reserva Confirmada" && b.guest_name !== "Huésped") {
+      insertRow.ocr_name = b.guest_name;
+    }
+    if (b.guest_doc) insertRow.ocr_document = b.guest_doc;
+    if (b.guest_nationality) insertRow.ocr_nationality = b.guest_nationality;
+    if (b.guest_doc || b.guest_nationality) insertRow.ocr_confidence = 1.0;
+
     const { error: insertErr } = await supabaseAdmin
       .from("checkin_records")
-      .insert({
-        id: newId,
-        tenant_id: b.tenant_id,
-        guest_name: b.guest_name ?? "Huésped",
-        guest_last_name: b.channel_code.toLowerCase().trim(),
-        last_four_digits: phoneLast4,
-        checkin: b.check_in,
-        checkout: b.check_out,
-        nights,
-        property_id: b.property_id,
-        property_name: b.properties?.name ?? "Propiedad",
-        property_address: b.properties?.address ?? null,
-        status: "pendiente",
-        id_status: "pending",
-        source: "auto_direct",
-        booking_ref: b.id,
-        access_granted: false,
-        electricity_enabled: true,
-        electricity_rate: 5,
-        electricity_paid: false,
-        electricity_total: 0,
-        paypal_fee_included: true,
-      } as never);
+      .insert(insertRow as never);
     if (insertErr) {
       console.error("[/api/checkin/lookup] create checkin_record failed:", insertErr);
     } else {
@@ -211,6 +271,14 @@ export async function POST(req: NextRequest): Promise<NextResponse<LookupResult 
       nights,
       guestName: b.guest_name,
       tenantId: b.tenant_id,
+      phoneLast4: b.phone_last4,
+      channel,
+      electricityEnabled: electricityEnabledForGuest,
+      electricityRate,
+      electricityTotal,
+      wifiSsid: b.properties?.wifi_name ?? null,
+      wifiPassword: b.properties?.wifi_password ?? null,
+      ownerWhatsapp: b.tenants?.owner_whatsapp ?? null,
     },
   });
 }
