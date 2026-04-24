@@ -372,9 +372,22 @@ export async function POST(req: NextRequest) {
     // ── complete (el huesped llego al Guest Hub con acceso liberado) ───────
     // Se llama una vez cuando el front renderiza el Paso 5 sin waiting_for_auth.
     // Idempotente: si ya esta seteado, no lo pisa.
+    //
+    // GUARD: solo marcamos completed si el check-in realmente paso las
+    // validaciones. Sin esto, si el host resetea el check-in (id_status=pending,
+    // sin foto) pero el huesped sigue con el gafete cacheado en pantalla, el
+    // front dispara complete otra vez y reescribe checkin_completed_at,
+    // invalidando el reset. El guard usa el mismo record fresco.
     if (action === "complete") {
       if (row.checkin_completed_at) {
         return NextResponse.json({ ok: true, state: getState(row) });
+      }
+      const hasValidDoc = row.id_photo_path && row.id_status !== "pending" && row.id_status !== "rejected";
+      if (!hasValidDoc) {
+        // No hay documento valido. El reset del host probablemente ya borro
+        // todo. Devolvemos el state actual sin marcar completed — el cliente
+        // debe detectarlo y regresar al Paso 2.
+        return NextResponse.json({ ok: false, reason: "not_ready", state: getState(row) });
       }
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const { data: updated, error } = await (supabaseAdmin.from("checkin_records") as any)

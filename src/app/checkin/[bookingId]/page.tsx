@@ -459,14 +459,18 @@ function CheckInInner({ bookingId }: { bookingId: string }) {
     return () => { cancelled = true; };
   }, [step, isV2, booking, bookingId]);
 
-  // Polling de la Sala de Espera — mientras el huesped este en el Paso 5
-  // esperando autorizacion del host, consultamos getState cada 5s para
-  // detectar cuando el host apriete "Autorizar" en el dashboard. Apenas
-  // waiting_for_auth pasa a false, el render re-evalua y muestra el Paso 5
-  // normal con PIN/WiFi.
+  // Polling del Paso 5 — corre SIEMPRE mientras el huesped este en el
+  // gafete/Sala de Espera. Dos casos:
+  //
+  //   a) Sala de Espera: detectar cuando el host autoriza → se desactiva
+  //      waitingForAuth y el render muestra PIN/WiFi.
+  //   b) Reset del host: si el host reseteo el check-in desde el dashboard,
+  //      el server devuelve completed=false y needsPhoto=true. Sin este
+  //      polling el huesped seguia viendo el gafete cacheado hasta recargar
+  //      (bug HMKSYNCPDQ). Lo devolvemos al Paso 2 para que rehaga.
   const waitingForAnything = (step2State?.waitingForAuth ?? false) || waitingAuthElectric;
   useEffect(() => {
-    if (step !== 5 || !waitingForAnything || !booking) return;
+    if (step !== 5 || !booking) return;
     let cancelled = false;
     const interval = setInterval(async () => {
       try {
@@ -479,13 +483,27 @@ function CheckInInner({ bookingId }: { bookingId: string }) {
         const data = (await res.json()) as { state?: Step2State };
         if (cancelled || !data.state) return;
         setStep2State(data.state);
-        // Si el host autorizo, desactivamos ambos flags y el render muestra
-        // la pantalla normal con acceso liberado.
         if (!data.state.waitingForAuth) {
           setWaitingAuthElectric(false);
         }
+        // (b) Detectar reset del host: el check-in ya no esta completado y
+        // hay que subir foto de nuevo → retrocedemos al Paso 2.
+        if (!data.state.completed && data.state.needsPhoto) {
+          // Reset local de campos para que el Paso 2 arranque limpio.
+          completeCalledRef.current = false;
+          setIdPreview(null);
+          setIdBase64("");
+          setTypedName(data.state.typed.name ?? data.state.ocr?.name ?? "");
+          setTypedDocument(data.state.typed.document ?? data.state.ocr?.document ?? "");
+          setTypedNationality(data.state.typed.nationality ?? data.state.ocr?.nationality ?? "");
+          setOcrAttempts(data.state.ocr ? 1 : 0);
+          setConsentAccepted(false);
+          setElectricityPaid(false);
+          setWaitingAuthElectric(false);
+          setStep(2);
+        }
       } catch { /* silent */ }
-    }, 5000);
+    }, waitingForAnything ? 5000 : 15000);
     return () => { cancelled = true; clearInterval(interval); };
   }, [step, waitingForAnything, booking, bookingId]);
 
