@@ -1105,6 +1105,70 @@ export default function CheckInsPanel() {
   const [enrichRecord, setEnrichRecord] = useState(null as LocalCheckIn | null);
   const [enrichForm, setEnrichForm] = useState({ firstName: "", lastName: "", last4: "" });
 
+  // ─── Review Document Modal ──────────────────────────────────────────────
+  // Al revisar un ID necesitamos ver la foto y los datos leidos/tipeados
+  // antes de aprobar o rechazar. El backend devuelve una signed URL (10 min)
+  // al bucket privado checkin-ids + OCR + lo que el huesped tipeo a mano.
+  type ReviewDetail = {
+    id: string;
+    photoUrl: string | null;
+    hasPhoto: boolean;
+    ocr: { name: string | null; document: string | null; nationality: string | null; confidence: number | null; attempts: number };
+    typed: { name: string | null; document: string | null; nationality: string | null };
+    contact: { email: string | null; whatsapp: string | null; guests: number | null };
+    booking: { guestName: string; checkin: string; checkout: string; nights: number; propertyName: string; channel: string | null };
+    idStatus: "pending" | "uploaded" | "validated" | "rejected";
+  };
+  const [reviewRecord, setReviewRecord] = useState(null as LocalCheckIn | null);
+  const [reviewDetail, setReviewDetail] = useState(null as ReviewDetail | null);
+  const [reviewLoading, setReviewLoading] = useState(false);
+
+  async function openReview(r: LocalCheckIn) {
+    setReviewRecord(r);
+    setReviewDetail(null);
+    setReviewLoading(true);
+    try {
+      const res = await fetch("/api/checkin", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "reviewDetail", id: r.id }),
+        credentials: "include",
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ error: "" }));
+        toast.error(err.error || "No se pudo cargar el documento");
+        setReviewRecord(null);
+        return;
+      }
+      const detail = (await res.json()) as ReviewDetail;
+      setReviewDetail(detail);
+    } catch {
+      toast.error("Error de conexión al cargar el documento");
+      setReviewRecord(null);
+    } finally {
+      setReviewLoading(false);
+    }
+  }
+
+  async function approveFromModal() {
+    if (!reviewRecord) return;
+    await updateRecord(reviewRecord.id, { idStatus: "validated" });
+    setReviewRecord(null);
+    setReviewDetail(null);
+  }
+  async function rejectFromModal() {
+    if (!reviewRecord) return;
+    await updateRecord(reviewRecord.id, { idStatus: "rejected" });
+    setReviewRecord(null);
+    setReviewDetail(null);
+  }
+  async function resetFromModal() {
+    if (!reviewRecord) return;
+    await resetDocument(reviewRecord);
+    setReviewRecord(null);
+    setReviewDetail(null);
+  }
+
   async function handleEnrich() {
     if (!enrichRecord) return;
     if (!enrichForm.firstName || !enrichForm.lastName || enrichForm.last4.length !== 4) return;
@@ -1394,28 +1458,18 @@ export default function CheckInsPanel() {
                   </div>
                   )}
 
-                  {/* Approve/Reject inline when ID uploaded */}
+                  {/* Revisar documento — abre modal con foto + datos OCR/tipeados
+                      para que el host pueda ver qué esta aprobando antes de decidir. */}
                   {r.idStatus === "uploaded" && !r.missingData && (
-                    <div className="flex items-center gap-2 px-1 py-2 bg-amber-50 dark:bg-amber-950/20 border border-amber-200 dark:border-amber-800 rounded-lg">
+                    <button
+                      type="button"
+                      onClick={() => openReview(r)}
+                      className="w-full flex items-center gap-2 px-3 py-2.5 bg-amber-50 dark:bg-amber-950/20 border border-amber-200 dark:border-amber-800 rounded-lg hover:bg-amber-100 dark:hover:bg-amber-950/40 transition-colors"
+                    >
                       <Eye className="w-4 h-4 text-amber-600 shrink-0" />
-                      <span className="text-xs text-amber-700 dark:text-amber-400 flex-1">ID enviado — requiere revisión</span>
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        onClick={() => updateRecord(r.id, { idStatus: "validated" })}
-                        className="h-7 px-3 text-xs border-emerald-400 text-emerald-700 hover:bg-emerald-50 gap-1"
-                      >
-                        <ShieldCheck className="w-3.5 h-3.5" />Aprobar
-                      </Button>
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        onClick={() => updateRecord(r.id, { idStatus: "rejected" })}
-                        className="h-7 px-3 text-xs border-red-400 text-red-600 hover:bg-red-50 gap-1"
-                      >
-                        <ShieldX className="w-3.5 h-3.5" />Rechazar
-                      </Button>
-                    </div>
+                      <span className="text-xs font-semibold text-amber-800 dark:text-amber-300 flex-1 text-left">ID enviado — revisar documento</span>
+                      <span className="text-xs text-amber-700 dark:text-amber-400 font-medium">Ver y decidir →</span>
+                    </button>
                   )}
 
                   {/* Deshacer cuando ya validado o rechazado — permite resetear
@@ -1906,8 +1960,8 @@ export default function CheckInsPanel() {
             </div>
             <div className="pt-4 flex justify-end gap-2">
               <Button variant="outline" onClick={() => setEnrichRecord(null)}>Cancelar</Button>
-              <Button 
-                onClick={handleEnrich} 
+              <Button
+                onClick={handleEnrich}
                 disabled={!enrichForm.firstName || !enrichForm.lastName || enrichForm.last4.length !== 4}
               >
                 Guardar y Activar
@@ -1916,6 +1970,140 @@ export default function CheckInsPanel() {
           </div>
         </DialogContent>
       </Dialog>
+
+      {/* ── Review Document Modal ──────────────────────────────────────────── */}
+      <Dialog open={!!reviewRecord} onOpenChange={(open) => { if (!open) { setReviewRecord(null); setReviewDetail(null); } }}>
+        <DialogContent className="sm:max-w-2xl max-h-[90vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Eye className="w-5 h-5 text-amber-600" />
+              Revisar Documento de Identidad
+            </DialogTitle>
+          </DialogHeader>
+
+          {reviewLoading && (
+            <div className="py-12 text-center text-sm text-muted-foreground">
+              Cargando documento…
+            </div>
+          )}
+
+          {!reviewLoading && reviewDetail && reviewRecord && (
+            <div className="space-y-5 pt-2">
+              {/* Header con datos de la reserva */}
+              <div className="bg-slate-50 dark:bg-slate-900/40 border border-slate-200 dark:border-slate-800 rounded-xl p-3 space-y-1">
+                <p className="text-sm font-semibold text-slate-800 dark:text-slate-200">
+                  {reviewDetail.booking.propertyName}
+                  {reviewDetail.booking.channel && (
+                    <span className="ml-2 text-xs font-normal text-slate-500 uppercase">· {reviewDetail.booking.channel}</span>
+                  )}
+                </p>
+                <p className="text-xs text-slate-600 dark:text-slate-400">
+                  {reviewDetail.booking.checkin} → {reviewDetail.booking.checkout} ({reviewDetail.booking.nights}n)
+                </p>
+              </div>
+
+              {/* Foto del ID */}
+              <div className="space-y-2">
+                <Label className="text-xs uppercase tracking-wider text-slate-500 font-semibold">Foto del documento</Label>
+                {reviewDetail.photoUrl ? (
+                  <a href={reviewDetail.photoUrl} target="_blank" rel="noopener noreferrer"
+                    className="block bg-slate-900 rounded-xl overflow-hidden border border-slate-200 dark:border-slate-700">
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img
+                      src={reviewDetail.photoUrl}
+                      alt="Documento de identidad"
+                      className="w-full max-h-[480px] object-contain"
+                    />
+                  </a>
+                ) : (
+                  <div className="bg-slate-50 dark:bg-slate-900/40 border border-dashed border-slate-300 dark:border-slate-700 rounded-xl p-6 text-center text-sm text-slate-500">
+                    {reviewDetail.hasPhoto
+                      ? "No se pudo generar el link firmado. Probá refrescar."
+                      : "El huésped aún no subió la foto del documento."}
+                  </div>
+                )}
+                {reviewDetail.photoUrl && (
+                  <p className="text-[11px] text-slate-400 text-center">Tocá la imagen para abrirla en tamaño completo. El link firmado expira en 10 minutos.</p>
+                )}
+              </div>
+
+              {/* Datos leidos (OCR) vs tipeados por el huesped */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                <div className="bg-white dark:bg-slate-900 border border-emerald-200 dark:border-emerald-900 rounded-xl p-3 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <Label className="text-xs uppercase tracking-wider text-emerald-700 dark:text-emerald-400 font-semibold">
+                      Leído por OCR
+                    </Label>
+                    {typeof reviewDetail.ocr.confidence === "number" && (
+                      <Badge className="bg-emerald-500/20 text-emerald-700 border-emerald-500/30 text-[10px]">
+                        {Math.round(reviewDetail.ocr.confidence * 100)}% conf.
+                      </Badge>
+                    )}
+                  </div>
+                  <DataRow label="Nombre" value={reviewDetail.ocr.name} />
+                  <DataRow label="Documento" value={reviewDetail.ocr.document} />
+                  <DataRow label="Nacionalidad" value={reviewDetail.ocr.nationality} />
+                </div>
+                <div className="bg-white dark:bg-slate-900 border border-sky-200 dark:border-sky-900 rounded-xl p-3 space-y-2">
+                  <Label className="text-xs uppercase tracking-wider text-sky-700 dark:text-sky-400 font-semibold">
+                    Tipeado por el huésped
+                  </Label>
+                  <DataRow label="Nombre" value={reviewDetail.typed.name} />
+                  <DataRow label="Documento" value={reviewDetail.typed.document} />
+                  <DataRow label="Nacionalidad" value={reviewDetail.typed.nationality} />
+                </div>
+              </div>
+
+              {/* Contacto */}
+              <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-3 space-y-2">
+                <Label className="text-xs uppercase tracking-wider text-slate-500 font-semibold">Contacto</Label>
+                <DataRow label="Email" value={reviewDetail.contact.email} />
+                <DataRow label="WhatsApp" value={reviewDetail.contact.whatsapp} />
+                <DataRow label="Cantidad de huéspedes" value={reviewDetail.contact.guests != null ? String(reviewDetail.contact.guests) : null} />
+              </div>
+
+              {/* Acciones */}
+              <div className="flex flex-col sm:flex-row gap-2 pt-2">
+                <Button
+                  onClick={approveFromModal}
+                  className="flex-1 bg-emerald-600 hover:bg-emerald-700 text-white gap-2"
+                >
+                  <ShieldCheck className="w-4 h-4" />Aprobar documento
+                </Button>
+                <Button
+                  onClick={rejectFromModal}
+                  variant="outline"
+                  className="flex-1 border-red-400 text-red-600 hover:bg-red-50 gap-2"
+                >
+                  <ShieldX className="w-4 h-4" />Rechazar
+                </Button>
+                <Button
+                  onClick={resetFromModal}
+                  variant="outline"
+                  className="sm:w-auto border-slate-300 text-slate-700 hover:bg-slate-100 gap-2"
+                  title="Borra la foto y los datos OCR. El huésped va a tener que subir su documento de nuevo."
+                >
+                  <RefreshCw className="w-4 h-4" />Resetear
+                </Button>
+              </div>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
+    </div>
+  );
+}
+
+// Fila clave/valor reusada en el modal de revision. Muestra "—" si el
+// valor esta vacio para que quede claro visualmente que falto captura.
+function DataRow({ label, value }: { label: string; value: string | null | undefined }) {
+  const empty = !value || !value.trim();
+  return (
+    <div className="flex items-baseline justify-between gap-2">
+      <span className="text-[11px] uppercase tracking-wider text-slate-500 shrink-0">{label}</span>
+      <span className={`text-sm text-right font-medium ${empty ? "text-slate-400 italic" : "text-slate-800 dark:text-slate-200"}`}>
+        {empty ? "—" : value}
+      </span>
     </div>
   );
 }

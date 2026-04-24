@@ -204,6 +204,7 @@ export async function POST(req: NextRequest) {
       case "resetId":      return staffResetId(data);
       case "upsertBatch":  return staffUpsertBatch(data);
       case "authorize":    return staffAuthorize(data);
+      case "reviewDetail": return staffReviewDetail(data);
 
       // ── Guest actions (no session, soft token required) ───────────────────
       case "auth":              return guestAuth(data);
@@ -566,6 +567,69 @@ async function staffAuthorize(data: Record<string, unknown>) {
   return NextResponse.json({
     success: true,
     record: rowToApi(updated as CheckinRow, { exposeWifi: true }),
+  });
+}
+
+async function staffReviewDetail(data: Record<string, unknown>) {
+  // Devuelve todo lo necesario para revisar un documento: signed URL de la
+  // foto (60s, acceso privado al bucket), datos OCR, datos tipeados por el
+  // huésped, contacto y datos de reserva. Scope: el staff autenticado solo
+  // ve records de su propio tenant (RLS del select ya lo fuerza).
+  const { tenantId, supabase } = await getAuthenticatedTenant();
+  if (!tenantId) return bad(401, "No autenticado");
+  const id = String(data.id ?? "");
+  if (!id) return bad(400, "Falta id");
+
+  const { data: row, error } = await supabase
+    .from("checkin_records")
+    .select("*")
+    .eq("id", id)
+    .maybeSingle<CheckinRow & {
+      guest_typed_name?: string | null;
+      guest_typed_document?: string | null;
+      guest_typed_nationality?: string | null;
+      ocr_attempts?: number | null;
+    }>();
+  if (error || !row) return bad(404, "No encontrado");
+
+  let photoUrl: string | null = null;
+  if (row.id_photo_path) {
+    const { data: signed } = await supabaseAdmin.storage
+      .from("checkin-ids")
+      .createSignedUrl(row.id_photo_path, 60 * 10); // 10 min, suficiente para revisar
+    photoUrl = signed?.signedUrl ?? null;
+  }
+
+  return NextResponse.json({
+    id: row.id,
+    photoUrl,
+    hasPhoto: Boolean(row.id_photo_path),
+    ocr: {
+      name: row.ocr_name ?? null,
+      document: row.ocr_document ?? null,
+      nationality: row.ocr_nationality ?? null,
+      confidence: row.ocr_confidence ?? null,
+      attempts: row.ocr_attempts ?? 0,
+    },
+    typed: {
+      name: row.guest_typed_name ?? null,
+      document: row.guest_typed_document ?? null,
+      nationality: row.guest_typed_nationality ?? null,
+    },
+    contact: {
+      email: row.guest_email ?? null,
+      whatsapp: row.guest_whatsapp ?? null,
+      guests: row.guest_count ?? null,
+    },
+    booking: {
+      guestName: row.guest_name,
+      checkin: row.checkin,
+      checkout: row.checkout,
+      nights: row.nights,
+      propertyName: row.property_name,
+      channel: row.channel ?? null,
+    },
+    idStatus: row.id_status,
   });
 }
 
