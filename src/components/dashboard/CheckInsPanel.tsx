@@ -1531,21 +1531,27 @@ export default function CheckInsPanel() {
                     </button>
                   )}
 
-                  {/* Deshacer cuando ya validado o rechazado — permite resetear
-                      si el host tocó por accidente o los datos OCR salieron mal. */}
-                  {(r.idStatus === "validated" || r.idStatus === "rejected") && !r.missingData && (
+                  {/* Reiniciar check-in — disponible siempre que la reserva tenga
+                      datos (no missingData). Cubre todos los casos: validado,
+                      rechazado, o pending con check-in completado que necesita
+                      forzar reset (revoca PIN TTLock, borra foto, huesped vuelve
+                      al Paso 2). */}
+                  {!r.missingData && (
                     <div className="flex items-center gap-2 px-1 py-2 bg-slate-50 dark:bg-slate-900/30 border border-slate-200 dark:border-slate-700 rounded-lg">
                       <span className="text-xs text-slate-600 flex-1">
-                        {r.idStatus === "validated" ? "✓ ID aprobado" : "✗ ID rechazado"}
-                        {" — ¿lo hiciste por error?"}
+                        {r.idStatus === "validated" && "✓ ID aprobado"}
+                        {r.idStatus === "rejected" && "✗ ID rechazado"}
+                        {r.idStatus === "pending" && "Sin documento subido aún"}
+                        {r.idStatus === "uploaded" && "ID pendiente de revisión"}
                       </span>
                       <Button
                         size="sm"
                         variant="outline"
                         onClick={() => resetDocument(r)}
                         className="h-7 px-3 text-xs border-slate-300 text-slate-700 hover:bg-slate-100 gap-1"
+                        title="Borra foto, revoca PIN en la cerradura, y manda al huésped al Paso 2"
                       >
-                        <RefreshCw className="w-3.5 h-3.5" />Resetear documento
+                        <RefreshCw className="w-3.5 h-3.5" />Reiniciar check-in
                       </Button>
                     </div>
                   )}
