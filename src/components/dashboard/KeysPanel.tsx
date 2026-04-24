@@ -270,7 +270,29 @@ export default function KeysPanel() {
   };
 
   useEffect(() => {
-    fetchData();
+    let cancelled = false;
+    (async () => {
+      await fetchData();
+      if (cancelled) return;
+      // Disparar sync de pending/retry/stuck desde el cliente.
+      // En Vercel serverless los background tasks (void fn()) mueren
+      // cuando la request GET cierra, asi que el trigger tiene que ser
+      // una request HTTP explicita del navegador — aca.
+      try {
+        const syncRes = await fetch("/api/cron/sync-pins", { credentials: "include" });
+        if (syncRes.ok && !cancelled) {
+          const syncData = (await syncRes.json()) as { processed?: number; synced?: number };
+          if ((syncData.processed ?? 0) > 0) {
+            // Re-fetch solo si el sync procesó algo — asi el panel refleja
+            // los nuevos sync_status.
+            await fetchData();
+          }
+        }
+      } catch {
+        // Silent — el badge del PIN ya muestra el estado actual de la BD.
+      }
+    })();
+    return () => { cancelled = true; };
   }, []);
 
   // Programa el PIN en la cerradura TTLock. Silencioso — solo devuelve el

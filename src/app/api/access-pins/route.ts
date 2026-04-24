@@ -32,49 +32,11 @@ export async function GET() {
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
 
-  // Fire & forget: cuando el host abre el panel, re-intentamos sync de
-  // todos los pending/retry cuya ventana de backoff ya venció. Reemplaza
-  // el cron de Vercel (limitado a 2/dia en plan free). Tambien incluimos
-  // filas stuck en 'syncing' por >2 min — Vercel puede matar background
-  // tasks a mitad y el sync queda trabado.
-  const pins = (data ?? []) as Array<{
-    id: string;
-    sync_status?: string | null;
-    sync_next_retry_at?: string | null;
-    sync_last_attempt_at?: string | null;
-    status?: string | null;
-  }>;
-  const now = Date.now();
-  const staleCutoff = now - 2 * 60 * 1000;
-  const pendingIds = pins
-    .filter((p) => {
-      if (p.status !== "active") return false;
-      if (!p.sync_status || p.sync_status === "synced" || p.sync_status === "failed") return false;
-      // 'syncing' stuck: contarlo como pendiente si lleva >2 min sin progreso
-      if (p.sync_status === "syncing") {
-        if (!p.sync_last_attempt_at) return true;
-        return new Date(p.sync_last_attempt_at).getTime() < staleCutoff;
-      }
-      // pending / retry / offline_lock con backoff vencido
-      if (!p.sync_next_retry_at) return true;
-      return new Date(p.sync_next_retry_at).getTime() <= now;
-    })
-    .slice(0, 10) // tope pequeño para no bloquear la respuesta
-    .map((p) => p.id);
-
-  if (pendingIds.length > 0) {
-    // void: no esperamos. El usuario ve la lista actual; el siguiente
-    // refetch del panel mostrara los nuevos estados.
-    void Promise.all(
-      pendingIds.map((id) =>
-        syncPinToLock(id).catch((err) => {
-          console.warn("[access-pins/GET] background sync failed:", err);
-        }),
-      ),
-    );
-  }
-
-  return NextResponse.json({ pins });
+  // NOTA: el trigger de sync del GET se movio al cliente (KeysPanel llama
+  // explicitamente a /api/cron/sync-pins). Fire-and-forget aca no funciona
+  // en Vercel serverless — el background task muere al cerrar la request y
+  // la fila queda stuck en 'syncing'.
+  return NextResponse.json({ pins: data ?? [] });
 }
 
 // POST /api/access-pins → crea un PIN
