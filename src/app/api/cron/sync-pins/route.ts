@@ -17,6 +17,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { syncPinToLock } from "@/lib/ttlock/sync-pin";
+import { getAuthenticatedTenant } from "@/lib/supabase/server";
 
 export const maxDuration = 60;
 
@@ -25,11 +26,22 @@ export const maxDuration = 60;
 const BATCH_SIZE = 20;
 
 export async function GET(req: NextRequest) {
-  // Auth opcional: si CRON_SECRET esta seteado, exigir header.
+  // Auth dual: aceptamos cron-job.org (Bearer CRON_SECRET) o host autenticado
+  // (cookie de sesion). El KeysPanel del dashboard llega con cookie, no
+  // Bearer; cron-job.org no tiene cookie pero si Bearer.
   const expectedSecret = process.env.CRON_SECRET;
-  if (expectedSecret) {
-    const authHeader = req.headers.get("authorization") ?? "";
-    if (authHeader !== `Bearer ${expectedSecret}`) {
+  const authHeader = req.headers.get("authorization") ?? "";
+  const hasValidBearer = expectedSecret && authHeader === `Bearer ${expectedSecret}`;
+
+  let tenantId: string | null = null;
+  if (!hasValidBearer) {
+    try {
+      const auth = await getAuthenticatedTenant();
+      tenantId = auth.tenantId ?? null;
+    } catch {
+      tenantId = null;
+    }
+    if (!tenantId) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
   }
@@ -37,7 +49,7 @@ export async function GET(req: NextRequest) {
   const now = new Date().toISOString();
   const staleCutoff = new Date(Date.now() - 2 * 60 * 1000).toISOString();
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const { data: pending } = await (supabaseAdmin.from("access_pins") as any)
+  let query = (supabaseAdmin.from("access_pins") as any)
     .select("id")
     .eq("status", "active")
     .or(
@@ -46,6 +58,14 @@ export async function GET(req: NextRequest) {
     )
     .order("sync_next_retry_at", { ascending: true, nullsFirst: true })
     .limit(BATCH_SIZE);
+
+  // Si la auth fue por cookie de tenant, scopeamos al tenant. Si fue Bearer
+  // (cron externo), procesamos todos los tenants.
+  if (tenantId) {
+    query = query.eq("tenant_id", tenantId);
+  }
+
+  const { data: pending } = await query;
 
   const rows = (pending ?? []) as { id: string }[];
   if (rows.length === 0) {
