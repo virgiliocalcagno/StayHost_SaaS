@@ -11,13 +11,16 @@
 --
 -- Politica: solo borramos tareas NO completed. Las completed se mantienen
 -- como historial de limpiezas que efectivamente se hicieron.
+--
+-- Cast b.id::text porque cleaning_tasks.booking_id es text mientras que
+-- bookings.id es uuid. Postgres no compara cross-type sin cast explicito.
 
 BEGIN;
 
 -- 1) Tareas asociadas a reservas marcadas como cancelled.
 DELETE FROM public.cleaning_tasks ct
 USING public.bookings b
-WHERE ct.booking_id = b.id
+WHERE ct.booking_id = b.id::text
   AND b.status = 'cancelled'
   AND ct.status <> 'completed';
 
@@ -25,13 +28,13 @@ WHERE ct.booking_id = b.id
 DELETE FROM public.cleaning_tasks
 WHERE booking_id IS NOT NULL
   AND status <> 'completed'
-  AND booking_id NOT IN (SELECT id FROM public.bookings);
+  AND booking_id NOT IN (SELECT id::text FROM public.bookings);
 
 -- 3) Tareas asociadas a bloqueos (source='block') — nunca deberian haber
 -- existido pero por las dudas. Los bloqueos no generan limpieza.
 DELETE FROM public.cleaning_tasks ct
 USING public.bookings b
-WHERE ct.booking_id = b.id
+WHERE ct.booking_id = b.id::text
   AND b.source = 'block';
 
 COMMIT;
