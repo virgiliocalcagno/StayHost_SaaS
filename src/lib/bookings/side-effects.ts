@@ -10,6 +10,14 @@
  * Ambos son idempotentes — chequean por booking_id antes de insertar.
  * Errores en cualquiera son non-fatal: el booking ya existe, el host
  * puede recrear el PIN o llenar el checkin manualmente si fallaron.
+ *
+ * ⚠️ CONTRATO DE TENANCY ⚠️
+ * Estos helpers usan supabaseAdmin (bypass de RLS) y escriben con el
+ * tenant_id que reciben por argumento. El llamador es responsable de
+ * haber validado que ese tenant_id corresponde al usuario autenticado
+ * (via getAuthenticatedTenant() o equivalente) ANTES de invocar.
+ * Llamarlos con un tenant_id no validado escribiria rows de un tenant
+ * en otro — agujero de seguridad.
  */
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { syncPinToLock } from "@/lib/ttlock/sync-pin";

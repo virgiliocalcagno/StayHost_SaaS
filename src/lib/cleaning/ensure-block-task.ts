@@ -36,17 +36,8 @@ export async function ensureCleaningTaskForBlock(args: {
   propertyId: string;
   checkOut: string;
   blockType: string | null;
-}): Promise<{ created: boolean }> {
+}): Promise<{ created: boolean; updated: boolean }> {
   const { supabase, tenantId, bookingId, propertyId, checkOut, blockType } = args;
-
-  // Idempotente: si ya hay task con este booking_id, no creamos otra.
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const { data: existing } = await (supabase.from("cleaning_tasks") as any)
-    .select("id")
-    .eq("booking_id", bookingId)
-    .limit(1);
-
-  if (existing && existing.length > 0) return { created: false };
 
   // La hora de la limpieza es el check-out de la propiedad. Si no esta
   // configurado, default 12:00.
@@ -58,6 +49,34 @@ export async function ensureCleaningTaskForBlock(args: {
 
   const dueTime = prop?.check_out_time ?? "12:00";
   const label = BLOCK_TYPE_LABELS[blockType ?? "other"] ?? "Bloqueo";
+
+  // Si ya hay task pendiente/in_progress para este bloqueo, hacemos UPDATE
+  // del label y due_date en lugar de delete+insert. Asi preservamos el id,
+  // historial de cambios, y FKs (ej. fotos de la limpieza si las hubiera).
+  // Si la task estaba completed, no la tocamos (historial).
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const { data: existing } = await (supabase.from("cleaning_tasks") as any)
+    .select("id, status")
+    .eq("booking_id", bookingId)
+    .neq("status", "completed")
+    .limit(1);
+
+  if (existing && existing.length > 0) {
+    const existingId = (existing[0] as { id: string }).id;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const { error: updErr } = await (supabase.from("cleaning_tasks") as any)
+      .update({
+        due_date: checkOut,
+        due_time: dueTime,
+        guest_name: label,
+      })
+      .eq("id", existingId);
+    if (updErr) {
+      console.error("[ensureCleaningTaskForBlock] update failed:", updErr.message);
+      return { created: false, updated: false };
+    }
+    return { created: false, updated: true };
+  }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const { error } = await (supabase.from("cleaning_tasks") as any).insert({
@@ -78,9 +97,9 @@ export async function ensureCleaningTaskForBlock(args: {
 
   if (error) {
     console.error("[ensureCleaningTaskForBlock] insert failed:", error.message);
-    return { created: false };
+    return { created: false, updated: false };
   }
-  return { created: true };
+  return { created: true, updated: false };
 }
 
 /**

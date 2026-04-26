@@ -18,10 +18,9 @@
  * Side effects:
  *   - UPDATE atomico de bookings: source/status/datos del huesped/precio,
  *     limpia block_type y requires_cleaning, genera channel_code SH....
- *   - Borra la cleaning_task del bloqueo (si tenia requires_cleaning).
- *     El flujo normal de reserva la recreara automaticamente — pero como
- *     ese flujo es por cron / sync iCal, la creamos aca tambien para que
- *     aparezca de inmediato.
+ *   - Borra la cleaning_task del bloqueo (si tenia requires_cleaning) y
+ *     llama ensureCleaningTasksForProperty para recrearla con el label
+ *     correcto de reserva. Es sincronico — no dependemos del cron.
  *   - Crea PIN de acceso + checkin_record (mismos helpers que POST).
  *
  * Devuelve channelCode + phoneLast4 → la UI muestra modal "Reserva
@@ -126,13 +125,35 @@ export async function POST(
       requires_cleaning: false,
     };
 
+    // Guard de idempotencia: el UPDATE solo pega si el booking SIGUE siendo
+    // un bloqueo. Asi ante doble click (dos requests concurrentes que ambas
+    // pasan la validacion isManual de arriba), solo la primera updatea — la
+    // segunda devuelve count=0 y respondemos "ya convertido" sin generar un
+    // segundo channel_code ni duplicar PIN/checkin_record.
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const { error: updateErr } = await (supabase.from("bookings") as any)
-      .update(updateRow)
-      .eq("id", bookingId);
+    const { error: updateErr, count: updateCount } = await (supabase.from("bookings") as any)
+      .update(updateRow, { count: "exact" })
+      .eq("id", bookingId)
+      .eq("source", "block");
 
     if (updateErr) {
       return NextResponse.json({ error: updateErr.message }, { status: 500 });
+    }
+    if (!updateCount) {
+      // Otro request lo convirtio antes — devolvemos los datos actuales
+      // del booking en vez de crear un segundo channel_code.
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const { data: existing } = await (supabase.from("bookings") as any)
+        .select("channel_code, phone_last4")
+        .eq("id", bookingId)
+        .single();
+      return NextResponse.json({
+        ok: true,
+        idempotent: true,
+        id: bookingId,
+        channelCode: existing?.channel_code ?? null,
+        phoneLast4: existing?.phone_last4 ?? null,
+      });
     }
 
     // Limpiar la cleaning_task del bloqueo (si tenia). Despues

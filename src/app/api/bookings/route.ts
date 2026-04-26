@@ -168,16 +168,12 @@ export async function POST(req: NextRequest) {
 
     let insertRes = await supabase.from("bookings").insert(insertRow as never).select("id").single();
 
-    // Fallback: si las columnas nuevas no existen todavía en prod, reintentar
-    // sin ellas. Una vez corridas las migraciones esto es no-op.
-    const errMsg = insertRes.error?.message ?? "";
-    if (
-      errMsg.includes("channel_code") ||
-      errMsg.includes("phone_last4") ||
-      errMsg.includes("guest_doc_photo_path") ||
-      errMsg.includes("block_type") ||
-      errMsg.includes("requires_cleaning")
-    ) {
+    // Fallback: si las columnas nuevas no existen todavia en prod, reintentar
+    // sin ellas. Matcheamos por error code 42703 (undefined_column) en lugar
+    // de string-match en el message — un check-constraint que mencione una
+    // de estas columnas ya no dispara el retry por error.
+    const errCode = (insertRes.error as { code?: string } | null)?.code;
+    if (errCode === "42703") {
       delete insertRow.channel_code;
       delete insertRow.phone_last4;
       delete insertRow.guest_doc_photo_path;
@@ -382,10 +378,11 @@ export async function PATCH(req: NextRequest) {
       await cascadeCancelBooking(bookingId);
     }
 
-    // Sincronizar cleaning_task de bloqueos cuando cambian flag o tipo.
-    // - requires_cleaning true → asegurar task (idempotente)
+    // Sincronizar cleaning_task de bloqueos cuando cambian flag, tipo o
+    // check_out. ensureCleaningTaskForBlock hace upsert: si la task ya
+    // existe (no-completed), updatea label y due_date; si no, la crea.
+    // - requires_cleaning true → ensure (insert o update segun caso)
     // - requires_cleaning false → quitar task pendiente
-    // - block_type cambia con flag activo → recrear task con label nuevo
     if ("requires_cleaning" in patch || "block_type" in patch || patch.check_out) {
       try {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -395,11 +392,6 @@ export async function PATCH(req: NextRequest) {
           .single();
         if (bk && bk.source === "block") {
           if (bk.requires_cleaning) {
-            // Si cambio el block_type, borramos la task vieja para recrearla
-            // con el label correcto.
-            if ("block_type" in patch) {
-              await removeCleaningTaskForBlock({ supabase: supabaseAdmin, bookingId });
-            }
             await ensureCleaningTaskForBlock({
               supabase: supabaseAdmin,
               tenantId: bk.tenant_id,

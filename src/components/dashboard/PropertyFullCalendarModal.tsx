@@ -1157,9 +1157,20 @@ function ConvertBlockPanel({
       toast.error("Nombre y telefono son requeridos.");
       return;
     }
-    const priceNum = Number(totalPrice);
-    if (Number.isNaN(priceNum)) {
+    // Number("") === 0, no NaN — chequeamos string vacio explicito
+    // antes para no aceptar reservas con precio cero por accidente.
+    const priceTrimmed = totalPrice.trim();
+    if (priceTrimmed === "") {
+      toast.error("El precio total es requerido.");
+      return;
+    }
+    const priceNum = Number(priceTrimmed);
+    if (Number.isNaN(priceNum) || priceNum < 0) {
       toast.error("El precio total debe ser un numero valido.");
+      return;
+    }
+    if (!Number.isInteger(numGuests) || numGuests < 1) {
+      toast.error("Numero de huespedes invalido.");
       return;
     }
     setSubmitting(true);
@@ -1178,6 +1189,19 @@ function ConvertBlockPanel({
           source: "direct",
         }),
       });
+      // Chequeamos res.ok antes de parsear: si el server devuelve 500
+      // con cuerpo no-JSON (ej. error de Vercel edge), .json() throw y
+      // caemos al catch generico sin perder el status real.
+      if (!res.ok) {
+        let errMsg = `Error ${res.status}`;
+        try {
+          const data = await res.json();
+          if (data?.error) errMsg = data.error;
+        } catch {}
+        toast.error(errMsg);
+        setSubmitting(false);
+        return;
+      }
       const data = await res.json();
       if (data.ok) {
         toast.success(
