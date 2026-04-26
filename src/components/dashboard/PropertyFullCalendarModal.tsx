@@ -393,16 +393,13 @@ export default function PropertyFullCalendarModal({
   };
 
   // mousedown: inicia drag O segundo click del click-click (si ya hay start).
+  // El handler asume que la celda esta libre para nuevo rango — el render
+  // de cada celda decide antes si redirigir el click a onBookingClick (caso
+  // dia FULLY ocupado por una reserva o bloqueo intermedio). Asi una celda
+  // con barra parcial (departing/arriving) sigue permitiendo click → rango,
+  // que es lo que necesita un back-to-back.
   const handleDayMouseDown = useCallback(
-    (dayStr: string, bookingsOnDay: Booking[]) => {
-      const firstBooking = bookingsOnDay[0];
-      if (firstBooking) {
-        setSelectedBookingId(String(firstBooking.id));
-        setSelectedTaskId(null);
-        setRangeStart(null);
-        setRangeEnd(null);
-        return;
-      }
+    (dayStr: string) => {
       setSelectedBookingId(null);
       setSelectedTaskId(null);
       // Si ya hay un start seleccionado (pero sin end), este click es el
@@ -703,7 +700,7 @@ type MonthBlockProps = {
   selectedTaskId: string | null;
   checkOutTime: string;
   checkInTime: string;
-  onDayMouseDown: (dayStr: string, bookingsOnDay: Booking[]) => void;
+  onDayMouseDown: (dayStr: string) => void;
   onDayMouseEnter: (dayStr: string) => void;
   onBookingClick: (b: Booking) => void;
   onTaskClick: (t: CleaningTask) => void;
@@ -859,9 +856,6 @@ function MonthBlock({
             }
           }
 
-          // onDay mantiene la API del callback de mouseDown — si la celda
-          // tiene cualquier item, no es libre para empezar un rango.
-          const onDay = items.map((it) => it.booking);
           const isInRange = (() => {
             if (!rangeStart) return false;
             const end = rangeEnd ?? rangeStart;
@@ -872,6 +866,11 @@ function MonthBlock({
           const isRangeStart = d.str === rangeStart;
           const isRangeEnd = d.str === (rangeEnd ?? rangeStart) && rangeStart !== null;
 
+          // Si la celda esta TOTALMENTE cubierta por un item (full day:
+          // leftPct=0 + widthPct=100), click en zona vacia abre el detalle
+          // del booking. Si la cobertura es parcial (departing o arriving),
+          // hay espacio libre → click inicia rango (clave para back-to-back).
+          const fullCoverItem = items.find((it) => it.leftPct === 0 && it.widthPct === 100);
           return (
             <div
               key={d.str}
@@ -880,7 +879,11 @@ function MonthBlock({
                 // Click izquierdo solamente (0). Derecho o rueda: ignorar.
                 if (e.button !== 0) return;
                 e.preventDefault(); // evita seleccion de texto al drag
-                onDayMouseDown(d.str, onDay);
+                if (fullCoverItem) {
+                  onBookingClick(fullCoverItem.booking);
+                  return;
+                }
+                onDayMouseDown(d.str);
               }}
               onMouseEnter={() => onDayMouseEnter(d.str)}
               style={idx === 0 ? { gridColumnStart: startCol } : undefined}
