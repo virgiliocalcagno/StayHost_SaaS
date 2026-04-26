@@ -13,6 +13,10 @@ import { deleteTTLockPin } from "@/lib/ttlock/delete-pin";
  *   4. Borrar foto del bucket `checkin-ids` (best-effort)
  *   5. DELETE checkin_records
  *   6. DELETE access_pins
+ *   7. DELETE cleaning_tasks NO completadas — las completed se mantienen
+ *      como historial de limpiezas ya hechas. Las pending/assigned/in_progress
+ *      asociadas a una reserva cancelada quedaban huerfanas (la limpiadora
+ *      seguia viendo la tarea aunque ya no haya huesped).
  *
  * Por qué borramos el PIN TTLock: si un huésped cancela y el código sigue
  * activo hasta `valid_to`, puede seguir entrando a la propiedad durante días
@@ -33,12 +37,14 @@ export async function cascadeCancelBooking(bookingId: string): Promise<{
   photosRemoved: number;
   ttlockPinsRevoked: number;
   ttlockPinsFailed: number;
+  cleaningTasksRemoved: number;
 }> {
   let checkinRecordsRemoved = 0;
   let pinsRemoved = 0;
   let photosRemoved = 0;
   let ttlockPinsRevoked = 0;
   let ttlockPinsFailed = 0;
+  let cleaningTasksRemoved = 0;
 
   // 1) Leer checkin_records ANTES de borrar — necesitamos el path de la foto
   // y el tenant_id para el limpio de Storage.
@@ -130,11 +136,31 @@ export async function cascadeCancelBooking(bookingId: string): Promise<{
     console.error("[cascadeCancelBooking] access_pins exception:", err);
   }
 
+  // 7) Borrar cleaning_tasks NO completadas. Las completed se mantienen como
+  // historial — la limpieza fisica ya ocurrio aunque despues se cancelara
+  // la reserva. Las demas (pending/assigned/in_progress/issue/etc.) quedaban
+  // colgadas en el panel de Limpiezas confundiendo a la limpiadora.
+  try {
+    const { error, count } = await supabaseAdmin
+      .from("cleaning_tasks")
+      .delete({ count: "exact" })
+      .eq("booking_id", bookingId)
+      .neq("status", "completed");
+    if (error) {
+      console.error("[cascadeCancelBooking] cleaning_tasks delete error:", error.message);
+    } else {
+      cleaningTasksRemoved = count ?? 0;
+    }
+  } catch (err) {
+    console.error("[cascadeCancelBooking] cleaning_tasks exception:", err);
+  }
+
   return {
     checkinRecordsRemoved,
     pinsRemoved,
     photosRemoved,
     ttlockPinsRevoked,
     ttlockPinsFailed,
+    cleaningTasksRemoved,
   };
 }
