@@ -253,6 +253,9 @@ export default function PropertyFullCalendarModal({
   // cambiar en el panel antes de guardar.
   const [blockType, setBlockType] = useState<BlockType>("maintenance");
   const [blockRequiresCleaning, setBlockRequiresCleaning] = useState(true);
+  // Conversion bloqueo → reserva. Cuando esta seteado, el side-panel
+  // muestra ConvertBlockPanel en lugar de BookingDetailPanel.
+  const [convertingBookingId, setConvertingBookingId] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   // Drag-to-select: cuando el usuario apreta el mouse en un dia libre y
   // lo arrastra sobre otras celdas, el rango se va actualizando en vivo.
@@ -281,6 +284,7 @@ export default function PropertyFullCalendarModal({
       setBlockNote("");
       setBlockType("maintenance");
       setBlockRequiresCleaning(BLOCK_TYPE_DEFAULT_CLEANING.maintenance);
+      setConvertingBookingId(null);
     }
   }, [open, property?.id]);
 
@@ -618,8 +622,26 @@ export default function PropertyFullCalendarModal({
 
           {/* Side panel */}
           <aside className="w-[340px] border-l bg-muted/20 shrink-0 overflow-y-auto">
-            {selectedBooking ? (
-              <BookingDetailPanel booking={selectedBooking} onClose={() => setSelectedBookingId(null)} />
+            {convertingBookingId && selectedBooking ? (
+              <ConvertBlockPanel
+                booking={selectedBooking}
+                onClose={() => setConvertingBookingId(null)}
+                onConverted={() => {
+                  setConvertingBookingId(null);
+                  setSelectedBookingId(null);
+                  window.dispatchEvent(new CustomEvent("stayhost:bookings-updated"));
+                }}
+              />
+            ) : selectedBooking ? (
+              <BookingDetailPanel
+                booking={selectedBooking}
+                onClose={() => setSelectedBookingId(null)}
+                onConvertClick={
+                  isManualBlock(selectedBooking)
+                    ? () => setConvertingBookingId(String(selectedBooking.id))
+                    : undefined
+                }
+              />
             ) : selectedTask ? (
               <TaskDetailPanel task={selectedTask} onClose={() => setSelectedTaskId(null)} />
             ) : rangeStart ? (
@@ -779,31 +801,30 @@ function MonthBlock({
             const isMiddle = b.start < d.str && d.str < b.end;
 
             if (block) {
-              // Bloqueos: simetricos a las reservas. El bloqueo dura hasta
-              // la HORA de check-out de la propiedad en su dia end (no hasta
-              // las 00:00) — asi el host puede recibir una reserva entrante
-              // ese mismo dia sin sacrificar el dia entero.
+              // Bloqueos manuales: identicos a una reserva en terminos de
+              // tiempo. Arrancan a la hora de check-in del dia start y
+              // terminan a la hora de check-out del dia end. Asi otros
+              // huespedes pueden entrar/salir el mismo dia sin chocar.
+              // (Bloqueos de emergencia 24h iran como block_type='emergency'
+              // en una iteracion futura — caso raro segun el host).
               if (isMiddle) {
                 items.push({ booking: b, leftPct: 0, widthPct: 100, roundLeft: false, roundRight: false });
               } else if (isStart && !isEnd) {
-                // Si hay reserva saliendo el mismo dia → bloqueo arranca
-                // donde termina la reserva (no se superponen).
-                if (reservaDeparting) {
-                  items.push({
-                    booking: b,
-                    leftPct: checkOutPct,
-                    widthPct: 100 - checkOutPct,
-                    roundLeft: true,
-                    roundRight: false,
-                  });
-                } else {
-                  items.push({ booking: b, leftPct: 0, widthPct: 100, roundLeft: false, roundRight: false });
-                }
+                // Empieza a la hora de check-in. Si hay reserva saliendo el
+                // mismo dia (back-to-back), empieza despues del checkOut
+                // para que las dos barras no se solapen.
+                const left = reservaDeparting ? checkOutPct : checkInPct;
+                items.push({
+                  booking: b,
+                  leftPct: left,
+                  widthPct: 100 - left,
+                  roundLeft: true,
+                  roundRight: false,
+                });
               } else if (isEnd && !isStart) {
-                // Dia end del bloqueo: ocupa la manana hasta checkOutPct.
-                // Si despues entra una reserva (arriving en checkInPct..100),
-                // queda un hueco visible entre los dos = ventana real para
-                // que el host complete el mantenimiento y prepare la unidad.
+                // Termina a la hora de check-out. Si despues entra una
+                // reserva (arriving en checkInPct..100), queda un hueco
+                // visible entre los dos = ventana real de limpieza.
                 items.push({
                   booking: b,
                   leftPct: 0,
@@ -969,7 +990,15 @@ function MonthBlock({
   );
 }
 
-function BookingDetailPanel({ booking, onClose }: { booking: Booking; onClose: () => void }) {
+function BookingDetailPanel({
+  booking,
+  onClose,
+  onConvertClick,
+}: {
+  booking: Booking;
+  onClose: () => void;
+  onConvertClick?: () => void;
+}) {
   const block = isBlockBooking(booking);
   const manual = isManualBlock(booking);
   const origin = blockOriginLabel(booking);
@@ -1082,6 +1111,205 @@ function BookingDetailPanel({ booking, onClose }: { booking: Booking; onClose: (
           hacelo en {origin}. Aca solo se sincroniza.
         </div>
       )}
+
+      {block && manual && onConvertClick && (
+        <Button
+          onClick={onConvertClick}
+          className={cn(
+            "w-full h-11 rounded-xl text-white shadow-sm",
+            booking.blockType === "pre_booking"
+              ? "bg-emerald-600 hover:bg-emerald-700"
+              : "bg-slate-900 hover:bg-slate-800",
+          )}
+        >
+          <User className="h-4 w-4 mr-2" /> Convertir en reserva
+        </Button>
+      )}
+    </div>
+  );
+}
+
+// Panel de conversion bloqueo manual → reserva. Pide los datos minimos
+// requeridos (nombre, telefono, num huespedes, precio total) + datos
+// opcionales (doc, nacionalidad). Submit llama a /api/bookings/[id]/convert.
+function ConvertBlockPanel({
+  booking,
+  onClose,
+  onConverted,
+}: {
+  booking: Booking;
+  onClose: () => void;
+  onConverted: () => void;
+}) {
+  const [guestName, setGuestName] = useState("");
+  const [guestPhone, setGuestPhone] = useState("");
+  const [guestDoc, setGuestDoc] = useState("");
+  const [guestNationality, setGuestNationality] = useState("");
+  const [numGuests, setNumGuests] = useState(2);
+  const [totalPrice, setTotalPrice] = useState<string>("");
+  const [submitting, setSubmitting] = useState(false);
+
+  const submit = async () => {
+    if (!guestName.trim() || !guestPhone.trim()) {
+      toast.error("Nombre y telefono son requeridos.");
+      return;
+    }
+    const priceNum = Number(totalPrice);
+    if (Number.isNaN(priceNum)) {
+      toast.error("El precio total debe ser un numero valido.");
+      return;
+    }
+    setSubmitting(true);
+    try {
+      const res = await fetch(`/api/bookings/${encodeURIComponent(booking.id)}/convert`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "same-origin",
+        body: JSON.stringify({
+          guestName: guestName.trim(),
+          guestPhone: guestPhone.trim(),
+          guestDoc: guestDoc.trim() || null,
+          guestNationality: guestNationality.trim() || null,
+          numGuests,
+          totalPrice: priceNum,
+          source: "direct",
+        }),
+      });
+      const data = await res.json();
+      if (data.ok) {
+        toast.success(
+          `Reserva creada. Codigo: ${data.channelCode ?? ""}`,
+          { duration: 8000 },
+        );
+        onConverted();
+      } else {
+        toast.error(data.error ?? "No se pudo convertir el bloqueo.");
+      }
+    } catch {
+      toast.error("Error de conexion.");
+    }
+    setSubmitting(false);
+  };
+
+  return (
+    <div className="p-5 space-y-4">
+      <div className="flex items-center justify-between">
+        <p className="text-[10px] uppercase tracking-wider font-black text-muted-foreground">
+          Convertir bloqueo en reserva
+        </p>
+        <Button variant="ghost" size="icon" className="h-7 w-7" onClick={onClose}>
+          <X className="h-4 w-4" />
+        </Button>
+      </div>
+
+      <div className="rounded-xl bg-emerald-50 border border-emerald-200 p-3 text-[11px] text-emerald-900 leading-relaxed">
+        Vas a transformar este bloqueo en una reserva real. Las fechas se
+        mantienen ({booking.start} → {booking.end}).
+      </div>
+
+      <div className="space-y-2">
+        <Label className="text-[10px] uppercase tracking-wider font-black text-muted-foreground">
+          Nombre del huesped *
+        </Label>
+        <input
+          type="text"
+          value={guestName}
+          onChange={(e) => setGuestName(e.target.value)}
+          placeholder="Juan Perez"
+          className="w-full h-10 px-3 rounded-lg border bg-background text-sm"
+        />
+      </div>
+
+      <div className="space-y-2">
+        <Label className="text-[10px] uppercase tracking-wider font-black text-muted-foreground">
+          Telefono *
+        </Label>
+        <input
+          type="tel"
+          value={guestPhone}
+          onChange={(e) => setGuestPhone(e.target.value)}
+          placeholder="+1 809 555 1234"
+          className="w-full h-10 px-3 rounded-lg border bg-background text-sm"
+        />
+        <p className="text-[10px] text-muted-foreground">
+          Los ultimos 4 digitos se usan para el check-in del huesped.
+        </p>
+      </div>
+
+      <div className="grid grid-cols-2 gap-2">
+        <div className="space-y-2">
+          <Label className="text-[10px] uppercase tracking-wider font-black text-muted-foreground">
+            Huespedes *
+          </Label>
+          <input
+            type="number"
+            min={1}
+            value={numGuests}
+            onChange={(e) => setNumGuests(Math.max(1, Number(e.target.value) || 1))}
+            className="w-full h-10 px-3 rounded-lg border bg-background text-sm"
+          />
+        </div>
+        <div className="space-y-2">
+          <Label className="text-[10px] uppercase tracking-wider font-black text-muted-foreground">
+            Precio total *
+          </Label>
+          <input
+            type="number"
+            min={0}
+            step="0.01"
+            value={totalPrice}
+            onChange={(e) => setTotalPrice(e.target.value)}
+            placeholder="0.00"
+            className="w-full h-10 px-3 rounded-lg border bg-background text-sm"
+          />
+        </div>
+      </div>
+
+      <div className="space-y-2">
+        <Label className="text-[10px] uppercase tracking-wider font-black text-muted-foreground">
+          Documento (opcional)
+        </Label>
+        <input
+          type="text"
+          value={guestDoc}
+          onChange={(e) => setGuestDoc(e.target.value)}
+          placeholder="Pasaporte / Cedula"
+          className="w-full h-10 px-3 rounded-lg border bg-background text-sm"
+        />
+      </div>
+
+      <div className="space-y-2">
+        <Label className="text-[10px] uppercase tracking-wider font-black text-muted-foreground">
+          Nacionalidad (opcional)
+        </Label>
+        <input
+          type="text"
+          value={guestNationality}
+          onChange={(e) => setGuestNationality(e.target.value)}
+          placeholder="Republica Dominicana"
+          className="w-full h-10 px-3 rounded-lg border bg-background text-sm"
+        />
+      </div>
+
+      <Button
+        onClick={submit}
+        disabled={submitting}
+        className="w-full h-11 rounded-xl bg-emerald-600 text-white hover:bg-emerald-700"
+      >
+        {submitting ? (
+          <>
+            <Loader2 className="h-4 w-4 animate-spin mr-2" /> Convirtiendo...
+          </>
+        ) : (
+          <>Convertir y crear reserva</>
+        )}
+      </Button>
+
+      <p className="text-[10px] text-muted-foreground leading-relaxed">
+        Al convertir: se genera el codigo SH..., se crea el PIN de acceso si
+        la propiedad tiene cerradura conectada, y se programa la limpieza de
+        check-out automaticamente.
+      </p>
     </div>
   );
 }

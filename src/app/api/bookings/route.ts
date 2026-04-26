@@ -2,7 +2,10 @@ import { NextRequest, NextResponse } from "next/server";
 import { getAuthenticatedTenant } from "@/lib/supabase/server";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { cascadeCancelBooking } from "@/lib/bookings/cleanup";
-import { syncPinToLock } from "@/lib/ttlock/sync-pin";
+import {
+  ensurePinForBooking,
+  ensureCheckinRecordForBooking,
+} from "@/lib/bookings/side-effects";
 import {
   ensureCleaningTaskForBlock,
   removeCleaningTaskForBlock,
@@ -150,7 +153,11 @@ export async function POST(req: NextRequest) {
       check_in: checkIn,
       check_out: checkOut,
       status: isBlock ? "blocked" : "confirmed",
-      total_price: totalPrice ?? 0,
+      // Bloqueos no tienen precio: NULL en BD ≠ 0. NULL significa "no
+      // aplica" (no es ingreso) y el modulo contable los excluye sin
+      // tener que filtrar por source. Si se convierte en reserva,
+      // /api/bookings/[id]/convert completa el precio real.
+      total_price: isBlock ? null : (totalPrice ?? 0),
       num_guests: numGuests ?? 1,
       note: note ?? null,
       channel_code: channelCode,
@@ -194,149 +201,34 @@ export async function POST(req: NextRequest) {
     }
     const bookingId = (data as { id: string }).id;
 
-    // Auto-create PIN if guest has phone
-    if (!isBlock && guestPhone) {
-      try {
-        const last4 = String(guestPhone).replace(/\D/g, "").slice(-4);
-        if (last4.length === 4) {
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          const { data: prop } = await (supabaseAdmin.from("properties") as any)
-            .select("ttlock_lock_id, check_in_time, check_out_time")
-            .eq("id", propertyId)
-            .single();
-
-          const ciTime = prop?.check_in_time ?? "14:00";
-          const coTime = prop?.check_out_time ?? "12:00";
-
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          const { data: insertedPin } = await (supabaseAdmin.from("access_pins") as any)
-            .insert({
-              tenant_id: tenantId,
-              property_id: propertyId,
-              booking_id: bookingId,
-              ttlock_lock_id: prop?.ttlock_lock_id ? String(prop.ttlock_lock_id) : null,
-              guest_name: guestName ?? "Huésped",
-              guest_phone: guestPhone,
-              pin: last4,
-              source: source === "block" ? "manual" : "direct_booking",
-              status: "active",
-              delivery_status: "pending",
-              valid_from: new Date(`${checkIn}T${ciTime}:00`).toISOString(),
-              valid_to: new Date(`${checkOut}T${coTime}:00`).toISOString(),
-              // sync_status default 'pending' lo pone la BD si la migracion corrio.
-              // Si no corrio, el insert igual funciona (el campo queda omitido).
-            })
-            .select("id")
-            .single();
-
-          // Sync sincronico (no fire-and-forget) — Vercel serverless puede
-          // matar background tasks al cerrar la request, lo que dejaba la
-          // fila stuck en 'syncing'. Esperamos hasta que termine (tipicamente
-          // 3-6s). Si falla, syncPinToLock ya marca la fila como retry con
-          // backoff, asi que el worker/panel la retoma despues.
-          if (prop?.ttlock_lock_id && insertedPin?.id) {
-            try {
-              await syncPinToLock(insertedPin.id);
-            } catch (err) {
-              console.warn("[bookings/POST] initial pin sync threw (will retry):", err);
-            }
-          }
-        }
-      } catch (pinErr) {
-        console.error("[bookings/POST] auto-PIN creation failed (non-fatal):", pinErr);
-      }
-    }
-
-    // Auto-crear checkin_record para que la reserva aparezca de una en el
-    // panel de Check-ins sin tener que esperar al autoSync del frontend.
-    // Espeja la lógica de /api/checkin/lookup para que los dos caminos
-    // (host crea reserva / huésped busca por código) generen el mismo
-    // registro. Idempotente: si ya existe un record con booking_ref = este
-    // booking, no hace nada.
+    // Side effects para reservas reales: PIN + checkin_record.
     if (!isBlock) {
-      try {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const { data: prop } = await (supabaseAdmin.from("properties") as any)
-          .select("name, address, wifi_name, wifi_password, electricity_enabled, electricity_rate")
-          .eq("id", propertyId)
-          .single();
-
-        const nights = Math.max(
-          1,
-          Math.round((new Date(checkOut).getTime() - new Date(checkIn).getTime()) / 86_400_000)
-        );
-        const chan = String(source ?? "manual").toLowerCase();
-        const isVrbo = chan === "vrbo";
-        const propertyElectricityEnabled = prop?.electricity_enabled ?? true;
-        const electricityRate = prop?.electricity_rate ?? 0;
-        const electricityEnabledForGuest = propertyElectricityEnabled && !isVrbo && electricityRate > 0;
-        const electricityTotal = electricityEnabledForGuest ? electricityRate * nights : 0;
-
-        const insertRow: Record<string, unknown> = {
-          id: `ci-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-          tenant_id: tenantId,
-          guest_name: guestName ?? "Huésped",
-          // Soft-token: usamos el channel_code SHXXXX (lowercased). El auth
-          // del huesped hace match contra esto cuando viene de un link v=2.
-          guest_last_name: (channelCode ?? "").toLowerCase().trim(),
-          last_four_digits: phoneLast4 ?? "0000",
-          checkin: checkIn,
-          checkout: checkOut,
-          nights,
-          property_id: propertyId,
-          property_name: prop?.name ?? "Propiedad",
-          property_address: prop?.address ?? null,
-          wifi_ssid: prop?.wifi_name ?? null,
-          wifi_password: prop?.wifi_password ?? null,
-          status: "pendiente",
-          id_status: "pending",
-          source: chan === "ical" || chan === "airbnb" || chan === "vrbo" ? "auto_ical" : "auto_direct",
-          channel: chan === "manual" ? "direct" : chan,
-          booking_ref: bookingId,
-          access_granted: false,
-          electricity_enabled: electricityEnabledForGuest,
-          electricity_rate: electricityRate,
-          electricity_paid: false,
-          electricity_total: electricityTotal,
-          paypal_fee_included: true,
-          missing_data: false,
-        };
-        // Heredar datos OCR si el host los cargo (escaneo al crear reserva)
-        if (guestName && guestName !== "Reserva Confirmada" && guestName !== "Huésped") {
-          insertRow.ocr_name = guestName;
-        }
-        if (guestDoc) insertRow.ocr_document = guestDoc;
-        if (guestNationality) insertRow.ocr_nationality = guestNationality;
-        if (guestDoc || guestNationality) insertRow.ocr_confidence = 1.0;
-
-        // Heredar la foto del ID escaneada por el host → el huésped no
-        // vuelve a subirla en el Paso 2 del check-in. id_status='validated'
-        // hace que el Step2State.needsPhoto sea false y el flujo salte
-        // directo a los datos de contacto.
-        if (guestDocPhotoPath) {
-          insertRow.id_photo_path = guestDocPhotoPath;
-          insertRow.id_status = "validated";
-        }
-
-        // Chequear primero si ya existe (el UNIQUE en booking_ref puede no
-        // estar aplicado en prod, por eso no usamos onConflict). Este POST
-        // corre una vez por reserva, la race condition real es minima.
-        const { data: existingCi } = await supabaseAdmin
-          .from("checkin_records")
-          .select("id")
-          .eq("booking_ref", bookingId)
-          .limit(1);
-        if (!existingCi || existingCi.length === 0) {
-          const { error: ciErr } = await supabaseAdmin
-            .from("checkin_records")
-            .insert(insertRow as never);
-          if (ciErr) {
-            console.error("[bookings/POST] auto-checkin creation failed (non-fatal):", ciErr);
-          }
-        }
-      } catch (ciErr) {
-        console.error("[bookings/POST] auto-checkin creation failed (non-fatal):", ciErr);
+      if (guestPhone) {
+        await ensurePinForBooking({
+          tenantId,
+          propertyId: String(propertyId),
+          bookingId,
+          guestName: guestName ?? "Huésped",
+          guestPhone,
+          checkIn,
+          checkOut,
+          source: source ?? "manual",
+        });
       }
+      await ensureCheckinRecordForBooking({
+        tenantId,
+        propertyId: String(propertyId),
+        bookingId,
+        guestName: guestName ?? "Huésped",
+        guestDoc,
+        guestNationality,
+        guestDocPhotoPath,
+        checkIn,
+        checkOut,
+        source: source ?? "manual",
+        channelCode,
+        phoneLast4,
+      });
     }
 
     // Bloqueos con requires_cleaning=true: generamos la cleaning_task
