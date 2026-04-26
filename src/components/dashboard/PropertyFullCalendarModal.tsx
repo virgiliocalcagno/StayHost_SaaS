@@ -727,13 +727,15 @@ function MonthBlock({
             const isMiddle = b.start < d.str && d.str < b.end;
 
             if (block) {
-              // Bloqueos: dia end NO se pinta (check_out exclusive). Dias
-              // intermedios y start: barra completa, salvo que el dia start
-              // coincida con un check-out de reserva → arranca en checkOutPct
-              // para que la reserva saliente no se solape con el bloqueo.
+              // Bloqueos: simetricos a las reservas. El bloqueo dura hasta
+              // la HORA de check-out de la propiedad en su dia end (no hasta
+              // las 00:00) — asi el host puede recibir una reserva entrante
+              // ese mismo dia sin sacrificar el dia entero.
               if (isMiddle) {
                 items.push({ booking: b, leftPct: 0, widthPct: 100, roundLeft: false, roundRight: false });
               } else if (isStart && !isEnd) {
+                // Si hay reserva saliendo el mismo dia → bloqueo arranca
+                // donde termina la reserva (no se superponen).
                 if (reservaDeparting) {
                   items.push({
                     booking: b,
@@ -745,9 +747,21 @@ function MonthBlock({
                 } else {
                   items.push({ booking: b, leftPct: 0, widthPct: 100, roundLeft: false, roundRight: false });
                 }
+              } else if (isEnd && !isStart) {
+                // Dia end del bloqueo: ocupa la manana hasta checkOutPct.
+                // Si despues entra una reserva (arriving en checkInPct..100),
+                // queda un hueco visible entre los dos = ventana real para
+                // que el host complete el mantenimiento y prepare la unidad.
+                items.push({
+                  booking: b,
+                  leftPct: 0,
+                  widthPct: checkOutPct,
+                  roundLeft: false,
+                  roundRight: true,
+                });
               }
-              // isEnd && !isStart: no se pinta. La regla check_out exclusive
-              // significa que el dia de salida del bloqueo queda libre.
+              // isStart && isEnd no es valido (bloqueo de 0 noches imposible
+              // por el constraint check_out > check_in en BD).
             } else {
               // Reservas: barra parcial en check-in y check-out, full en medio.
               if (isMiddle) {
