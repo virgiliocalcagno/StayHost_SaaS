@@ -257,7 +257,27 @@ export async function syncPinToLock(pinId: string): Promise<SyncPinResult> {
     }
   }
 
-  // 5) Crear el nuevo PIN en la cerradura
+  // 5) Crear el nuevo PIN en la cerradura.
+  //
+  // El keyboardPwdName es lo que el host ve en TTLock Web System al lado
+  // del codigo. Lo armamos trazable: incluye el channel_code (SH...) o el
+  // booking_id corto para que ante un PIN huerfano o un error tipo "ya
+  // existe ese codigo" se pueda identificar de que reserva vino con un
+  // SELECT directo en bookings. TTLock acepta hasta 32 caracteres en este
+  // campo, asi que trim agresivo.
+  let traceId = "manual";
+  if (pin.booking_id) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const { data: bk } = await (supabaseAdmin.from("bookings") as any)
+      .select("channel_code")
+      .eq("id", pin.booking_id)
+      .maybeSingle();
+    const channelCode = (bk as { channel_code?: string | null } | null)?.channel_code ?? null;
+    traceId = channelCode ?? pin.booking_id.replace(/-/g, "").slice(0, 8).toUpperCase();
+  }
+  const guestShort = (pin.guest_name ?? "Huesped").slice(0, 18);
+  const keyboardPwdName = `SH#${traceId} ${guestShort}`.slice(0, 32);
+
   const startDate = new Date(pin.valid_from).getTime();
   const endDate = new Date(pin.valid_to).getTime();
   const params = new URLSearchParams({
@@ -265,7 +285,7 @@ export async function syncPinToLock(pinId: string): Promise<SyncPinResult> {
     accessToken,
     lockId: String(pin.ttlock_lock_id),
     keyboardPwd: pin.pin,
-    keyboardPwdName: `StayHost - ${pin.guest_name ?? "Huésped"}`,
+    keyboardPwdName,
     startDate: String(startDate),
     endDate: String(endDate),
     addType: "2", // via gateway
