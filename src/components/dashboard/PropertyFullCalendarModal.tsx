@@ -80,6 +80,12 @@ type Property = {
   name: string;
   channel?: string | null;
   bookings: Booking[];
+  // Horarios definidos por el host. Defaults industry-standard: 14:00 in,
+  // 12:00 out. El calendario los muestra en las pills de salida/entrada
+  // para comunicar visualmente que el dia de check-out queda libre desde
+  // esa hora (back-to-back posible).
+  checkInTime?: string | null;
+  checkOutTime?: string | null;
 };
 
 type Props = {
@@ -141,6 +147,23 @@ const pillLabel = (b: Booking) => {
     return isManualBlock(b) ? "Bloqueo manual" : `Bloqueo ${blockOriginLabel(b)}`;
   }
   return b.guest;
+};
+
+// Pill desaturada para indicar "este huesped sale hoy a HH:MM" en el dia
+// de check-out. Convencion estilo Airbnb / iGMS: el dia de salida queda
+// libre desde la hora del checkout — esta pill comunica que la manana
+// sigue ocupada y la tarde esta disponible para back-to-back. Color en
+// version diluida del canal para no competir con las reservas activas.
+const checkoutPillClass = (b: Booking) => {
+  if (b.status !== "confirmed") {
+    return "bg-amber-50 text-amber-800 border-amber-300";
+  }
+  switch (b.channel) {
+    case "airbnb": return "bg-rose-50 text-rose-700 border-rose-300";
+    case "booking": return "bg-blue-50 text-blue-700 border-blue-300";
+    case "vrbo": return "bg-indigo-50 text-indigo-700 border-indigo-300";
+    default: return "bg-emerald-50 text-emerald-700 border-emerald-300";
+  }
 };
 
 // Estilo de pill para una tarea de limpieza, color segun prioridad.
@@ -537,6 +560,8 @@ export default function PropertyFullCalendarModal({
                     rangeEnd={rangeEnd}
                     selectedBookingId={selectedBookingId}
                     selectedTaskId={selectedTaskId}
+                    checkOutTime={property?.checkOutTime ?? "12:00"}
+                    checkInTime={property?.checkInTime ?? "14:00"}
                     onDayMouseDown={handleDayMouseDown}
                     onDayMouseEnter={handleDayMouseEnter}
                     onBookingClick={(b) => {
@@ -609,6 +634,8 @@ type MonthBlockProps = {
   rangeEnd: string | null;
   selectedBookingId: string | null;
   selectedTaskId: string | null;
+  checkOutTime: string;
+  checkInTime: string;
   onDayMouseDown: (dayStr: string, bookingsOnDay: Booking[]) => void;
   onDayMouseEnter: (dayStr: string) => void;
   onBookingClick: (b: Booking) => void;
@@ -625,6 +652,8 @@ function MonthBlock({
   rangeEnd,
   selectedBookingId,
   selectedTaskId,
+  checkOutTime,
+  checkInTime,
   onDayMouseDown,
   onDayMouseEnter,
   onBookingClick,
@@ -663,6 +692,17 @@ function MonthBlock({
         {days.map((d, idx) => {
           const onDay = bookings.filter(
             (b) => b.status !== "cancelled" && bookingOnDay(b, d.str),
+          );
+          // Reservas (no bloqueos) cuyo check-out es ESTE dia. Bookingonday
+          // las excluye porque check_out es exclusive — pero visualmente la
+          // manana sigue ocupada hasta la hora del checkout. Mostramos una
+          // mini-pill desaturada para comunicarlo. Excluye bloqueos: para
+          // un bloqueo no aplica el concepto de "salida del huesped".
+          const departing = bookings.filter(
+            (b) =>
+              b.status !== "cancelled" &&
+              !isBlockBooking(b) &&
+              b.end === d.str,
           );
           const tasksDay = tasks.filter((t) => t.dueDate === d.str);
           const isInRange = (() => {
@@ -703,14 +743,36 @@ function MonthBlock({
                 >
                   {d.date.getDate()}
                 </span>
-                {onDay.length + tasksDay.length > 2 && (
+                {departing.length + onDay.length + tasksDay.length > 3 && (
                   <span className="text-[9px] text-muted-foreground font-bold">
-                    +{onDay.length + tasksDay.length - 2}
+                    +{departing.length + onDay.length + tasksDay.length - 3}
                   </span>
                 )}
               </div>
               <div className="flex flex-col gap-0.5 overflow-hidden">
-                {onDay.slice(0, 2).map((b) => (
+                {departing.slice(0, 1).map((b) => (
+                  <div
+                    key={`out-${b.id}`}
+                    onMouseDown={(e) => e.stopPropagation()}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onBookingClick(b);
+                    }}
+                    title={`Salida ${checkOutTime} · ${b.guest}`}
+                    className={cn(
+                      "h-4 px-1.5 rounded text-[9px] font-bold truncate flex items-center gap-1 border",
+                      checkoutPillClass(b),
+                      selectedBookingId === String(b.id) && "ring-2 ring-foreground/80",
+                    )}
+                  >
+                    <LogOut className="h-2.5 w-2.5 shrink-0" />
+                    <span className="truncate">Sale {checkOutTime} · {b.guest}</span>
+                  </div>
+                ))}
+                {onDay.slice(0, Math.max(1, 3 - departing.length)).map((b) => {
+                  const isCheckIn = b.start === d.str;
+                  const isBackToBack = isCheckIn && departing.length > 0;
+                  return (
                   <div
                     key={b.id}
                     onMouseDown={(e) => e.stopPropagation()}
@@ -718,6 +780,7 @@ function MonthBlock({
                       e.stopPropagation();
                       onBookingClick(b);
                     }}
+                    title={isCheckIn ? `Entrada ${checkInTime} · ${b.guest}` : pillLabel(b)}
                     className={cn(
                       "h-5 px-1.5 rounded text-[10px] font-bold truncate flex items-center gap-1 shadow-sm",
                       pillClass(b),
@@ -725,10 +788,14 @@ function MonthBlock({
                     )}
                   >
                     {isBlockBooking(b) && <Lock className="h-2.5 w-2.5 shrink-0" />}
-                    <span className="truncate">{pillLabel(b)}</span>
+                    {isBackToBack && <LogIn className="h-2.5 w-2.5 shrink-0" />}
+                    <span className="truncate">
+                      {isBackToBack ? `Entra ${checkInTime} · ${b.guest}` : pillLabel(b)}
+                    </span>
                   </div>
-                ))}
-                {tasksDay.slice(0, Math.max(0, 2 - onDay.length)).map((t) => (
+                  );
+                })}
+                {tasksDay.slice(0, Math.max(0, 3 - departing.length - onDay.length)).map((t) => (
                   <div
                     key={t.id}
                     onMouseDown={(e) => e.stopPropagation()}
