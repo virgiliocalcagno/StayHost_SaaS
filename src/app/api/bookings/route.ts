@@ -572,7 +572,7 @@ export async function GET() {
 
   const { data: props } = await supabase
     .from("properties")
-    .select("id, name, address, price, ical_airbnb, ical_vrbo, ttlock_account_id, ttlock_lock_id")
+    .select("id, name, address, price, ical_airbnb, ical_vrbo, ttlock_account_id, ttlock_lock_id, check_in_time, check_out_time")
     .eq("tenant_id", tenantId);
 
   if (!props?.length) return NextResponse.json({ properties: [] });
@@ -592,6 +592,8 @@ export async function GET() {
     ical_vrbo: string | null;
     ttlock_account_id: string | null;
     ttlock_lock_id: string | number | null;
+    check_in_time: string | null;
+    check_out_time: string | null;
   }[]).map((prop) => {
     const channel = prop.ical_airbnb ? "airbnb" : prop.ical_vrbo ? "vrbo" : "direct";
     return {
@@ -604,6 +606,10 @@ export async function GET() {
       // cerradura directamente al mandar el código al huésped.
       ttlockAccountId: prop.ttlock_account_id ?? null,
       ttlockLockId: prop.ttlock_lock_id != null ? String(prop.ttlock_lock_id) : null,
+      // Horarios de la propiedad — el calendario los usa para mostrar
+      // "Salida 11:00" y "Entrada 14:00" en las celdas back-to-back.
+      checkInTime: prop.check_in_time ?? "14:00",
+      checkOutTime: prop.check_out_time ?? "12:00",
       bookings: ((bookings ?? []) as Array<Record<string, unknown>>)
         .filter((b) => b.property_id === prop.id)
         .map((b) => ({

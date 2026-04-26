@@ -110,6 +110,12 @@ type Property = {
   name: string;
   channel?: string | null;
   bookings: Booking[];
+  // Horarios definidos por el host. Defaults industry-standard: 14:00 in,
+  // 12:00 out. El calendario los muestra en las pills de salida/entrada
+  // para comunicar visualmente que el dia de check-out queda libre desde
+  // esa hora (back-to-back posible).
+  checkInTime?: string | null;
+  checkOutTime?: string | null;
 };
 
 type Props = {
@@ -171,6 +177,16 @@ const pillLabel = (b: Booking) => {
     return isManualBlock(b) ? "Bloqueo manual" : `Bloqueo ${blockOriginLabel(b)}`;
   }
   return b.guest;
+};
+
+// "HH:MM" → porcentaje del dia (0-100). Usado para calcular el ancho
+// proporcional de la barra de reserva en los dias de check-in / check-out.
+// Estilo Airbnb literal: barra recortada al horario real del host.
+const hourToPct = (hhmm: string | null | undefined): number => {
+  if (!hhmm) return 50;
+  const [h, m] = hhmm.split(":").map(Number);
+  if (Number.isNaN(h) || Number.isNaN(m)) return 50;
+  return ((h * 60 + m) / (24 * 60)) * 100;
 };
 
 // Estilo de pill para una tarea de limpieza, color segun prioridad.
@@ -578,6 +594,8 @@ export default function PropertyFullCalendarModal({
                     rangeEnd={rangeEnd}
                     selectedBookingId={selectedBookingId}
                     selectedTaskId={selectedTaskId}
+                    checkOutTime={property?.checkOutTime ?? "12:00"}
+                    checkInTime={property?.checkInTime ?? "14:00"}
                     onDayMouseDown={handleDayMouseDown}
                     onDayMouseEnter={handleDayMouseEnter}
                     onBookingClick={(b) => {
@@ -661,6 +679,8 @@ type MonthBlockProps = {
   rangeEnd: string | null;
   selectedBookingId: string | null;
   selectedTaskId: string | null;
+  checkOutTime: string;
+  checkInTime: string;
   onDayMouseDown: (dayStr: string, bookingsOnDay: Booking[]) => void;
   onDayMouseEnter: (dayStr: string) => void;
   onBookingClick: (b: Booking) => void;
@@ -677,6 +697,8 @@ function MonthBlock({
   rangeEnd,
   selectedBookingId,
   selectedTaskId,
+  checkOutTime,
+  checkInTime,
   onDayMouseDown,
   onDayMouseEnter,
   onBookingClick,
@@ -713,10 +735,112 @@ function MonthBlock({
       </h3>
       <div className="grid grid-cols-7 divide-x divide-y divide-border/40">
         {days.map((d, idx) => {
-          const onDay = bookings.filter(
-            (b) => b.status !== "cancelled" && bookingOnDay(b, d.str),
-          );
+          // Modelo unificado: para cada item (reserva o bloqueo) que toca este
+          // dia, calculo un rango (leftPct..rightPct) sin solapamiento. Soporta
+          // back-to-back de cualquier combinacion (reserva→reserva,
+          // reserva→bloqueo, bloqueo→reserva). El render despues pinta cada
+          // item con position absolute y posicion proporcional a su rango.
+          const checkInPct = hourToPct(checkInTime);
+          const checkOutPct = hourToPct(checkOutTime);
           const tasksDay = tasks.filter((t) => t.dueDate === d.str);
+
+          type CellItem = {
+            booking: Booking;
+            leftPct: number;
+            widthPct: number;
+            // rounded en el extremo donde la barra TERMINA visualmente
+            // (porque la reserva empieza/termina ese dia). Para barras full
+            // no aplica — quedan square para dar continuidad entre celdas.
+            roundLeft: boolean;
+            roundRight: boolean;
+          };
+
+          // Un mismo item nunca puede aparecer dos veces en el mismo dia
+          // (start !== end siempre). Caso extremo: una reserva de 1 noche
+          // que arranca y termina en dias distintos — el dia start es
+          // "arriving", el dia end es "departing" (otra celda).
+          const items: CellItem[] = [];
+
+          // Reserva (no bloqueo) saliendo este dia. Necesito saberlo antes
+          // de procesar bloqueos para decidir si el bloqueo del dia start
+          // arranca en checkOutPct (back-to-back) o en 0.
+          const reservaDeparting = bookings.find(
+            (b) =>
+              b.status !== "cancelled" &&
+              !isBlockBooking(b) &&
+              b.end === d.str,
+          );
+
+          for (const b of bookings) {
+            if (b.status === "cancelled") continue;
+            const block = isBlockBooking(b);
+            const isStart = b.start === d.str;
+            const isEnd = b.end === d.str;
+            const isMiddle = b.start < d.str && d.str < b.end;
+
+            if (block) {
+              // Bloqueos: simetricos a las reservas. El bloqueo dura hasta
+              // la HORA de check-out de la propiedad en su dia end (no hasta
+              // las 00:00) — asi el host puede recibir una reserva entrante
+              // ese mismo dia sin sacrificar el dia entero.
+              if (isMiddle) {
+                items.push({ booking: b, leftPct: 0, widthPct: 100, roundLeft: false, roundRight: false });
+              } else if (isStart && !isEnd) {
+                // Si hay reserva saliendo el mismo dia → bloqueo arranca
+                // donde termina la reserva (no se superponen).
+                if (reservaDeparting) {
+                  items.push({
+                    booking: b,
+                    leftPct: checkOutPct,
+                    widthPct: 100 - checkOutPct,
+                    roundLeft: true,
+                    roundRight: false,
+                  });
+                } else {
+                  items.push({ booking: b, leftPct: 0, widthPct: 100, roundLeft: false, roundRight: false });
+                }
+              } else if (isEnd && !isStart) {
+                // Dia end del bloqueo: ocupa la manana hasta checkOutPct.
+                // Si despues entra una reserva (arriving en checkInPct..100),
+                // queda un hueco visible entre los dos = ventana real para
+                // que el host complete el mantenimiento y prepare la unidad.
+                items.push({
+                  booking: b,
+                  leftPct: 0,
+                  widthPct: checkOutPct,
+                  roundLeft: false,
+                  roundRight: true,
+                });
+              }
+              // isStart && isEnd no es valido (bloqueo de 0 noches imposible
+              // por el constraint check_out > check_in en BD).
+            } else {
+              // Reservas: barra parcial en check-in y check-out, full en medio.
+              if (isMiddle) {
+                items.push({ booking: b, leftPct: 0, widthPct: 100, roundLeft: false, roundRight: false });
+              } else if (isStart) {
+                items.push({
+                  booking: b,
+                  leftPct: checkInPct,
+                  widthPct: 100 - checkInPct,
+                  roundLeft: true,
+                  roundRight: false,
+                });
+              } else if (isEnd) {
+                items.push({
+                  booking: b,
+                  leftPct: 0,
+                  widthPct: checkOutPct,
+                  roundLeft: false,
+                  roundRight: true,
+                });
+              }
+            }
+          }
+
+          // onDay mantiene la API del callback de mouseDown — si la celda
+          // tiene cualquier item, no es libre para empezar un rango.
+          const onDay = items.map((it) => it.booking);
           const isInRange = (() => {
             if (!rangeStart) return false;
             const end = rangeEnd ?? rangeStart;
@@ -755,32 +879,70 @@ function MonthBlock({
                 >
                   {d.date.getDate()}
                 </span>
-                {onDay.length + tasksDay.length > 2 && (
+                {tasksDay.length > 1 && (
                   <span className="text-[9px] text-muted-foreground font-bold">
-                    +{onDay.length + tasksDay.length - 2}
+                    +{tasksDay.length - 1}
                   </span>
                 )}
               </div>
-              <div className="flex flex-col gap-0.5 overflow-hidden">
-                {onDay.slice(0, 2).map((b) => (
-                  <div
-                    key={b.id}
-                    onMouseDown={(e) => e.stopPropagation()}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onBookingClick(b);
-                    }}
-                    className={cn(
-                      "h-5 px-1.5 rounded text-[10px] font-bold truncate flex items-center gap-1 shadow-sm",
-                      pillClass(b),
-                      selectedBookingId === String(b.id) && "ring-2 ring-foreground/80",
-                    )}
-                  >
-                    {isBlockBooking(b) && <Lock className="h-2.5 w-2.5 shrink-0" />}
-                    <span className="truncate">{pillLabel(b)}</span>
-                  </div>
-                ))}
-                {tasksDay.slice(0, Math.max(0, 2 - onDay.length)).map((t) => (
+
+              {/* Track de reservas/bloqueos: barras posicionadas con
+                  porcentaje real segun el horario de la propiedad. La
+                  barra va ARRIBA del dia para que la linea continua de
+                  reserva quede a la misma altura entre celdas adyacentes
+                  — la limpieza se renderiza despues, abajo, sin romper
+                  esa continuidad visual. */}
+              {items.length > 0 && (
+                <div className="relative h-5 w-full -mx-1.5">
+                  {items.map((it, i) => {
+                    const b = it.booking;
+                    const block = isBlockBooking(b);
+                    const isStart = b.start === d.str;
+                    const isEnd = b.end === d.str;
+                    const tooltip = block
+                      ? pillLabel(b)
+                      : isStart
+                        ? `Entra ${checkInTime} · ${b.guest}`
+                        : isEnd
+                          ? `Sale ${checkOutTime} · ${b.guest}`
+                          : pillLabel(b);
+                    return (
+                      <div
+                        key={`${b.id}-${i}`}
+                        onMouseDown={(e) => e.stopPropagation()}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onBookingClick(b);
+                        }}
+                        title={tooltip}
+                        style={{
+                          left: `${it.leftPct}%`,
+                          width: `${it.widthPct}%`,
+                        }}
+                        className={cn(
+                          "absolute inset-y-0 px-1.5 text-[10px] font-bold truncate flex items-center gap-1 shadow-sm",
+                          pillClass(b),
+                          it.roundLeft && "rounded-l-md",
+                          it.roundRight && "rounded-r-md",
+                          selectedBookingId === String(b.id) && "ring-2 ring-foreground/80 z-10",
+                        )}
+                      >
+                        {block && <Lock className="h-2.5 w-2.5 shrink-0" />}
+                        <span className="truncate">
+                          {block ? pillLabel(b) : b.guest}
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+
+              {/* Limpieza DEBAJO de la barra de reserva. Asi la linea de
+                  reserva siempre queda al tope (alineada entre dias) y
+                  las tareas aparecen abajo solo cuando aplica — visual
+                  mas limpio, mejor lectura del flujo del dia. */}
+              <div className="flex flex-col gap-0.5">
+                {tasksDay.slice(0, 1).map((t) => (
                   <div
                     key={t.id}
                     onMouseDown={(e) => e.stopPropagation()}
@@ -789,7 +951,7 @@ function MonthBlock({
                       onTaskClick(t);
                     }}
                     className={cn(
-                      "h-5 px-1.5 rounded text-[10px] font-bold truncate flex items-center gap-1 shadow-sm",
+                      "h-4 px-1.5 rounded text-[9px] font-bold truncate flex items-center gap-1 shadow-sm",
                       taskPillClass(t),
                       selectedTaskId === t.id && "ring-2 ring-foreground/80",
                     )}
