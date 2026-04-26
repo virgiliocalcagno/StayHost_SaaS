@@ -23,6 +23,7 @@
 
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { deleteTTLockPin } from "./delete-pin";
+import { reconcileTTLockPin, isTTLockAlreadyExistsError } from "./reconcile-pin";
 
 const TTLOCK_API = process.env.TTLOCK_API_URL ?? "https://euapi.ttlock.com";
 const MAX_ATTEMPTS = 6;
@@ -309,6 +310,29 @@ export async function syncPinToLock(pinId: string): Promise<SyncPinResult> {
           sync_last_error: `Cerradura offline: ${json.errmsg ?? json.errcode}`,
         });
         return { ok: false, reason: "offline_lock", detail: String(json.errmsg ?? json.errcode) };
+      }
+
+      // Auto-heal: TTLock dice "ya existe ese passcode". Significa que el
+      // PIN se creo en una corrida anterior pero no logramos persistir el
+      // ttlock_pwd_id (Vercel mato la function entre el add exitoso y el
+      // UPDATE en BD). En vez de quedar huerfanos para siempre, llamamos
+      // listKeyboardPwd, matcheamos por (pin + dates) y adoptamos el id.
+      if (isTTLockAlreadyExistsError(json.errcode, json.errmsg)) {
+        const reconciled = await reconcileTTLockPin(pinId);
+        if (reconciled.ok) {
+          return { ok: true, ttlockPwdId: reconciled.ttlockPwdId };
+        }
+        // No matcheo — registramos como error normal, no agregamos al pool
+        // de auto-heal para no loopear infinito.
+        const nextAttempts = pin.sync_attempts + 1;
+        const retryAt = scheduleRetry(nextAttempts);
+        await updateSyncState(pinId, {
+          sync_status: retryAt ? "retry" : "failed",
+          sync_attempts: nextAttempts,
+          sync_next_retry_at: retryAt,
+          sync_last_error: `TTLock dice already-exists pero reconcile fallo: ${reconciled.reason}${reconciled.detail ? ` (${reconciled.detail})` : ""}`,
+        });
+        return { ok: false, reason: "api_error", detail: `already-exists, reconcile failed: ${reconciled.reason}` };
       }
 
       const nextAttempts = pin.sync_attempts + 1;
