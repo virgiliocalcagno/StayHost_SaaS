@@ -3,6 +3,15 @@ import { getAuthenticatedTenant } from "@/lib/supabase/server";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { cascadeCancelBooking } from "@/lib/bookings/cleanup";
 import { syncPinToLock } from "@/lib/ttlock/sync-pin";
+import {
+  ensureCleaningTaskForBlock,
+  removeCleaningTaskForBlock,
+} from "@/lib/cleaning/ensure-block-task";
+
+const VALID_BLOCK_TYPES = ["maintenance", "personal", "pre_booking", "other"] as const;
+type BlockType = (typeof VALID_BLOCK_TYPES)[number];
+const isValidBlockType = (v: unknown): v is BlockType =>
+  typeof v === "string" && (VALID_BLOCK_TYPES as readonly string[]).includes(v);
 
 // All three handlers read the tenant_id from the authenticated session
 // cookie. They no longer accept `tenantEmail` in the body or `?email=` in
@@ -35,6 +44,10 @@ export async function POST(req: NextRequest) {
       guestName, guestPhone, guestDoc, guestNationality, guestDocPhotoPath,
       source, note, numGuests, totalPrice,
       sourceUid: clientSourceUid,
+      // Bloqueos: tipo (maintenance/personal/pre_booking/other) + flag de
+      // limpieza. Solo aplican cuando source === "block"; ignorados para
+      // reservas reales.
+      blockType, requiresCleaning,
     } = body;
 
     if (!propertyId || !checkIn || !checkOut) {
@@ -114,6 +127,16 @@ export async function POST(req: NextRequest) {
       return digits.length >= 4 ? digits.slice(-4) : null;
     })();
 
+    // Si es bloqueo, validamos blockType y normalizamos requiresCleaning.
+    // Bloqueos viejos / clientes que no envien estos campos quedan con
+    // block_type=null (tratado como "other" en la UI).
+    const blockTypeValue: BlockType | null = isBlock
+      ? (isValidBlockType(blockType) ? blockType : null)
+      : null;
+    const requiresCleaningValue: boolean = isBlock
+      ? Boolean(requiresCleaning)
+      : false;
+
     const insertRow: Record<string, unknown> = {
       property_id: propertyId,
       tenant_id: tenantId,
@@ -132,6 +155,8 @@ export async function POST(req: NextRequest) {
       note: note ?? null,
       channel_code: channelCode,
       phone_last4: phoneLast4,
+      block_type: blockTypeValue,
+      requires_cleaning: requiresCleaningValue,
     };
 
     let insertRes = await supabase.from("bookings").insert(insertRow as never).select("id").single();
@@ -139,10 +164,18 @@ export async function POST(req: NextRequest) {
     // Fallback: si las columnas nuevas no existen todavía en prod, reintentar
     // sin ellas. Una vez corridas las migraciones esto es no-op.
     const errMsg = insertRes.error?.message ?? "";
-    if (errMsg.includes("channel_code") || errMsg.includes("phone_last4") || errMsg.includes("guest_doc_photo_path")) {
+    if (
+      errMsg.includes("channel_code") ||
+      errMsg.includes("phone_last4") ||
+      errMsg.includes("guest_doc_photo_path") ||
+      errMsg.includes("block_type") ||
+      errMsg.includes("requires_cleaning")
+    ) {
       delete insertRow.channel_code;
       delete insertRow.phone_last4;
       delete insertRow.guest_doc_photo_path;
+      delete insertRow.block_type;
+      delete insertRow.requires_cleaning;
       insertRes = await supabase.from("bookings").insert(insertRow as never).select("id").single();
     }
 
@@ -306,6 +339,25 @@ export async function POST(req: NextRequest) {
       }
     }
 
+    // Bloqueos con requires_cleaning=true: generamos la cleaning_task
+    // automaticamente. La tarea queda programada para el dia de check_out
+    // del bloqueo a la hora de check-out de la propiedad — simetrica a
+    // como funcionan las reservas.
+    if (isBlock && requiresCleaningValue) {
+      try {
+        await ensureCleaningTaskForBlock({
+          supabase: supabaseAdmin,
+          tenantId,
+          bookingId,
+          propertyId: String(propertyId),
+          checkOut: String(checkOut),
+          blockType: blockTypeValue,
+        });
+      } catch (taskErr) {
+        console.error("[bookings/POST] block cleaning task creation failed (non-fatal):", taskErr);
+      }
+    }
+
     return NextResponse.json({
       ok: true,
       id: bookingId,
@@ -348,11 +400,20 @@ export async function PATCH(req: NextRequest) {
       numGuests: "num_guests",
       note: "note",
       status: "status",
+      blockType: "block_type",
+      requiresCleaning: "requires_cleaning",
     };
 
     const patch: Record<string, unknown> = {};
     for (const [key, col] of Object.entries(allowed)) {
       if (key in fields) patch[col] = fields[key];
+    }
+    // Validar block_type si vino en el patch
+    if ("block_type" in patch && patch.block_type !== null && !isValidBlockType(patch.block_type)) {
+      return NextResponse.json(
+        { error: `block_type invalido. Esperado: ${VALID_BLOCK_TYPES.join(", ")}` },
+        { status: 400 }
+      );
     }
 
     if (Object.keys(patch).length === 0) {
@@ -429,6 +490,41 @@ export async function PATCH(req: NextRequest) {
       await cascadeCancelBooking(bookingId);
     }
 
+    // Sincronizar cleaning_task de bloqueos cuando cambian flag o tipo.
+    // - requires_cleaning true → asegurar task (idempotente)
+    // - requires_cleaning false → quitar task pendiente
+    // - block_type cambia con flag activo → recrear task con label nuevo
+    if ("requires_cleaning" in patch || "block_type" in patch || patch.check_out) {
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const { data: bk } = await (supabaseAdmin.from("bookings") as any)
+          .select("source, property_id, tenant_id, check_out, block_type, requires_cleaning")
+          .eq("id", bookingId)
+          .single();
+        if (bk && bk.source === "block") {
+          if (bk.requires_cleaning) {
+            // Si cambio el block_type, borramos la task vieja para recrearla
+            // con el label correcto.
+            if ("block_type" in patch) {
+              await removeCleaningTaskForBlock({ supabase: supabaseAdmin, bookingId });
+            }
+            await ensureCleaningTaskForBlock({
+              supabase: supabaseAdmin,
+              tenantId: bk.tenant_id,
+              bookingId,
+              propertyId: bk.property_id,
+              checkOut: bk.check_out,
+              blockType: bk.block_type,
+            });
+          } else {
+            await removeCleaningTaskForBlock({ supabase: supabaseAdmin, bookingId });
+          }
+        }
+      } catch (taskErr) {
+        console.error("[bookings/PATCH] block task sync failed (non-fatal):", taskErr);
+      }
+    }
+
     return NextResponse.json({ ok: true });
   } catch (err) {
     return NextResponse.json(
@@ -483,7 +579,7 @@ export async function GET() {
 
   const { data: bookings } = await supabase
     .from("bookings")
-    .select("id, property_id, guest_name, guest_phone, guest_doc, guest_nationality, check_in, check_out, status, source, booking_url, source_uid, total_price, num_guests, note, channel_code, phone_last4")
+    .select("id, property_id, guest_name, guest_phone, guest_doc, guest_nationality, check_in, check_out, status, source, booking_url, source_uid, total_price, num_guests, note, channel_code, phone_last4, block_type, requires_cleaning")
     .in("property_id", (props as { id: string }[]).map((p) => p.id))
     .neq("status", "cancelled");
 
@@ -530,6 +626,9 @@ export async function GET() {
           note: b.note ?? null,
           channelCode: b.channel_code ?? null,
           phoneLast4: b.phone_last4 ?? null,
+          // Bloqueos: tipo + flag de limpieza. null para reservas reales.
+          blockType: b.block_type ?? null,
+          requiresCleaning: b.requires_cleaning ?? false,
         })),
     };
   });

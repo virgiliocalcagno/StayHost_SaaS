@@ -59,6 +59,36 @@ type Booking = {
   channelCode?: string | null;
   totalPrice?: number | null;
   sourceUid?: string | null;
+  // Solo bloqueos: tipo + flag de limpieza al final.
+  blockType?: BlockType | null;
+  requiresCleaning?: boolean | null;
+};
+
+// Tipos de bloqueo. NULL para reservas reales y bloqueos viejos
+// (los tratamos como "other" en la UI).
+type BlockType = "maintenance" | "personal" | "pre_booking" | "other";
+
+const BLOCK_TYPE_LABEL: Record<BlockType, string> = {
+  maintenance: "Mantenimiento",
+  personal: "Uso personal",
+  pre_booking: "Pre-reserva",
+  other: "Otro",
+};
+
+const BLOCK_TYPE_ICON: Record<BlockType, string> = {
+  maintenance: "🔧",
+  personal: "🏠",
+  pre_booking: "📋",
+  other: "❓",
+};
+
+// Default de "requires_cleaning" segun el tipo. El host puede sobrescribir
+// con el checkbox antes de guardar — esto solo decide el valor inicial.
+const BLOCK_TYPE_DEFAULT_CLEANING: Record<BlockType, boolean> = {
+  maintenance: true,
+  personal: true,
+  pre_booking: true,
+  other: false,
 };
 
 // CleaningTask — coincide con el shape devuelto por /api/cleaning-tasks.
@@ -202,6 +232,11 @@ export default function PropertyFullCalendarModal({
   const [rangeStart, setRangeStart] = useState<string | null>(null);
   const [rangeEnd, setRangeEnd] = useState<string | null>(null);
   const [blockNote, setBlockNote] = useState("");
+  // Tipo de bloqueo + flag de limpieza. Default mantenimiento + sí limpia,
+  // que es el caso mas comun (post-obra requiere limpieza). El host puede
+  // cambiar en el panel antes de guardar.
+  const [blockType, setBlockType] = useState<BlockType>("maintenance");
+  const [blockRequiresCleaning, setBlockRequiresCleaning] = useState(true);
   const [saving, setSaving] = useState(false);
   // Drag-to-select: cuando el usuario apreta el mouse en un dia libre y
   // lo arrastra sobre otras celdas, el rango se va actualizando en vivo.
@@ -228,6 +263,8 @@ export default function PropertyFullCalendarModal({
       setDragAnchor(null);
       setIsDragging(false);
       setBlockNote("");
+      setBlockType("maintenance");
+      setBlockRequiresCleaning(BLOCK_TYPE_DEFAULT_CLEANING.maintenance);
     }
   }, [open, property?.id]);
 
@@ -400,6 +437,8 @@ export default function PropertyFullCalendarModal({
           checkOut: endIso,
           source: "block",
           note: blockNote || null,
+          blockType,
+          requiresCleaning: blockRequiresCleaning,
         }),
       });
       const data = await res.json();
@@ -412,6 +451,8 @@ export default function PropertyFullCalendarModal({
         setRangeEnd(null);
         setDragAnchor(null);
         setBlockNote("");
+        setBlockType("maintenance");
+        setBlockRequiresCleaning(BLOCK_TYPE_DEFAULT_CLEANING.maintenance);
         // Dispara el refresh en el panel padre.
         window.dispatchEvent(new CustomEvent("stayhost:bookings-updated"));
       } else {
@@ -569,6 +610,15 @@ export default function PropertyFullCalendarModal({
                 end={rangeEnd ?? rangeStart}
                 note={blockNote}
                 setNote={setBlockNote}
+                blockType={blockType}
+                setBlockType={(t) => {
+                  setBlockType(t);
+                  // Al cambiar de tipo, ajusto el flag de limpieza al
+                  // default sugerido. El host puede destildarlo despues.
+                  setBlockRequiresCleaning(BLOCK_TYPE_DEFAULT_CLEANING[t]);
+                }}
+                requiresCleaning={blockRequiresCleaning}
+                setRequiresCleaning={setBlockRequiresCleaning}
                 onSaveBlock={handleSaveBlock}
                 onCreateBooking={onCreateBookingForRange ? handleCreateBookingClick : undefined}
                 saving={saving}
@@ -577,6 +627,8 @@ export default function PropertyFullCalendarModal({
                   setRangeEnd(null);
                   setDragAnchor(null);
                   setBlockNote("");
+                  setBlockType("maintenance");
+                  setBlockRequiresCleaning(BLOCK_TYPE_DEFAULT_CLEANING.maintenance);
                 }}
               />
             ) : (
@@ -794,6 +846,28 @@ function BookingDetailPanel({ booking, onClose }: { booking: Booking; onClose: (
         </div>
       )}
 
+      {block && manual && booking.blockType && (
+        <div className="rounded-xl bg-amber-50 border border-amber-200 p-3">
+          <p className="text-[9px] uppercase tracking-wider text-amber-900 font-black mb-1">Tipo</p>
+          <p className="text-sm font-bold text-amber-900 flex items-center gap-1.5">
+            <span className="text-base">{BLOCK_TYPE_ICON[booking.blockType]}</span>
+            {BLOCK_TYPE_LABEL[booking.blockType]}
+          </p>
+        </div>
+      )}
+
+      {block && manual && booking.requiresCleaning && (
+        <div className="rounded-xl bg-cyan-50 border border-cyan-200 p-3 flex items-start gap-2.5">
+          <Sparkles className="h-4 w-4 text-cyan-700 mt-0.5 shrink-0" />
+          <div>
+            <p className="text-xs font-bold text-cyan-900">Limpieza programada</p>
+            <p className="text-[11px] text-cyan-800/80 mt-0.5 leading-relaxed">
+              Se genera automaticamente la tarea de limpieza el dia de check-out.
+            </p>
+          </div>
+        </div>
+      )}
+
       <div className="grid grid-cols-2 gap-2">
         <div className="rounded-xl bg-background p-3 border">
           <p className="text-[9px] uppercase tracking-wider text-muted-foreground font-black mb-1 flex items-center gap-1">
@@ -855,6 +929,10 @@ function RangeActionPanel({
   end,
   note,
   setNote,
+  blockType,
+  setBlockType,
+  requiresCleaning,
+  setRequiresCleaning,
   onSaveBlock,
   onCreateBooking,
   saving,
@@ -864,6 +942,10 @@ function RangeActionPanel({
   end: string;
   note: string;
   setNote: (v: string) => void;
+  blockType: BlockType;
+  setBlockType: (t: BlockType) => void;
+  requiresCleaning: boolean;
+  setRequiresCleaning: (v: boolean) => void;
   onSaveBlock: () => void;
   onCreateBooking?: () => void;
   saving: boolean;
@@ -901,12 +983,53 @@ function RangeActionPanel({
 
       <div className="space-y-2">
         <Label className="text-[10px] uppercase tracking-wider font-black text-muted-foreground">
+          Tipo de bloqueo
+        </Label>
+        <div className="grid grid-cols-2 gap-1.5">
+          {(["maintenance", "personal", "pre_booking", "other"] as const).map((t) => (
+            <button
+              key={t}
+              type="button"
+              onClick={() => setBlockType(t)}
+              className={cn(
+                "h-12 px-2 rounded-lg text-[11px] font-bold border transition-colors text-left flex flex-col justify-center gap-0.5",
+                blockType === t
+                  ? "bg-slate-900 text-white border-slate-900"
+                  : "bg-background text-foreground border-border hover:bg-muted/50",
+              )}
+            >
+              <span className="text-base leading-none">{BLOCK_TYPE_ICON[t]}</span>
+              <span className="text-[10px]">{BLOCK_TYPE_LABEL[t]}</span>
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <label className="flex items-start gap-2.5 p-3 rounded-lg bg-cyan-50 border border-cyan-200 cursor-pointer hover:bg-cyan-100/60 transition-colors">
+        <input
+          type="checkbox"
+          checked={requiresCleaning}
+          onChange={(e) => setRequiresCleaning(e.target.checked)}
+          className="mt-0.5 h-4 w-4 rounded border-cyan-400 text-cyan-700 focus:ring-cyan-500"
+        />
+        <div className="flex-1">
+          <p className="text-xs font-bold text-cyan-900 flex items-center gap-1.5">
+            <Sparkles className="h-3 w-3" /> Requiere limpieza al final
+          </p>
+          <p className="text-[10px] text-cyan-800/80 mt-0.5 leading-relaxed">
+            Genera una tarea de limpieza el dia de check-out a la hora del checkout de la propiedad.
+          </p>
+        </div>
+      </label>
+
+      <div className="space-y-2">
+        <Label className="text-[10px] uppercase tracking-wider font-black text-muted-foreground">
           Nota (opcional)
         </Label>
         <Textarea
           value={note}
           onChange={(e) => setNote(e.target.value)}
-          placeholder="Mantenimiento, uso personal..."
+          placeholder="Detalles del bloqueo..."
           rows={2}
           className="text-xs resize-none"
         />
