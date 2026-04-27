@@ -151,8 +151,13 @@ async function listKeyboardPwds(args: {
 }
 
 /**
- * Rename de un PIN existente. Best-effort: si falla, no rompemos la
- * reconciliacion — el ttlock_pwd_id ya esta linkeado.
+ * Rename de un PIN existente via /v3/keyboardPwd/change. TTLock no tiene
+ * endpoint dedicado para renombrar — change permite modificar pwd, name,
+ * y/o dates en una sola llamada. Aca solo mandamos keyboardPwdName.
+ *
+ * Devuelve detail con errcode+errmsg para que el caller pueda surface al
+ * usuario cuando falla. Best-effort en el flow del sync inicial; en el
+ * endpoint admin de rename retroactivo usamos el detail para diagnosticar.
  */
 async function renameKeyboardPwd(args: {
   accessToken: string;
@@ -160,31 +165,33 @@ async function renameKeyboardPwd(args: {
   lockId: string;
   keyboardPwdId: string;
   newName: string;
-}): Promise<boolean> {
+}): Promise<{ ok: true } | { ok: false; detail: string }> {
   const params = new URLSearchParams({
     clientId: args.clientId,
     accessToken: args.accessToken,
     lockId: args.lockId,
     keyboardPwdId: args.keyboardPwdId,
-    keyboardPwdName: args.newName,
+    newKeyboardPwdName: args.newName,
     changeType: "2", // via gateway
     date: String(Date.now()),
   });
   try {
-    const res = await fetchWithTimeout(`${TTLOCK_API}/v3/keyboardPwd/changeName`, {
+    const res = await fetchWithTimeout(`${TTLOCK_API}/v3/keyboardPwd/change`, {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
       body: params.toString(),
     });
     const json = (await res.json()) as { errcode?: number; errmsg?: string };
     if (json.errcode && json.errcode !== 0) {
-      console.warn(`[ttlock/reconcile] rename failed: ${json.errcode} ${json.errmsg ?? ""}`);
-      return false;
+      const detail = `errcode=${json.errcode} errmsg=${json.errmsg ?? ""}`;
+      console.warn(`[ttlock/reconcile] rename failed: ${detail}`);
+      return { ok: false, detail };
     }
-    return true;
+    return { ok: true };
   } catch (err) {
-    console.warn("[ttlock/reconcile] rename network error:", err);
-    return false;
+    const detail = err instanceof Error ? err.message : String(err);
+    console.warn("[ttlock/reconcile] rename network error:", detail);
+    return { ok: false, detail };
   }
 }
 
@@ -290,13 +297,14 @@ export async function reconcileTTLockPin(pinId: string): Promise<ReconcileResult
     // Mismo criterio que sync-pin: SH# solo si traceId no empieza con SH.
     const renamePrefix = traceId.startsWith("SH") ? "" : "SH#";
     const newName = `${renamePrefix}${traceId} ${guestShort}`.slice(0, 32);
-    renamed = await renameKeyboardPwd({
+    const renameRes = await renameKeyboardPwd({
       accessToken,
       clientId,
       lockId: String(pin.ttlock_lock_id),
       keyboardPwdId: adoptedPwdId,
       newName,
     });
+    renamed = renameRes.ok;
   }
 
   return { ok: true, ttlockPwdId: adoptedPwdId, renamed };
@@ -373,13 +381,13 @@ export async function renamePinToTrazable(pinId: string): Promise<RenameResult> 
   const prefix = traceId.startsWith("SH") ? "" : "SH#";
   const newName = `${prefix}${traceId} ${guestShort}`.slice(0, 32);
 
-  const ok = await renameKeyboardPwd({
+  const renameRes = await renameKeyboardPwd({
     accessToken,
     clientId,
     lockId: String(pin.ttlock_lock_id),
     keyboardPwdId: pin.ttlock_pwd_id,
     newName,
   });
-  if (!ok) return { ok: false, reason: "rename_failed" };
+  if (!renameRes.ok) return { ok: false, reason: "rename_failed", detail: renameRes.detail };
   return { ok: true, newName };
 }
