@@ -909,19 +909,19 @@ export default function SmartDevicesPanel() {
                               }
                               if (gw.isOnline) {
                                 return (
-                                  <p className="text-[10px] text-green-700 mt-0.5 flex items-center gap-1.5 font-bold">
+                                  <p className="text-[10px] text-green-700 mt-0.5 flex items-center gap-1.5 font-bold flex-wrap">
                                     <span className="h-1.5 w-1.5 rounded-full bg-green-500 animate-pulse" />
-                                    {gw.gatewayName ? `${gw.gatewayName} ONLINE` : "Gateway ONLINE"}
-                                    {gw.networkName ? <span className="text-muted-foreground font-normal">· WiFi: {gw.networkName}</span> : null}
-                                    {gw.signal != null ? <span className="text-muted-foreground font-normal">· {gw.signal} dBm</span> : null}
+                                    <span>Gateway {gw.gatewayName ? <span className="text-slate-700">&ldquo;{gw.gatewayName}&rdquo;</span> : null} ONLINE</span>
+                                    {gw.networkName ? <span className="text-muted-foreground font-normal">· Red WiFi: {gw.networkName}</span> : null}
+                                    {gw.signal != null ? <span className="text-muted-foreground font-normal">· señal: {gw.signal} dBm</span> : null}
                                   </p>
                                 );
                               }
                               return (
-                                <p className="text-[10px] text-red-600 mt-0.5 flex items-center gap-1.5 font-bold">
+                                <p className="text-[10px] text-red-600 mt-0.5 flex items-center gap-1.5 font-bold flex-wrap">
                                   <span className="h-1.5 w-1.5 rounded-full bg-red-500 animate-pulse" />
-                                  {gw.gatewayName ? `${gw.gatewayName} OFFLINE` : "Gateway OFFLINE"}
-                                  {gw.networkName ? <span className="text-muted-foreground font-normal">· WiFi: {gw.networkName}</span> : null}
+                                  <span>Gateway {gw.gatewayName ? <span className="text-slate-700">&ldquo;{gw.gatewayName}&rdquo;</span> : null} OFFLINE</span>
+                                  {gw.networkName ? <span className="text-muted-foreground font-normal">· Red WiFi: {gw.networkName}</span> : null}
                                 </p>
                               );
                             })()}
