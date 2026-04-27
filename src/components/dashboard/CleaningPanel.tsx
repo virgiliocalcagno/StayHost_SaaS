@@ -153,7 +153,7 @@ const MOCK_TEAM: TeamMember[] = [
 
 
 export default function CleaningPanel() {
-  const [view, setView] = useState<"day" | "week" | "month">("day");
+  const [view, setView] = useState<"day" | "week" | "month" | "validate">("day");
   const [activeMonth, setActiveMonth] = useState<string>(() => {
     const d = new Date();
     return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
@@ -331,6 +331,16 @@ export default function CleaningPanel() {
         short: "semana",
       };
     }
+    if (view === "validate") {
+      // A validar: rango abierto (no acotado a un periodo). Mostramos
+      // todas las tareas que el staff envio, sin importar la fecha.
+      return {
+        start: "0000-00-00",
+        end: "9999-12-31",
+        label: "A validar",
+        short: "a validar",
+      };
+    }
     const [y, m] = activeMonth.split("-").map(Number);
     const lastDay = new Date(y, m, 0).getDate();
     const monthName = new Date(y, m - 1, 1)
@@ -348,6 +358,11 @@ export default function CleaningPanel() {
     const inPeriod = tasks.filter(
       (t) => t.dueDate >= period.start && t.dueDate <= period.end,
     );
+    // Esperando validacion del owner: el staff envio el reporte (fotos +
+    // checklist) y la tarea esta en cola para que el owner la apruebe o
+    // pida refoto. Se cuenta sobre TODAS las tareas, no solo el periodo,
+    // porque son urgentes sin importar la fecha del checkout.
+    const awaitingValidation = tasks.filter((t) => t.isWaitingValidation === true).length;
     return {
       total: inPeriod.length,
       // KPIs usan effective status para que filas con datos inconsistentes
@@ -357,16 +372,21 @@ export default function CleaningPanel() {
       completed: inPeriod.filter((t) => getEffectiveStatus(t) === "completed").length,
       pending: inPeriod.filter((t) => getEffectiveStatus(t) !== "completed").length,
       critical: inPeriod.filter((t) => t.priority === "critical").length,
+      awaitingValidation,
     };
   }, [tasks, period]);
 
   const filteredTasks = useMemo(() => {
     let result = tasks;
-    
+
     // Vista diaria: solo hoy.
     // Vista semanal: dia seleccionado en el strip de tabs.
     // Vista mensual: dia seleccionado en el grid de calendario (activeDate).
-    if (view === "day") {
+    // Vista validate: solo tareas que el staff envio y esperan aprobacion
+    //   del owner. Sin filtro de fecha — son urgentes igual.
+    if (view === "validate") {
+      result = result.filter(t => t.isWaitingValidation === true);
+    } else if (view === "day") {
       result = result.filter(t => t.dueDate === getDateStr(0));
     } else if (view === "week" || view === "month") {
       result = result.filter(t => t.dueDate === activeDate);
@@ -377,6 +397,11 @@ export default function CleaningPanel() {
     }
 
     return result.sort((a, b) => {
+      // En vista validate ordenamos por checkout mas viejo primero
+      // (la mas urgente de aprobar es la que lleva mas tiempo esperando).
+      if (view === "validate") {
+        return a.dueDate.localeCompare(b.dueDate);
+      }
       // Vacantes al final (baja prioridad), críticos al frente
       if (a.isVacant && !b.isVacant) return 1;
       if (!a.isVacant && b.isVacant) return -1;
@@ -1094,11 +1119,25 @@ export default function CleaningPanel() {
           <p className="text-muted-foreground">Sistema centralizado de limpieza y mantenimiento especializado</p>
         </div>
         <div className="flex items-center gap-3">
-          <Tabs value={view} onValueChange={(v) => setView(v as "day" | "week" | "month")} className="w-auto">
+          <Tabs value={view} onValueChange={(v) => setView(v as "day" | "week" | "month" | "validate")} className="w-auto">
             <TabsList className="bg-muted/50 p-1">
               <TabsTrigger value="day" className="data-[state=active]:bg-white data-[state=active]:shadow-sm px-4">Diaria</TabsTrigger>
               <TabsTrigger value="week" className="data-[state=active]:bg-white data-[state=active]:shadow-sm px-4">Semanal</TabsTrigger>
               <TabsTrigger value="month" className="data-[state=active]:bg-white data-[state=active]:shadow-sm px-4">Mensual</TabsTrigger>
+              <TabsTrigger
+                value="validate"
+                className={cn(
+                  "data-[state=active]:bg-white data-[state=active]:shadow-sm px-4 gap-1.5",
+                  stats.awaitingValidation > 0 && "text-rose-600 font-bold",
+                )}
+              >
+                A validar
+                {stats.awaitingValidation > 0 && (
+                  <Badge className="bg-rose-500 text-white border-0 text-[10px] h-4 px-1.5 font-black animate-pulse">
+                    {stats.awaitingValidation}
+                  </Badge>
+                )}
+              </TabsTrigger>
             </TabsList>
           </Tabs>
           <Button onClick={() => setShowAddTask(true)} className="gradient-gold text-primary-foreground shadow-lg hover:shadow-primary/20 transition-all gap-2 px-6">
@@ -1109,14 +1148,36 @@ export default function CleaningPanel() {
       </div>
 
       {/* ─── Top Dashboard Stats ────────────────────────────────────────── */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+      <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
         {[
-          { label: `Checkouts ${period.short}`, value: stats.total, icon: LogOut, color: "text-primary", bg: "bg-primary/10" },
-          { label: `Back-to-Back ${period.short}`, value: stats.critical, icon: TrendingUp, color: "text-rose-600", bg: "bg-rose-100/50" },
-          { label: `Completadas ${period.short}`, value: stats.completed, icon: CheckCircle2, color: "text-emerald-600", bg: "bg-emerald-100/50" },
-          { label: `Pendientes ${period.short}`, value: stats.pending, icon: Clock, color: "text-muted-foreground", bg: "bg-muted" },
+          { label: `Checkouts ${period.short}`, value: stats.total, icon: LogOut, color: "text-primary", bg: "bg-primary/10", onClick: undefined as (() => void) | undefined, urgent: false },
+          { label: `Back-to-Back ${period.short}`, value: stats.critical, icon: TrendingUp, color: "text-rose-600", bg: "bg-rose-100/50", onClick: undefined, urgent: false },
+          { label: `Completadas ${period.short}`, value: stats.completed, icon: CheckCircle2, color: "text-emerald-600", bg: "bg-emerald-100/50", onClick: undefined, urgent: false },
+          { label: `Pendientes ${period.short}`, value: stats.pending, icon: Clock, color: "text-muted-foreground", bg: "bg-muted", onClick: undefined, urgent: false },
+          // 5to KPI: tareas que el staff envio y esperan aprobacion del owner.
+          // Click → cambia la vista del cronograma a "A validar". Pulsa cuando
+          // hay > 0 para que el owner las atienda al abrir el modulo.
+          {
+            label: "A validar",
+            value: stats.awaitingValidation,
+            icon: ClipboardList,
+            color: stats.awaitingValidation > 0 ? "text-rose-600" : "text-muted-foreground",
+            bg: stats.awaitingValidation > 0 ? "bg-rose-100/60" : "bg-muted",
+            onClick: () => setView("validate"),
+            urgent: stats.awaitingValidation > 0,
+          },
         ].map((stat, i) => (
-          <Card key={i} className="border-none shadow-soft overflow-hidden group">
+          <Card
+            key={i}
+            className={cn(
+              "border-none shadow-soft overflow-hidden group",
+              stat.onClick && "cursor-pointer hover:shadow-md transition-shadow",
+              stat.urgent && "ring-2 ring-rose-200 animate-pulse",
+            )}
+            onClick={stat.onClick}
+            role={stat.onClick ? "button" : undefined}
+            tabIndex={stat.onClick ? 0 : undefined}
+          >
             <CardContent className="p-5 flex items-center gap-4 relative">
               <div className={cn("p-3 rounded-2xl transition-all group-hover:scale-110", stat.bg)}>
                 <stat.icon className={cn("h-6 w-6", stat.color)} />
@@ -1621,15 +1682,27 @@ export default function CleaningPanel() {
                 );
               })
             ) : (
-              <div className="text-center py-20 bg-muted/20 rounded-3xl border-2 border-dashed border-muted">
-                <div className="h-16 w-16 bg-muted rounded-full flex items-center justify-center mx-auto mb-4">
-                  <Calendar className="h-8 w-8 text-muted-foreground" />
+              view === "validate" ? (
+                <div className="text-center py-20 bg-emerald-50/40 rounded-3xl border-2 border-dashed border-emerald-200">
+                  <div className="h-16 w-16 bg-emerald-100 rounded-full flex items-center justify-center mx-auto mb-4">
+                    <CheckCircle2 className="h-8 w-8 text-emerald-600" />
+                  </div>
+                  <h4 className="font-semibold text-lg text-emerald-900">Nada por validar</h4>
+                  <p className="text-emerald-700/70 max-w-xs mx-auto mt-1">
+                    El staff no envio reportes pendientes. Cuando completen una limpieza apareceran aca para que las apruebes.
+                  </p>
                 </div>
-                <h4 className="font-semibold text-lg">No hay tareas programadas</h4>
-                <p className="text-muted-foreground max-w-xs mx-auto mt-1">
-                  Relájate, hoy parece que no tienes checkouts en tu calendario.
-                </p>
-              </div>
+              ) : (
+                <div className="text-center py-20 bg-muted/20 rounded-3xl border-2 border-dashed border-muted">
+                  <div className="h-16 w-16 bg-muted rounded-full flex items-center justify-center mx-auto mb-4">
+                    <Calendar className="h-8 w-8 text-muted-foreground" />
+                  </div>
+                  <h4 className="font-semibold text-lg">No hay tareas programadas</h4>
+                  <p className="text-muted-foreground max-w-xs mx-auto mt-1">
+                    Relájate, hoy parece que no tienes checkouts en tu calendario.
+                  </p>
+                </div>
+              )
             )}
           </div>
         </div>

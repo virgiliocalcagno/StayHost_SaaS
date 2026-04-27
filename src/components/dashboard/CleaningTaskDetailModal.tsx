@@ -553,37 +553,117 @@ export function CleaningTaskDetailModal({
             )}
           </Section>
 
-          {/* Evidencia: fotos de cierre */}
-          {task.closurePhotos && task.closurePhotos.length > 0 && (
-            <Section
-              icon={Camera}
-              title="Evidencia visual"
-              badge={`${task.closurePhotos.length} ${task.closurePhotos.length === 1 ? "foto" : "fotos"}`}
-            >
-              <div className="grid grid-cols-3 gap-2">
-                {task.closurePhotos.map((photo, idx) => (
-                  <a
-                    key={idx}
-                    href={photo.url}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="aspect-square rounded-lg overflow-hidden bg-slate-100 border border-slate-200 hover:opacity-80 transition-opacity relative group"
-                  >
-                    <img
-                      src={photo.url}
-                      alt={photo.category}
-                      className="w-full h-full object-cover"
-                    />
-                    <div className="absolute inset-x-0 bottom-0 p-1.5 bg-gradient-to-t from-black/80 to-transparent">
-                      <p className="text-white text-[9px] font-bold uppercase truncate">
-                        {photo.category}
-                      </p>
+          {/* Evidencia: cruce con evidence_criteria de la propiedad +
+              galeria de fotos de cierre. Si la propiedad define que
+              categorias requiere (ej. "cocina, bano, sala"), mostramos
+              un checklist visual de cobertura para que el owner sepa
+              de un vistazo si el staff fotografio todo lo pedido. */}
+          {(() => {
+            const photos = task.closurePhotos ?? [];
+            const criteria = property?.evidenceCriteria ?? [];
+            const hasCriteria = criteria.length > 0;
+            const hasPhotos = photos.length > 0;
+            if (!hasCriteria && !hasPhotos) return null;
+
+            // Cuenta fotos por categoria — case-insensitive porque el
+            // staff escribe "Cocina" y la propiedad puede tener "cocina".
+            const photosByCategory = new Map<string, number>();
+            for (const p of photos) {
+              const k = (p.category || "").toLowerCase().trim();
+              photosByCategory.set(k, (photosByCategory.get(k) ?? 0) + 1);
+            }
+            const covered = criteria.filter(
+              (c) => (photosByCategory.get(c.toLowerCase().trim()) ?? 0) > 0,
+            ).length;
+            const score = hasCriteria ? `${covered}/${criteria.length}` : null;
+            const incomplete = hasCriteria && covered < criteria.length;
+
+            return (
+              <Section
+                icon={Camera}
+                title="Evidencia visual"
+                badge={
+                  score
+                    ? `${score} categorias`
+                    : `${photos.length} ${photos.length === 1 ? "foto" : "fotos"}`
+                }
+                tone={incomplete ? "warning" : "default"}
+              >
+                {hasCriteria && (
+                  <div className="mb-4 p-3 rounded-xl bg-slate-50 border border-slate-200">
+                    <p className="text-[10px] font-black text-slate-600 uppercase tracking-widest mb-2">
+                      Categorias requeridas por la propiedad
+                    </p>
+                    <div className="space-y-1.5">
+                      {criteria.map((c) => {
+                        const count = photosByCategory.get(c.toLowerCase().trim()) ?? 0;
+                        const ok = count > 0;
+                        return (
+                          <div
+                            key={c}
+                            className={cn(
+                              "flex items-center gap-2 px-2.5 py-1.5 rounded-lg border text-sm",
+                              ok
+                                ? "bg-emerald-50/60 border-emerald-100 text-emerald-900"
+                                : "bg-rose-50/60 border-rose-100 text-rose-900",
+                            )}
+                          >
+                            {ok ? (
+                              <CheckCircle2 className="h-4 w-4 text-emerald-600 flex-shrink-0" />
+                            ) : (
+                              <X className="h-4 w-4 text-rose-500 flex-shrink-0" />
+                            )}
+                            <span className="flex-1 capitalize font-medium">{c}</span>
+                            <span className={cn("text-[11px] font-bold", ok ? "text-emerald-700" : "text-rose-600")}>
+                              {ok ? `${count} foto${count === 1 ? "" : "s"}` : "FALTANTE"}
+                            </span>
+                          </div>
+                        );
+                      })}
                     </div>
-                  </a>
-                ))}
-              </div>
-            </Section>
-          )}
+                    {incomplete && (
+                      <p className="text-[11px] text-rose-700 mt-2 flex items-center gap-1.5">
+                        <AlertTriangle className="h-3.5 w-3.5 flex-shrink-0" />
+                        Faltan categorias antes de validar — pedile al staff que las complete.
+                      </p>
+                    )}
+                  </div>
+                )}
+
+                {hasPhotos ? (
+                  <div className="grid grid-cols-3 gap-2">
+                    {photos.map((photo, idx) => (
+                      <a
+                        key={idx}
+                        href={photo.url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="aspect-square rounded-lg overflow-hidden bg-slate-100 border border-slate-200 hover:opacity-80 transition-opacity relative group"
+                      >
+                        <img
+                          src={photo.url}
+                          alt={photo.category}
+                          className="w-full h-full object-cover"
+                        />
+                        <div className="absolute inset-x-0 bottom-0 p-1.5 bg-gradient-to-t from-black/80 to-transparent">
+                          <p className="text-white text-[9px] font-bold uppercase truncate">
+                            {photo.category}
+                          </p>
+                        </div>
+                      </a>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="text-center py-6 bg-slate-50 rounded-xl border border-dashed border-slate-200">
+                    <Camera className="h-8 w-8 text-slate-300 mx-auto mb-2" />
+                    <p className="text-sm text-slate-500 font-medium">
+                      El staff todavia no subio fotos de cierre
+                    </p>
+                  </div>
+                )}
+              </Section>
+            );
+          })()}
 
           {/* Incidencias reportadas */}
           {task.reportedIssues && task.reportedIssues.length > 0 && (
