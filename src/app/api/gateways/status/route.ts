@@ -93,11 +93,34 @@ export async function GET() {
         lockId: String(prop.ttlock_lock_id),
       });
       if (!linked) {
-        // El lock fisico existe en TTLock, pero no esta vinculado a un
-        // gateway en su cache. Caso real: la cerradura se pareo via
-        // bluetooth pero no se hizo el binding al gateway en la app.
-        // La cerradura puede seguir funcionando offline pero no se le
-        // pueden mandar PINs nuevos via internet.
+        // listByLock vacio. Dos causas reales:
+        //   a) el lock nunca se vinculo a un gateway en TTLock
+        //   b) el gateway esta offline (sin internet) y TTLock cloud
+        //      perdio la cache del binding hasta que vuelva
+        //
+        // Para distinguir: si la cuenta tiene UN gateway offline con
+        // lockNum=0 (gateway "huerfano" sin locks reportados), es
+        // probable que sea el caso (b) — el lockNum de TTLock no
+        // refleja el binding real cuando el gateway esta down.
+        const fullList = accountGateways.get(prop.ttlock_account_id) ?? [];
+        const offlineGatewaysWithoutLocks = fullList.filter(
+          (g) => !g.isOnline && g.lockNum === 0,
+        );
+        if (offlineGatewaysWithoutLocks.length === 1) {
+          const candidate = offlineGatewaysWithoutLocks[0];
+          // Reportamos como offline (badge rojo) con el nombre del
+          // gateway candidato. Asi el host ve "Emy OFFLINE" en lugar
+          // del confuso "sin gateway vinculado".
+          return {
+            ...base,
+            gatewayId: candidate.gatewayId,
+            gatewayName: candidate.gatewayName,
+            networkName: candidate.networkName,
+            isOnline: false,
+            signal: null,
+            reason: null,
+          };
+        }
         return { ...base, gatewayId: null, gatewayName: null, networkName: null, isOnline: false, signal: null, reason: "not_linked" as const };
       }
 
