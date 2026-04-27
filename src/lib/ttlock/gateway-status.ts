@@ -169,14 +169,21 @@ export async function listGatewaysForAccount(args: {
 }
 
 /**
- * Devuelve el estado del gateway que controla un lock especifico. Si la
- * cerradura no esta asociada a ningun gateway, retorna null.
+ * Devuelve el gatewayId asociado a un lock + el rssi (signal especifico
+ * de ese lock, distinto al signal global del gateway). NO incluye
+ * isOnline porque /v3/gateway/listByLock NO lo devuelve — para saber si
+ * el gateway esta online hay que cruzar con listGatewaysForAccount por
+ * gatewayId.
+ *
+ * Devuelve null si el lock no esta vinculado a ningun gateway en TTLock
+ * (caso real: cerradura conectada fisicamente pero la asociacion no se
+ * registro en la app TTLock).
  */
-export async function getGatewayForLock(args: {
+export async function getLinkedGatewayId(args: {
   accountId: string;
   tenantId: string;
   lockId: string;
-}): Promise<GatewayStatus | null> {
+}): Promise<{ gatewayId: string; rssi: number | null } | null> {
   const { accountId, tenantId, lockId } = args;
   const accessToken = await resolveAccessToken(accountId, tenantId);
   if (!accessToken) return null;
@@ -198,18 +205,20 @@ export async function getGatewayForLock(args: {
     const json = (await res.json()) as {
       errcode?: number;
       errmsg?: string;
-      list?: TTLockGatewayEntry[];
+      list?: Array<{
+        gatewayId: number | string;
+        gatewayName?: string;
+        gatewayMac?: string;
+        rssi?: number;
+        rssiUpdateDate?: number;
+      }>;
     };
     if (json.errcode && json.errcode !== 0) return null;
     const first = json.list?.[0];
     if (!first) return null;
     return {
       gatewayId: String(first.gatewayId),
-      gatewayName: first.gatewayName ?? "Gateway",
-      networkName: first.networkName ?? null,
-      isOnline: first.isOnline === 1,
-      signal: typeof first.signal === "number" ? first.signal : null,
-      lockNum: typeof first.lockNum === "number" ? first.lockNum : 0,
+      rssi: typeof first.rssi === "number" ? first.rssi : null,
     };
   } catch (err) {
     console.warn("[ttlock/gateway] listByLock error:", err);

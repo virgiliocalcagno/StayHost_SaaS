@@ -187,8 +187,9 @@ export default function SmartDevicesPanel() {
   type GatewayInfo = {
     isOnline: boolean;
     networkName: string | null;
+    gatewayName: string | null;
     signal: number | null;
-    reason: "no_account" | "no_gateway" | null;
+    reason: "no_account" | "no_gateway" | "not_linked" | null;
   };
   const [gatewayByProp, setGatewayByProp] = useState<Record<string, GatewayInfo | null>>({});
   const [gatewaysLoading, setGatewaysLoading] = useState(false);
@@ -203,8 +204,9 @@ export default function SmartDevicesPanel() {
           propertyId: string;
           isOnline: boolean;
           networkName: string | null;
+          gatewayName: string | null;
           signal: number | null;
-          reason: "no_account" | "no_gateway" | null;
+          reason: "no_account" | "no_gateway" | "not_linked" | null;
         }>;
       };
       const map: Record<string, GatewayInfo | null> = {};
@@ -212,6 +214,7 @@ export default function SmartDevicesPanel() {
         map[g.propertyId] = {
           isOnline: g.isOnline,
           networkName: g.networkName,
+          gatewayName: g.gatewayName,
           signal: g.signal,
           reason: g.reason,
         };
@@ -888,6 +891,14 @@ export default function SmartDevicesPanel() {
                                   </p>
                                 );
                               }
+                              if (gw.reason === "not_linked") {
+                                return (
+                                  <p className="text-[10px] text-amber-700 mt-0.5 flex items-center gap-1.5 font-bold">
+                                    <span className="h-1.5 w-1.5 rounded-full bg-amber-500" />
+                                    Cerradura sin gateway vinculado en TTLock
+                                  </p>
+                                );
+                              }
                               if (gw.reason === "no_gateway") {
                                 return (
                                   <p className="text-[10px] text-amber-700 mt-0.5 flex items-center gap-1.5 font-bold">
@@ -900,7 +911,7 @@ export default function SmartDevicesPanel() {
                                 return (
                                   <p className="text-[10px] text-green-700 mt-0.5 flex items-center gap-1.5 font-bold">
                                     <span className="h-1.5 w-1.5 rounded-full bg-green-500 animate-pulse" />
-                                    Gateway ONLINE
+                                    {gw.gatewayName ? `${gw.gatewayName} ONLINE` : "Gateway ONLINE"}
                                     {gw.networkName ? <span className="text-muted-foreground font-normal">· WiFi: {gw.networkName}</span> : null}
                                     {gw.signal != null ? <span className="text-muted-foreground font-normal">· {gw.signal} dBm</span> : null}
                                   </p>
@@ -909,7 +920,7 @@ export default function SmartDevicesPanel() {
                               return (
                                 <p className="text-[10px] text-red-600 mt-0.5 flex items-center gap-1.5 font-bold">
                                   <span className="h-1.5 w-1.5 rounded-full bg-red-500 animate-pulse" />
-                                  Gateway OFFLINE
+                                  {gw.gatewayName ? `${gw.gatewayName} OFFLINE` : "Gateway OFFLINE"}
                                   {gw.networkName ? <span className="text-muted-foreground font-normal">· WiFi: {gw.networkName}</span> : null}
                                 </p>
                               );

@@ -20,7 +20,7 @@
 import { NextResponse } from "next/server";
 import { getAuthenticatedTenant } from "@/lib/supabase/server";
 import { supabaseAdmin } from "@/lib/supabase/admin";
-import { getGatewayForLock } from "@/lib/ttlock/gateway-status";
+import { listGatewaysForAccount, getLinkedGatewayId, type GatewayStatus } from "@/lib/ttlock/gateway-status";
 
 export async function GET() {
   const { tenantId } = await getAuthenticatedTenant();
@@ -28,7 +28,6 @@ export async function GET() {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  // Propiedades del tenant con cerradura (las que nos interesan).
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const { data: props } = await (supabaseAdmin.from("properties") as any)
     .select("id, name, ttlock_account_id, ttlock_lock_id")
@@ -45,81 +44,83 @@ export async function GET() {
     return NextResponse.json({ gateways: [] });
   }
 
-  // Para CADA cerradura llamamos /v3/gateway/listByLock — esto es lo
-  // unico correcto cuando un host tiene multiples propiedades, cada una
-  // con su propio gateway en una red WiFi distinta. Antes asumia "1
-  // gateway por cuenta" y mostraba el mismo estado en todas.
+  // Para mostrar estado correcto necesitamos cruzar dos APIs de TTLock:
+  //   /v3/gateway/list         → trae isOnline + networkName + gatewayName
+  //                              de TODOS los gateways de la cuenta
+  //   /v3/gateway/listByLock   → trae el gatewayId asociado a un lock
+  //                              especifico (NO incluye isOnline)
   //
-  // Llamamos en paralelo (Promise.all) para no acumular latencia: 3
-  // propiedades = 1 round-trip (~2s) en vez de 6s secuencial.
+  // El primer instinto fue usar solo listByLock, pero ese endpoint no
+  // devuelve isOnline. Resultado: un gateway online aparecia offline
+  // para todos los locks. Ahora hacemos: 1 listAll cacheada por
+  // accountId + N listByLock por lockId, y matcheamos por gatewayId.
+
+  // 1) listAll por cada accountId distinto.
+  const accountIds = Array.from(
+    new Set(properties.map((p) => p.ttlock_account_id).filter((x): x is string => Boolean(x)))
+  );
+  const accountGateways = new Map<string, GatewayStatus[]>();
+  await Promise.all(
+    accountIds.map(async (accId) => {
+      try {
+        const list = await listGatewaysForAccount({ accountId: accId, tenantId });
+        accountGateways.set(accId, list);
+      } catch (err) {
+        console.error("[gateways/status] listAll failed for account:", accId, err);
+        accountGateways.set(accId, []);
+      }
+    })
+  );
+
+  // 2) Por cada propiedad: listByLock para encontrar gatewayId, despues
+  // matchear contra accountGateways para obtener el isOnline real.
   const result = await Promise.all(
     properties.map(async (prop) => {
+      const base = {
+        propertyId: prop.id,
+        propertyName: prop.name,
+      };
       if (!prop.ttlock_account_id) {
-        return {
-          propertyId: prop.id,
-          propertyName: prop.name,
-          gatewayId: null,
-          gatewayName: null,
-          networkName: null,
-          isOnline: false,
-          signal: null,
-          reason: "no_account" as const,
-        };
+        return { ...base, gatewayId: null, gatewayName: null, networkName: null, isOnline: false, signal: null, reason: "no_account" as const };
       }
       if (!prop.ttlock_lock_id) {
-        return {
-          propertyId: prop.id,
-          propertyName: prop.name,
-          gatewayId: null,
-          gatewayName: null,
-          networkName: null,
-          isOnline: false,
-          signal: null,
-          reason: "no_gateway" as const,
-        };
+        return { ...base, gatewayId: null, gatewayName: null, networkName: null, isOnline: false, signal: null, reason: "no_gateway" as const };
       }
 
-      try {
-        const gw = await getGatewayForLock({
-          accountId: prop.ttlock_account_id,
-          tenantId,
-          lockId: String(prop.ttlock_lock_id),
-        });
-        if (!gw) {
-          return {
-            propertyId: prop.id,
-            propertyName: prop.name,
-            gatewayId: null,
-            gatewayName: null,
-            networkName: null,
-            isOnline: false,
-            signal: null,
-            reason: "no_gateway" as const,
-          };
-        }
-        return {
-          propertyId: prop.id,
-          propertyName: prop.name,
-          gatewayId: gw.gatewayId,
-          gatewayName: gw.gatewayName,
-          networkName: gw.networkName,
-          isOnline: gw.isOnline,
-          signal: gw.signal,
-          reason: null,
-        };
-      } catch (err) {
-        console.error("[gateways/status] listByLock failed for", prop.id, err);
-        return {
-          propertyId: prop.id,
-          propertyName: prop.name,
-          gatewayId: null,
-          gatewayName: null,
-          networkName: null,
-          isOnline: false,
-          signal: null,
-          reason: "no_gateway" as const,
-        };
+      const linked = await getLinkedGatewayId({
+        accountId: prop.ttlock_account_id,
+        tenantId,
+        lockId: String(prop.ttlock_lock_id),
+      });
+      if (!linked) {
+        // El lock fisico existe en TTLock, pero no esta vinculado a un
+        // gateway en su cache. Caso real: la cerradura se pareo via
+        // bluetooth pero no se hizo el binding al gateway en la app.
+        // La cerradura puede seguir funcionando offline pero no se le
+        // pueden mandar PINs nuevos via internet.
+        return { ...base, gatewayId: null, gatewayName: null, networkName: null, isOnline: false, signal: null, reason: "not_linked" as const };
       }
+
+      const fullList = accountGateways.get(prop.ttlock_account_id) ?? [];
+      const gw = fullList.find((g) => g.gatewayId === linked.gatewayId);
+      if (!gw) {
+        // Raro: listByLock dice que esta vinculado a X pero listAll no
+        // tiene a X. Token expirado entre llamadas o gateway recien
+        // borrado. Damos signal = rssi del lock pero isOnline=false.
+        return { ...base, gatewayId: linked.gatewayId, gatewayName: null, networkName: null, isOnline: false, signal: linked.rssi, reason: "no_gateway" as const };
+      }
+
+      return {
+        ...base,
+        gatewayId: gw.gatewayId,
+        gatewayName: gw.gatewayName,
+        networkName: gw.networkName,
+        isOnline: gw.isOnline,
+        // Preferimos rssi del lock especifico (mas relevante para esa
+        // cerradura) sobre el signal global del gateway.
+        signal: linked.rssi ?? gw.signal,
+        reason: null,
+      };
     })
   );
 
