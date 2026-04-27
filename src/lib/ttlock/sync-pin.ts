@@ -23,6 +23,7 @@
 
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { deleteTTLockPin } from "./delete-pin";
+import { reconcileTTLockPin, isTTLockAlreadyExistsError, buildPinTrazableName } from "./reconcile-pin";
 
 const TTLOCK_API = process.env.TTLOCK_API_URL ?? "https://euapi.ttlock.com";
 const MAX_ATTEMPTS = 6;
@@ -257,7 +258,29 @@ export async function syncPinToLock(pinId: string): Promise<SyncPinResult> {
     }
   }
 
-  // 5) Crear el nuevo PIN en la cerradura
+  // 5) Crear el nuevo PIN en la cerradura.
+  //
+  // El keyboardPwdName es lo que el host ve en TTLock Web System al lado
+  // del codigo. Lo armamos trazable: incluye el channel_code (SH...) o el
+  // booking_id corto para que ante un PIN huerfano o un error tipo "ya
+  // existe ese codigo" se pueda identificar de que reserva vino con un
+  // SELECT directo en bookings. TTLock acepta hasta 32 caracteres en este
+  // campo, asi que trim agresivo.
+  let channelCode: string | null = null;
+  if (pin.booking_id) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const { data: bk } = await (supabaseAdmin.from("bookings") as any)
+      .select("channel_code")
+      .eq("id", pin.booking_id)
+      .maybeSingle();
+    channelCode = (bk as { channel_code?: string | null } | null)?.channel_code ?? null;
+  }
+  const keyboardPwdName = buildPinTrazableName({
+    channelCode,
+    bookingId: pin.booking_id,
+    guestName: pin.guest_name,
+  });
+
   const startDate = new Date(pin.valid_from).getTime();
   const endDate = new Date(pin.valid_to).getTime();
   const params = new URLSearchParams({
@@ -265,7 +288,7 @@ export async function syncPinToLock(pinId: string): Promise<SyncPinResult> {
     accessToken,
     lockId: String(pin.ttlock_lock_id),
     keyboardPwd: pin.pin,
-    keyboardPwdName: `StayHost - ${pin.guest_name ?? "Huésped"}`,
+    keyboardPwdName,
     startDate: String(startDate),
     endDate: String(endDate),
     addType: "2", // via gateway
@@ -289,6 +312,29 @@ export async function syncPinToLock(pinId: string): Promise<SyncPinResult> {
           sync_last_error: `Cerradura offline: ${json.errmsg ?? json.errcode}`,
         });
         return { ok: false, reason: "offline_lock", detail: String(json.errmsg ?? json.errcode) };
+      }
+
+      // Auto-heal: TTLock dice "ya existe ese passcode". Significa que el
+      // PIN se creo en una corrida anterior pero no logramos persistir el
+      // ttlock_pwd_id (Vercel mato la function entre el add exitoso y el
+      // UPDATE en BD). En vez de quedar huerfanos para siempre, llamamos
+      // listKeyboardPwd, matcheamos por (pin + dates) y adoptamos el id.
+      if (isTTLockAlreadyExistsError(json.errcode, json.errmsg)) {
+        const reconciled = await reconcileTTLockPin(pinId);
+        if (reconciled.ok) {
+          return { ok: true, ttlockPwdId: reconciled.ttlockPwdId };
+        }
+        // No matcheo — registramos como error normal, no agregamos al pool
+        // de auto-heal para no loopear infinito.
+        const nextAttempts = pin.sync_attempts + 1;
+        const retryAt = scheduleRetry(nextAttempts);
+        await updateSyncState(pinId, {
+          sync_status: retryAt ? "retry" : "failed",
+          sync_attempts: nextAttempts,
+          sync_next_retry_at: retryAt,
+          sync_last_error: `TTLock dice already-exists pero reconcile fallo: ${reconciled.reason}${reconciled.detail ? ` (${reconciled.detail})` : ""}`,
+        });
+        return { ok: false, reason: "api_error", detail: `already-exists, reconcile failed: ${reconciled.reason}` };
       }
 
       const nextAttempts = pin.sync_attempts + 1;

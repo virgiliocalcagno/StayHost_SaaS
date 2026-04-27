@@ -3,15 +3,8 @@
     "allow": [
       "Bash(npm install *)",
       "Bash(npx tsc *)",
-      "Read(//c/Users/virgi/.claude/skills/notebooklm/**)",
-      "Bash(python scripts/run.py auth_manager.py status)",
-      "Bash(python scripts/run.py notebook_manager.py list)",
-      "Bash(python scripts/run.py ask_question.py --question \"En StayHost, ¿cuál es el flujo completo del check-in del huésped? Específicamente: \\(1\\) cómo es el LOGIN del huésped en la pantalla de check-in \\(qué datos pide, código de reserva + teléfono, si hay casos especiales\\), \\(2\\) cómo se genera y entrega el PIN de la cerradura TTLock al huésped \\(cuándo se crea, qué dígitos usa, cómo se muestra, qué pasa si la reserva viene de iCal vs directa\\), y \\(3\\) qué decisiones de producto o ideas quedaron documentadas sobre estos dos temas \\(email a seguridad, multi-huésped, QR de acceso, etc\\). Si hay pasos pendientes o problemas conocidos, mencionarlos. Responder de forma estructurada y completa.\")",
-      "Bash(npx eslint *)",
-      "Bash(git commit *)",
-      "Bash(git push *)",
-      "Bash(gh pr *)",
-      "Bash(git add *)"
+      "Bash(git fetch *)",
+      "Bash(git merge *)"
     ]
   }
 }

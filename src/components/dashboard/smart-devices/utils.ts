@@ -45,15 +45,25 @@ export const CHANNEL_COLORS: Record<string, string> = {
 
 // ─── Pure helpers ─────────────────────────────────────────────────────────
 
+// Bateria escalonada en dos niveles operativos:
+//   <= 30%: critico — cambio inmediato, riesgo de cerradura no funcional
+//   <= 50%: medio   — cambio pronto, todavia opera bien
+//   > 50%:  ok
+// Las cerraduras TTLock empiezan a fallar bajo 20%, pero no esperamos
+// hasta ahi: planificacion preventiva es mas barato que un huesped sin
+// acceso a las 11pm.
+export const BATTERY_CRITICAL_THRESHOLD = 30;
+export const BATTERY_WARNING_THRESHOLD = 50;
+
 export function batteryColor(pct: number) {
-  if (pct <= 15) return "text-red-500";
-  if (pct <= 35) return "text-amber-500";
+  if (pct <= BATTERY_CRITICAL_THRESHOLD) return "text-red-500";
+  if (pct <= BATTERY_WARNING_THRESHOLD) return "text-amber-500";
   return "text-green-500";
 }
 
 export function batteryBg(pct: number) {
-  if (pct <= 15) return "[&>div]:bg-red-500";
-  if (pct <= 35) return "[&>div]:bg-amber-500";
+  if (pct <= BATTERY_CRITICAL_THRESHOLD) return "[&>div]:bg-red-500";
+  if (pct <= BATTERY_WARNING_THRESHOLD) return "[&>div]:bg-amber-500";
   return "[&>div]:bg-green-500";
 }
 
