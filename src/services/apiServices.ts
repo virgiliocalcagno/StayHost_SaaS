@@ -15,12 +15,19 @@ export interface RawProperty {
   id: string;
   name: string;
   address?: string;
+  addressUnit?: string;
+  neighborhood?: string;
+  city?: string;
   image?: string;
   autoAssignCleaner?: boolean;
   cleanerPriorities?: string[];
   bedConfiguration?: string;
   standardInstructions?: string;
   evidenceCriteria?: string[];
+  accessMethod?: "ttlock" | "keybox" | "in_person" | "doorman";
+  keyboxCode?: string;
+  keyboxLocation?: string;
+  keyboxPhotoUrl?: string;
   [key: string]: unknown;
 }
 
@@ -53,12 +60,19 @@ export async function getProperties(): Promise<RawProperty[]> {
       id: p.id,
       name: p.name,
       address: p.address ?? "",
+      addressUnit: p.address_unit ?? undefined,
+      neighborhood: p.neighborhood ?? undefined,
+      city: p.city ?? undefined,
       image: p.cover_image ?? "",
       autoAssignCleaner: p.auto_assign_cleaner ?? false,
       cleanerPriorities: p.cleaner_priorities ?? [],
       bedConfiguration: p.bed_configuration ?? "",
       standardInstructions: p.standard_instructions ?? "",
       evidenceCriteria: p.evidence_criteria ?? [],
+      accessMethod: (p.access_method as RawProperty["accessMethod"]) ?? (p.ttlock_lock_id ? "ttlock" : "in_person"),
+      keyboxCode: p.keybox_code ?? undefined,
+      keyboxLocation: p.keybox_location ?? undefined,
+      keyboxPhotoUrl: p.keybox_photo_url ?? undefined,
     }));
   } catch {
     return [];

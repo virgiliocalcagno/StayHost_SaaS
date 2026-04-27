@@ -76,6 +76,10 @@ export async function POST(req: NextRequest) {
           description_en: property.descriptionEN ?? null,
           photo_tour: property.photoTour ?? [],
           amenities_config: property.amenitiesConfig ?? {},
+          access_method: property.accessMethod ?? (property.ttlockLockId ? "ttlock" : "in_person"),
+          keybox_code: property.keyboxCode ?? null,
+          keybox_location: property.keyboxLocation ?? null,
+          keybox_photo_url: property.keyboxPhotoUrl ?? null,
         } as never,
         { onConflict: "id" }
       )

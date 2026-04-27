@@ -28,6 +28,7 @@ export async function GET() {
       recurring_supplies, auto_assign_cleaner, cleaner_priorities,
       bed_configuration, standard_instructions, evidence_criteria,
       description_es, description_en, photo_tour, amenities_config,
+      access_method, keybox_code, keybox_location, keybox_photo_url,
       created_at
     `)
     .eq("tenant_id", tenantId);
@@ -55,7 +56,13 @@ const ALLOWED_FIELDS = new Set([
   "ical_vrbo",
   "check_in_time",
   "check_out_time",
+  "access_method",
+  "keybox_code",
+  "keybox_location",
+  "keybox_photo_url",
 ]);
+
+const VALID_ACCESS_METHODS = new Set(["ttlock", "keybox", "in_person", "doorman"]);
 
 export async function PATCH(req: NextRequest) {
   const { tenantId, supabase } = await getAuthenticatedTenant();
@@ -79,6 +86,9 @@ export async function PATCH(req: NextRequest) {
   for (const [k, v] of Object.entries(body)) {
     if (k === "propertyId") continue;
     if (!ALLOWED_FIELDS.has(k)) continue;
+    if (k === "access_method" && typeof v === "string" && !VALID_ACCESS_METHODS.has(v)) {
+      return NextResponse.json({ error: `Invalid access_method: ${v}` }, { status: 400 });
+    }
     patch[k] = v;
   }
   if (Object.keys(patch).length === 0) {
