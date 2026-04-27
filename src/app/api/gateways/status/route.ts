@@ -20,7 +20,7 @@
 import { NextResponse } from "next/server";
 import { getAuthenticatedTenant } from "@/lib/supabase/server";
 import { supabaseAdmin } from "@/lib/supabase/admin";
-import { listGatewaysForAccount } from "@/lib/ttlock/gateway-status";
+import { getGatewayForLock } from "@/lib/ttlock/gateway-status";
 
 export async function GET() {
   const { tenantId } = await getAuthenticatedTenant();
@@ -28,17 +28,7 @@ export async function GET() {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  // 1) Cuentas TTLock del tenant.
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const { data: accounts } = await (supabaseAdmin.from("ttlock_accounts") as any)
-    .select("id")
-    .eq("tenant_id", tenantId);
-  const accountIds = ((accounts ?? []) as Array<{ id: string }>).map((a) => a.id);
-  if (accountIds.length === 0) {
-    return NextResponse.json({ gateways: [] });
-  }
-
-  // 2) Propiedades del tenant con cerradura (las que nos interesan).
+  // Propiedades del tenant con cerradura (las que nos interesan).
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const { data: props } = await (supabaseAdmin.from("properties") as any)
     .select("id, name, ttlock_account_id, ttlock_lock_id")
@@ -51,63 +41,87 @@ export async function GET() {
     ttlock_lock_id: string | null;
   }>;
 
-  // 3) Listar gateways por cada cuenta. Una cuenta TTLock puede tener
-  // varios gateways (uno por propiedad fisicamente). Cacheamos por
-  // accountId para no llamar dos veces si dos propiedades usan la misma.
-  const gatewaysByAccount = new Map<string, Awaited<ReturnType<typeof listGatewaysForAccount>>>();
-  for (const accId of accountIds) {
-    try {
-      const list = await listGatewaysForAccount({ accountId: accId, tenantId });
-      gatewaysByAccount.set(accId, list);
-    } catch (err) {
-      console.error("[gateways/status] list failed for account:", accId, err);
-      gatewaysByAccount.set(accId, []);
-    }
+  if (properties.length === 0) {
+    return NextResponse.json({ gateways: [] });
   }
 
-  // 4) Resultado: una entrada por propiedad. Si la cuenta tiene varios
-  // gateways, devolvemos el primero (la mayoria de hosts tiene 1 gateway
-  // por propiedad). Si no hay gateways, isOnline=false con flag.
-  const result = properties.map((prop) => {
-    if (!prop.ttlock_account_id) {
-      return {
-        propertyId: prop.id,
-        propertyName: prop.name,
-        gatewayId: null,
-        gatewayName: null,
-        networkName: null,
-        isOnline: false,
-        signal: null,
-        reason: "no_account",
-      };
-    }
-    const list = gatewaysByAccount.get(prop.ttlock_account_id) ?? [];
-    if (list.length === 0) {
-      return {
-        propertyId: prop.id,
-        propertyName: prop.name,
-        gatewayId: null,
-        gatewayName: null,
-        networkName: null,
-        isOnline: false,
-        signal: null,
-        reason: "no_gateway",
-      };
-    }
-    // Default: primer gateway de la cuenta. Si en el futuro hay
-    // ambiguedad podemos cruzar con /v3/gateway/listByLock por lockId.
-    const g = list[0];
-    return {
-      propertyId: prop.id,
-      propertyName: prop.name,
-      gatewayId: g.gatewayId,
-      gatewayName: g.gatewayName,
-      networkName: g.networkName,
-      isOnline: g.isOnline,
-      signal: g.signal,
-      reason: null,
-    };
-  });
+  // Para CADA cerradura llamamos /v3/gateway/listByLock — esto es lo
+  // unico correcto cuando un host tiene multiples propiedades, cada una
+  // con su propio gateway en una red WiFi distinta. Antes asumia "1
+  // gateway por cuenta" y mostraba el mismo estado en todas.
+  //
+  // Llamamos en paralelo (Promise.all) para no acumular latencia: 3
+  // propiedades = 1 round-trip (~2s) en vez de 6s secuencial.
+  const result = await Promise.all(
+    properties.map(async (prop) => {
+      if (!prop.ttlock_account_id) {
+        return {
+          propertyId: prop.id,
+          propertyName: prop.name,
+          gatewayId: null,
+          gatewayName: null,
+          networkName: null,
+          isOnline: false,
+          signal: null,
+          reason: "no_account" as const,
+        };
+      }
+      if (!prop.ttlock_lock_id) {
+        return {
+          propertyId: prop.id,
+          propertyName: prop.name,
+          gatewayId: null,
+          gatewayName: null,
+          networkName: null,
+          isOnline: false,
+          signal: null,
+          reason: "no_gateway" as const,
+        };
+      }
+
+      try {
+        const gw = await getGatewayForLock({
+          accountId: prop.ttlock_account_id,
+          tenantId,
+          lockId: String(prop.ttlock_lock_id),
+        });
+        if (!gw) {
+          return {
+            propertyId: prop.id,
+            propertyName: prop.name,
+            gatewayId: null,
+            gatewayName: null,
+            networkName: null,
+            isOnline: false,
+            signal: null,
+            reason: "no_gateway" as const,
+          };
+        }
+        return {
+          propertyId: prop.id,
+          propertyName: prop.name,
+          gatewayId: gw.gatewayId,
+          gatewayName: gw.gatewayName,
+          networkName: gw.networkName,
+          isOnline: gw.isOnline,
+          signal: gw.signal,
+          reason: null,
+        };
+      } catch (err) {
+        console.error("[gateways/status] listByLock failed for", prop.id, err);
+        return {
+          propertyId: prop.id,
+          propertyName: prop.name,
+          gatewayId: null,
+          gatewayName: null,
+          networkName: null,
+          isOnline: false,
+          signal: null,
+          reason: "no_gateway" as const,
+        };
+      }
+    })
+  );
 
   return NextResponse.json({ gateways: result });
 }
