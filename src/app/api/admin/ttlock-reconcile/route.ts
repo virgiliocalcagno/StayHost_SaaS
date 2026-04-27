@@ -25,7 +25,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { supabaseAdmin } from "@/lib/supabase/admin";
-import { reconcileTTLockPin } from "@/lib/ttlock/reconcile-pin";
+import { reconcileTTLockPin, renamePinToTrazable } from "@/lib/ttlock/reconcile-pin";
 
 const MASTER_EMAIL = (process.env.NEXT_PUBLIC_MASTER_EMAIL || "virgiliocalcagno@gmail.com").trim().toLowerCase();
 
@@ -46,14 +46,45 @@ export async function POST(req: NextRequest) {
   const guard = await requireMaster();
   if (!guard.ok) return guard.response;
 
-  let body: { tenantId?: string; propertyId?: string } = {};
+  let body: { tenantId?: string; propertyId?: string; mode?: "reconcile" | "rename" } = {};
   try {
     body = await req.json();
   } catch {
     // body vacio es OK
   }
+  const mode = body.mode ?? "reconcile";
 
-  // Buscar huerfanos: ttlock_pwd_id IS NULL, status='active', con cerradura.
+  if (mode === "rename") {
+    // Rename retroactivo: para todos los PINs ya sincronizados, aplica el
+    // patron trazable nuevo en TTLock. Util cuando se cambia el formato del
+    // nombre (ej. quitar prefijo SH# redundante en channelCode SH...).
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let renameQuery = (supabaseAdmin.from("access_pins") as any)
+      .select("id, pin")
+      .not("ttlock_pwd_id", "is", null)
+      .not("ttlock_lock_id", "is", null)
+      .eq("status", "active");
+    if (body.tenantId) renameQuery = renameQuery.eq("tenant_id", body.tenantId);
+    if (body.propertyId) renameQuery = renameQuery.eq("property_id", body.propertyId);
+
+    const { data: synced, error } = await renameQuery;
+    if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+    const rows = (synced ?? []) as Array<{ id: string; pin: string }>;
+
+    const renamed: Array<{ pinId: string; pin: string; newName: string }> = [];
+    const failed: Array<{ pinId: string; pin: string; reason: string; detail?: string }> = [];
+    for (const row of rows) {
+      const r = await renamePinToTrazable(row.id);
+      if (r.ok) {
+        renamed.push({ pinId: row.id, pin: row.pin, newName: r.newName });
+      } else {
+        failed.push({ pinId: row.id, pin: row.pin, reason: r.reason, detail: r.detail });
+      }
+    }
+    return NextResponse.json({ mode, total: rows.length, renamed, failed });
+  }
+
+  // Modo default: reconciliar huerfanos (ttlock_pwd_id IS NULL).
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let query = (supabaseAdmin.from("access_pins") as any)
     .select("id, tenant_id, property_id, pin, valid_from, valid_to, guest_name")
@@ -65,9 +96,7 @@ export async function POST(req: NextRequest) {
   if (body.propertyId) query = query.eq("property_id", body.propertyId);
 
   const { data: huerfanos, error } = await query;
-  if (error) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
-  }
+  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
 
   const rows = (huerfanos ?? []) as Array<{
     id: string;
@@ -77,9 +106,6 @@ export async function POST(req: NextRequest) {
     guest_name: string | null;
   }>;
 
-  // Procesamos en serie. Cada reconcile hace ~2-3 fetches a TTLock (oauth +
-  // listKeyboardPwd + rename), si lo paralelizamos podemos hit rate-limit.
-  // Con 5-10 huerfanos secuencial es < 30s, OK para Vercel hobby.
   const reconciled: Array<{ pinId: string; pin: string; ttlockPwdId: string; renamed: boolean }> = [];
   const failed: Array<{ pinId: string; pin: string; reason: string; detail?: string }> = [];
 
@@ -102,9 +128,5 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  return NextResponse.json({
-    total: rows.length,
-    reconciled,
-    failed,
-  });
+  return NextResponse.json({ mode, total: rows.length, reconciled, failed });
 }

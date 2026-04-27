@@ -287,7 +287,9 @@ export async function reconcileTTLockPin(pinId: string): Promise<ReconcileResult
     const channelCode = (bk as { channel_code?: string | null } | null)?.channel_code ?? null;
     const traceId = channelCode ?? pin.booking_id.replace(/-/g, "").slice(0, 8).toUpperCase();
     const guestShort = (pin.guest_name ?? "Huesped").slice(0, 18);
-    const newName = `SH#${traceId} ${guestShort}`.slice(0, 32);
+    // Mismo criterio que sync-pin: SH# solo si traceId no empieza con SH.
+    const renamePrefix = traceId.startsWith("SH") ? "" : "SH#";
+    const newName = `${renamePrefix}${traceId} ${guestShort}`.slice(0, 32);
     renamed = await renameKeyboardPwd({
       accessToken,
       clientId,
@@ -313,4 +315,71 @@ export function isTTLockAlreadyExistsError(errcode: number | undefined, errmsg: 
     msg.includes("same passcode") ||
     msg.includes("duplicate")
   );
+}
+
+/**
+ * Rename retroactivo: para un access_pin ya sincronizado (con
+ * ttlock_pwd_id), genera el nombre trazable nuevo y lo aplica en TTLock
+ * via /v3/keyboardPwd/changeName. Idempotente — si ya tiene el nombre
+ * correcto, TTLock no se queja igual.
+ *
+ * Uso: endpoint admin one-shot para corregir nombres legacy
+ * ("StayHost - Reserva Confirmada", "SH#SH...") al patron limpio.
+ */
+export type RenameResult =
+  | { ok: true; newName: string }
+  | { ok: false; reason: "not_found" | "no_pwd_id" | "no_lock" | "no_account" | "no_token" | "rename_failed"; detail?: string };
+
+export async function renamePinToTrazable(pinId: string): Promise<RenameResult> {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const { data: pinRow } = await (supabaseAdmin.from("access_pins") as any)
+    .select("id, tenant_id, property_id, booking_id, ttlock_lock_id, ttlock_pwd_id, guest_name")
+    .eq("id", pinId)
+    .maybeSingle();
+  const pin = pinRow as {
+    id: string; tenant_id: string; property_id: string;
+    booking_id: string | null; ttlock_lock_id: string | null;
+    ttlock_pwd_id: string | null; guest_name: string | null;
+  } | null;
+  if (!pin) return { ok: false, reason: "not_found" };
+  if (!pin.ttlock_pwd_id) return { ok: false, reason: "no_pwd_id" };
+  if (!pin.ttlock_lock_id) return { ok: false, reason: "no_lock" };
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const { data: prop } = await (supabaseAdmin.from("properties") as any)
+    .select("ttlock_account_id")
+    .eq("id", pin.property_id)
+    .maybeSingle();
+  const accountId = (prop as { ttlock_account_id?: string | null } | null)?.ttlock_account_id ?? null;
+  if (!accountId) return { ok: false, reason: "no_account" };
+
+  const accessToken = await resolveAccessToken(accountId, pin.tenant_id);
+  if (!accessToken) return { ok: false, reason: "no_token" };
+  const clientId = process.env.TTLOCK_CLIENT_ID;
+  if (!clientId) return { ok: false, reason: "no_token", detail: "TTLOCK_CLIENT_ID no configurado" };
+
+  // Construir el nombre trazable nuevo (mismo criterio que sync-pin.ts).
+  let traceId = "manual";
+  if (pin.booking_id) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const { data: bk } = await (supabaseAdmin.from("bookings") as any)
+      .select("channel_code")
+      .eq("id", pin.booking_id)
+      .maybeSingle();
+    const channelCode = (bk as { channel_code?: string | null } | null)?.channel_code ?? null;
+    traceId = channelCode ?? pin.booking_id.replace(/-/g, "").slice(0, 8).toUpperCase();
+  }
+  const guestShort = (pin.guest_name ?? "Huesped").slice(0, 18);
+  const prefix = traceId.startsWith("SH") ? "" : "SH#";
+  const newName = `${prefix}${traceId} ${guestShort}`.slice(0, 32);
+
+  const ok = await renameKeyboardPwd({
+    accessToken,
+    clientId,
+    lockId: String(pin.ttlock_lock_id),
+    keyboardPwdId: pin.ttlock_pwd_id,
+    newName,
+  });
+  if (!ok) return { ok: false, reason: "rename_failed" };
+  return { ok: true, newName };
 }

@@ -277,7 +277,12 @@ export async function syncPinToLock(pinId: string): Promise<SyncPinResult> {
     traceId = channelCode ?? pin.booking_id.replace(/-/g, "").slice(0, 8).toUpperCase();
   }
   const guestShort = (pin.guest_name ?? "Huesped").slice(0, 18);
-  const keyboardPwdName = `SH#${traceId} ${guestShort}`.slice(0, 32);
+  // Si el traceId ya empieza con "SH" (channel_code de reserva directa),
+  // omitimos el prefijo SH# para no quedar con SH#SH... redundante. Para
+  // canales externos (Airbnb HM..., VRBO, etc.) o bookingIds, el SH# vale
+  // porque distingue PINs de StayHost de los manuales (ej. "ismairi").
+  const prefix = traceId.startsWith("SH") ? "" : "SH#";
+  const keyboardPwdName = `${prefix}${traceId} ${guestShort}`.slice(0, 32);
 
   const startDate = new Date(pin.valid_from).getTime();
   const endDate = new Date(pin.valid_to).getTime();
