@@ -10,6 +10,7 @@ import {
   ensureCleaningTaskForBlock,
   removeCleaningTaskForBlock,
 } from "@/lib/cleaning/ensure-block-task";
+import { syncBookingDownstream } from "@/lib/bookings/sync-downstream";
 
 const VALID_BLOCK_TYPES = ["maintenance", "personal", "pre_booking", "other"] as const;
 type BlockType = (typeof VALID_BLOCK_TYPES)[number];
@@ -341,26 +342,9 @@ export async function PATCH(req: NextRequest) {
       if (overlapping && overlapping.length > 0) {
         return NextResponse.json({ error: "Las fechas se solapan con otra reserva" }, { status: 409 });
       }
-
-      // Update associated PIN validity if dates changed
-      try {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const { data: prop } = await (supabaseAdmin.from("properties") as any)
-          .select("check_in_time, check_out_time")
-          .eq("id", current.property_id)
-          .single();
-
-        const ciTime = prop?.check_in_time ?? "14:00";
-        const coTime = prop?.check_out_time ?? "12:00";
-
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        await (supabaseAdmin.from("access_pins") as any)
-          .update({
-            valid_from: new Date(`${newCheckIn}T${ciTime}:00`).toISOString(),
-            valid_to: new Date(`${newCheckOut}T${coTime}:00`).toISOString(),
-          })
-          .eq("booking_id", bookingId);
-      } catch {}
+      // El UPDATE de access_pins.valid_from/valid_to + markPinForSync lo
+      // hace syncBookingDownstream despues del UPDATE de bookings (mas
+      // abajo). Asi el cron retoma con dates nuevas y resync TTLock.
     }
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -378,16 +362,19 @@ export async function PATCH(req: NextRequest) {
       await cascadeCancelBooking(bookingId);
     }
 
-    // Sincronizar cleaning_task asociada cuando cambian campos relevantes.
-    // Dos paths segun source:
-    //   - block: ensure/remove segun requires_cleaning, label segun
-    //     block_type. Helper hace UPDATE in-place si la task ya existia.
-    //   - reserva real: UPDATE de due_date (si cambio check_out) y
-    //     guest_name (si cambio el nombre). Preserva id e historial de la
-    //     task. No tocamos completed (historial inmutable).
+    // Propagacion downstream cuando cambian campos relevantes:
+    //   - Bloqueo: ensure/remove cleaning_task segun flag + label segun
+    //     block_type. Path especial porque la task de bloqueo es opcional
+    //     y el label depende del tipo (Mantenimiento, Personal, etc.)
+    //   - Reserva real: helper unificado syncBookingDownstream que hace
+    //     UPDATE cleaning_tasks (due_date, guest_name) + UPDATE access_pins
+    //     (valid_from, valid_to) + markPinForSync para resync TTLock.
+    //     Una sola llamada cubre los 3 sincs y garantiza que TTLock no
+    //     quede con dates viejas (bug que pasaba antes con el inline).
     const taskTriggers =
       "requires_cleaning" in patch ||
       "block_type" in patch ||
+      patch.check_in ||
       patch.check_out ||
       patch.guest_name;
     if (taskTriggers) {
@@ -411,22 +398,11 @@ export async function PATCH(req: NextRequest) {
             await removeCleaningTaskForBlock({ supabase: supabaseAdmin, bookingId });
           }
         } else if (bk) {
-          // Reserva real: UPDATE inline. Solo aplicamos los campos que
-          // cambiaron para no sobrescribir cosas que el host pudo haber
-          // ajustado a mano en el panel de Limpiezas (priority, notas).
-          const taskPatch: Record<string, unknown> = {};
-          if (patch.check_out) taskPatch.due_date = bk.check_out;
-          if (patch.guest_name) taskPatch.guest_name = bk.guest_name;
-          if (Object.keys(taskPatch).length > 0) {
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            await (supabaseAdmin.from("cleaning_tasks") as any)
-              .update(taskPatch)
-              .eq("booking_id", bookingId)
-              .neq("status", "completed");
-          }
+          // Reserva real: el helper se encarga de TODO (task + pin + TTLock).
+          await syncBookingDownstream(bookingId);
         }
       } catch (taskErr) {
-        console.error("[bookings/PATCH] cleaning task sync failed (non-fatal):", taskErr);
+        console.error("[bookings/PATCH] downstream sync failed (non-fatal):", taskErr);
       }
     }
 
