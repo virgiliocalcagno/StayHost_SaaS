@@ -368,8 +368,21 @@ export default function SmartDevicesPanel() {
   }, [properties]);
 
   const lockDevices = devices;
-  const online = devices.filter((d) => d.online).length;
-  const offline = devices.filter((d) => !d.online).length;
+  // Un dispositivo se considera "totalmente online" si la cerradura
+  // responde Y (no usa gateway TTLock O su gateway esta online).
+  // Caso real: una cerradura puede estar Online via cache de TTLock pero
+  // su gateway estar offline — los PINs nuevos no llegan. Para fines
+  // operativos eso cuenta como "Desconectado", no "En linea".
+  const isDeviceFullyOnline = (d: typeof devices[number]) => {
+    if (!d.online) return false;
+    if (d.type !== "lock_ttlock") return true; // Tuya / sensores no usan gateway TTLock
+    const gw = gatewayByProp[d.propertyId];
+    if (gw === undefined || gw === null) return d.online; // todavia cargando: fallback al lock
+    if (gw.reason !== null) return false; // problema de config (no_account, not_linked, no_gateway)
+    return gw.isOnline;
+  };
+  const online = devices.filter(isDeviceFullyOnline).length;
+  const offline = devices.length - online;
   const lowBattery = devices.filter((d) => (d.battery ?? 100) <= 20).length;
   const activePins = pins.filter((p) => p.status === "active" && !isExpiredPin(p.validTo)).length;
 
