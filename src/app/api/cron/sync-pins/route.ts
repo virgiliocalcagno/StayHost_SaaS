@@ -17,6 +17,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { syncPinToLock } from "@/lib/ttlock/sync-pin";
+import { syncCyclicPinToLock } from "@/lib/ttlock/cyclic-pin";
 import { getAuthenticatedTenant } from "@/lib/supabase/server";
 
 export const maxDuration = 60;
@@ -50,7 +51,7 @@ export async function GET(req: NextRequest) {
   const staleCutoff = new Date(Date.now() - 2 * 60 * 1000).toISOString();
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let query = (supabaseAdmin.from("access_pins") as any)
-    .select("id")
+    .select("id, is_cyclic")
     .eq("status", "active")
     .or(
       `and(sync_status.in.(pending,retry,offline_lock),or(sync_next_retry_at.is.null,sync_next_retry_at.lte.${now})),` +
@@ -67,7 +68,7 @@ export async function GET(req: NextRequest) {
 
   const { data: pending } = await query;
 
-  const rows = (pending ?? []) as { id: string }[];
+  const rows = (pending ?? []) as { id: string; is_cyclic?: boolean }[];
   if (rows.length === 0) {
     return NextResponse.json({ ok: true, processed: 0, synced: 0, failed: 0 });
   }
@@ -75,7 +76,9 @@ export async function GET(req: NextRequest) {
   let synced = 0;
   let failed = 0;
   for (const row of rows) {
-    const result = await syncPinToLock(row.id);
+    const result = row.is_cyclic
+      ? await syncCyclicPinToLock(row.id)
+      : await syncPinToLock(row.id);
     if (result.ok) synced += 1;
     else failed += 1;
   }

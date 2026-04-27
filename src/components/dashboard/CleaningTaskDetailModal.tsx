@@ -315,8 +315,27 @@ export function CleaningTaskDetailModal({
     [task, team],
   );
 
-  const handleShareAccessWithStaff = () => {
+  const handleShareAccessWithStaff = async () => {
     if (!task || !property) return;
+
+    // Si hay TTLock + staff asignado, intentamos buscar su PIN cíclico para
+    // incluirlo en el mensaje. Best-effort — si falla la llamada o no hay
+    // asignación, el helper deja el placeholder genérico.
+    let staffPinCode: string | undefined;
+    if (property.ttlockLockId && task.assigneeId) {
+      try {
+        const url = `/api/staff-access?team_member_id=${encodeURIComponent(task.assigneeId)}&property_id=${encodeURIComponent(task.propertyId)}`;
+        const res = await fetch(url, { credentials: "same-origin" });
+        if (res.ok) {
+          const data = await res.json() as { assignments?: Array<{ access_pins?: { pin?: string } }> };
+          const pin = data.assignments?.[0]?.access_pins?.pin;
+          if (pin) staffPinCode = pin;
+        }
+      } catch {
+        // no-op
+      }
+    }
+
     const text = buildAccessMessageForStaff(
       {
         name: property.name,
@@ -335,6 +354,7 @@ export function CleaningTaskDetailModal({
         staffName: assignedMember?.name ?? task.assigneeName,
         taskDate: task.dueDate,
         taskTime: task.dueTime,
+        staffPinCode,
       },
     );
     void shareAccessMessage(text, assignedMember?.phone);

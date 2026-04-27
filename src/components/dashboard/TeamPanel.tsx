@@ -50,7 +50,9 @@ import {
   AlertCircle,
   CheckCheck,
   RefreshCw,
+  KeyRound,
 } from "lucide-react";
+import { StaffAccessDialog } from "@/components/dashboard/StaffAccessDialog";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 interface TeamMember {
@@ -147,6 +149,7 @@ export default function TeamPanel() {
   const [roleFilter, setRoleFilter] = useState("all");
   const [showModal, setShowModal] = useState(false);
   const [editingMember, setEditingMember] = useState<TeamMember | null>(null);
+  const [accessDialogMember, setAccessDialogMember] = useState<TeamMember | null>(null);
   const [isClient, setIsClient] = useState(false);
   
   const [team, setTeam] = useState<TeamMember[]>([]);
@@ -795,6 +798,15 @@ export default function TeamPanel() {
                           >
                             {member.available ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
                           </button>
+                          {(member.role === "cleaner" || member.role === "maintenance" || member.role === "co_host") && (
+                            <button
+                              onClick={(e) => { e.stopPropagation(); setAccessDialogMember(member); }}
+                              title="Gestionar accesos a propiedades"
+                              className="p-2 rounded-md hover:bg-amber-100 dark:hover:bg-amber-900/30 transition-colors text-amber-600"
+                            >
+                              <KeyRound className="h-4 w-4" />
+                            </button>
+                          )}
                           <button
                             onClick={() => handleOpenEdit(member)}
                             className="p-2 rounded-md hover:bg-muted transition-colors text-muted-foreground"
@@ -1415,6 +1427,17 @@ export default function TeamPanel() {
             </div>
           </div>
         </div>
+      )}
+
+      {/* Diálogo de gestión de accesos cíclicos TTLock */}
+      {accessDialogMember && (
+        <StaffAccessDialog
+          open={!!accessDialogMember}
+          onOpenChange={(o) => !o && setAccessDialogMember(null)}
+          memberId={accessDialogMember.id}
+          memberName={accessDialogMember.name}
+          properties={savedProperties}
+        />
       )}
     </div>
   );
