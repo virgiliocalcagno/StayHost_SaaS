@@ -332,8 +332,12 @@ export default function CleaningPanel() {
     );
     return {
       total: inPeriod.length,
-      completed: inPeriod.filter((t) => t.status === "completed").length,
-      pending: inPeriod.filter((t) => t.status !== "completed").length,
+      // KPIs usan effective status para que filas con datos inconsistentes
+      // (status="completed" sin que la limpieza realmente termino, etc.)
+      // no inflen los contadores. getEffectiveStatus deja completed/issue
+      // intactos pero corrige los pares assigneeId<->status incoherentes.
+      completed: inPeriod.filter((t) => getEffectiveStatus(t) === "completed").length,
+      pending: inPeriod.filter((t) => getEffectiveStatus(t) !== "completed").length,
       critical: inPeriod.filter((t) => t.priority === "critical").length,
     };
   }, [tasks, period]);
@@ -583,7 +587,7 @@ export default function CleaningPanel() {
       cells.push({
         date,
         day,
-        pending: dayTasks.filter((t) => t.status !== "completed").length,
+        pending: dayTasks.filter((t) => getEffectiveStatus(t) !== "completed").length,
         total: dayTasks.length,
         isToday: date === todayStr,
       });
