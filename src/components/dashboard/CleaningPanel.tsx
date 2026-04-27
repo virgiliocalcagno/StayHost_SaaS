@@ -384,30 +384,49 @@ export default function CleaningPanel() {
     // Vista mensual: dia seleccionado en el grid de calendario (activeDate).
     // Vista validate: solo tareas que el staff envio y esperan aprobacion
     //   del owner. Sin filtro de fecha — son urgentes igual.
+    // Filtro de rango segun vista. Antes week/month filtraban a un solo
+    // dia (activeDate), lo que dejaba el calendario como decoracion: el
+    // owner perdia visibilidad de la semana/mes y tenia que clickear dia
+    // por dia. Ahora cada vista muestra TODO su periodo y el strip /
+    // calendario quedan como ancla visual.
     if (view === "validate") {
       result = result.filter(t => t.isWaitingValidation === true);
     } else if (view === "day") {
       result = result.filter(t => t.dueDate === getDateStr(0));
     } else if (view === "week" || view === "month") {
-      result = result.filter(t => t.dueDate === activeDate);
+      result = result.filter(t => t.dueDate >= period.start && t.dueDate <= period.end);
     }
 
     if (selectedStaff !== "all") {
       result = result.filter(t => t.assigneeId === selectedStaff);
     }
 
+    // Prioridad ordinal — sirve para ordenar dentro de cada dia.
+    const priorityRank: Record<string, number> = {
+      critical: 0, high: 1, medium: 2, low: 3,
+    };
+
     return result.sort((a, b) => {
-      // En vista validate ordenamos por checkout mas viejo primero
-      // (la mas urgente de aprobar es la que lleva mas tiempo esperando).
+      // En vista validate: por checkout mas viejo primero (la mas urgente
+      // de aprobar es la que lleva mas tiempo esperando).
       if (view === "validate") {
         return a.dueDate.localeCompare(b.dueDate);
       }
-      // Vacantes al final (baja prioridad), críticos al frente
+      // En week/month: primero por fecha asc (orden cronologico para que
+      // los headers de dia salgan en orden), despues por prioridad desc
+      // dentro del mismo dia.
+      if (view === "week" || view === "month") {
+        const dateCmp = a.dueDate.localeCompare(b.dueDate);
+        if (dateCmp !== 0) return dateCmp;
+        if (a.isVacant !== b.isVacant) return a.isVacant ? 1 : -1;
+        return (priorityRank[a.priority] ?? 99) - (priorityRank[b.priority] ?? 99);
+      }
+      // Vista diaria: vacantes al final, criticos al frente.
       if (a.isVacant && !b.isVacant) return 1;
       if (!a.isVacant && b.isVacant) return -1;
-      return a.priority === "critical" ? -1 : 1;
+      return (priorityRank[a.priority] ?? 99) - (priorityRank[b.priority] ?? 99);
     });
-  }, [tasks, view, selectedStaff, activeDate]);
+  }, [tasks, view, selectedStaff, period]);
 
   // ─── Linen Summary (ropa de cama necesaria en el periodo activo) ─────────
   // Se calcula sobre el rango completo de la vista (dia/semana/mes) para
@@ -1424,12 +1443,49 @@ export default function CleaningPanel() {
 
           <div className="space-y-4">
             {filteredTasks.length > 0 ? (
-              filteredTasks.map((task) => {
-                const priority = getPriorityInfo(task);
-                const isWaitingReview = task.isWaitingValidation;
-                
-                return (
-                  <Card key={task.id} className={cn(
+              (() => {
+                // Conteo por dia para el header de seccion. Se calcula
+                // una vez sobre filteredTasks para evitar O(n^2) en el render.
+                const countByDay = new Map<string, number>();
+                for (const t of filteredTasks) {
+                  countByDay.set(t.dueDate, (countByDay.get(t.dueDate) ?? 0) + 1);
+                }
+                const todayStr = getDateStr(0);
+                const tomorrowStr = getDateStr(1);
+                const showHeaders = view === "week" || view === "month" || view === "validate";
+
+                return filteredTasks.map((task, idx) => {
+                  const priority = getPriorityInfo(task);
+                  const isWaitingReview = task.isWaitingValidation;
+                  const prev = idx > 0 ? filteredTasks[idx - 1] : null;
+                  const newDay = !prev || prev.dueDate !== task.dueDate;
+                  const dayLabel =
+                    task.dueDate === todayStr
+                      ? "Hoy"
+                      : task.dueDate === tomorrowStr
+                        ? "Mañana"
+                        : formatLongDate(task.dueDate);
+                  const dayCount = countByDay.get(task.dueDate) ?? 0;
+
+                  return (
+                    <div key={task.id}>
+                      {showHeaders && newDay && (
+                        <div className="flex items-center gap-3 mb-2 mt-2 px-1">
+                          <div className="h-px bg-border flex-1" />
+                          <Badge
+                            variant="outline"
+                            className={cn(
+                              "border-slate-200 text-slate-700 font-bold uppercase tracking-wider text-[10px]",
+                              task.dueDate === todayStr && "bg-primary/10 text-primary border-primary/30",
+                            )}
+                          >
+                            <Calendar className="h-3 w-3 mr-1" />
+                            {dayLabel} · {dayCount} {dayCount === 1 ? "tarea" : "tareas"}
+                          </Badge>
+                          <div className="h-px bg-border flex-1" />
+                        </div>
+                      )}
+                  <Card className={cn(
                     "group hover:shadow-xl transition-all duration-300 border-none shadow-soft overflow-hidden",
                     isWaitingReview && "ring-2 ring-amber-500 bg-amber-50/20",
                     priority.isUrgent && !isWaitingReview && "ring-2 ring-rose-500 bg-rose-50/10 animate-pulse-gentle"
@@ -1679,8 +1735,10 @@ export default function CleaningPanel() {
                       </div>
                     </div>
                   </Card>
-                );
-              })
+                    </div>
+                  );
+                });
+              })()
             ) : (
               view === "validate" ? (
                 <div className="text-center py-20 bg-emerald-50/40 rounded-3xl border-2 border-dashed border-emerald-200">
