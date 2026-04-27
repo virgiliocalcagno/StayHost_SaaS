@@ -64,7 +64,7 @@ import { getTeam, getProperties, type RawTeamMember } from "@/services/apiServic
 import { StaffWizard } from "@/components/staff-ui/StaffWizard";
 import { StaffTaskDetail } from "@/components/staff-ui/StaffTaskDetail";
 import { CleaningTaskDetailModal } from "@/components/dashboard/CleaningTaskDetailModal";
-import { getEffectiveStatus, isStatusInconsistent } from "@/lib/cleaning/status";
+import { getEffectiveStatus, deriveCorrectStatus } from "@/lib/cleaning/status";
 
 // ─── Interfaces ─────────────────────────────────────────────────────────────
 
@@ -166,33 +166,39 @@ export default function CleaningPanel() {
         if (!data.tasks?.length) return;
         const incoming = data.tasks as CleaningTask[];
 
-        // Auto-heal: tareas con status assigned/accepted/in_progress sin
-        // assigneeId son estado inconsistente sembrado por flujos viejos.
-        // Sanitizamos en BD y en el state local en simultaneo para que la
-        // UI no muestre el dato viejo entre el PATCH y el proximo refresh.
+        // Auto-heal bidireccional: deriveCorrectStatus devuelve el status
+        // que la fila deberia tener segun su data real (assigneeId), o null
+        // si esta coherente. Cubre los dos sentidos:
+        //   - status="assigned" sin assigneeId → "unassigned"
+        //   - status="unassigned" con assigneeId → "assigned"
         // "rejected" se EXCLUYE a proposito: un rechazo huerfano es estado
         // valido (esperando reasignacion) y borrarlo perderia el motivo.
-        const stuckIds = new Set(
-          incoming.filter(isStatusInconsistent).map((t) => t.id),
-        );
-        if (stuckIds.size > 0) {
+        const corrections = new Map<string, string>();
+        for (const t of incoming) {
+          const correct = deriveCorrectStatus(t);
+          if (correct && correct !== t.status) {
+            corrections.set(t.id, correct);
+          }
+        }
+        if (corrections.size > 0) {
           // Telemetria: si esto se dispara seguido, hay un flujo upstream
           // que esta sembrando datos rotos. Loguear permite detectarlo
           // antes de que el auto-heal lo enmascare en silencio.
           // eslint-disable-next-line no-console
           console.warn(
-            "[cleaning] auto-heal: tasks with assignee-required status but no assigneeId",
-            Array.from(stuckIds),
+            "[cleaning] auto-heal: status incoherente con assigneeId",
+            Object.fromEntries(corrections),
           );
         }
 
-        const healed = incoming.map((t) =>
-          stuckIds.has(t.id) ? { ...t, status: "unassigned" as const } : t,
-        );
+        const healed = incoming.map((t) => {
+          const fix = corrections.get(t.id);
+          return fix ? { ...t, status: fix as CleaningTask["status"] } : t;
+        });
         setTasks(healed);
 
-        for (const id of stuckIds) {
-          patchTask(id, { status: "unassigned" });
+        for (const [id, status] of corrections) {
+          patchTask(id, { status });
         }
       })
       .catch(() => {});
@@ -810,6 +816,9 @@ export default function CleaningPanel() {
 
   const handleReassignFromDetail = (taskId: string, memberId: string | null) => {
     const member = memberId ? team.find(m => m.id === memberId) : null;
+    // El nuevo asignado todavia no acepto/inicio: pasamos a "assigned"
+    // (o "unassigned" si se quita el asignado). Misma logica en state y BD.
+    const nextStatus: CleaningTask["status"] = member ? "assigned" : "unassigned";
     setTasks(prev => prev.map(t =>
       t.id === taskId
         ? {
@@ -817,7 +826,7 @@ export default function CleaningPanel() {
             assigneeId: member?.id,
             assigneeName: member?.name,
             assigneeAvatar: member?.avatar,
-            status: member ? (t.status === "unassigned" ? "assigned" : t.status) : "unassigned",
+            status: nextStatus,
           }
         : t,
     ));
@@ -825,7 +834,7 @@ export default function CleaningPanel() {
       assigneeId: member?.id ?? null,
       assigneeName: member?.name ?? null,
       assigneeAvatar: member?.avatar ?? null,
-      status: member ? "assigned" : "unassigned",
+      status: nextStatus,
     });
   };
 
@@ -1425,14 +1434,9 @@ export default function CleaningPanel() {
                                   <p className="text-xs font-medium text-muted-foreground uppercase mb-0.5">Asignado a</p>
                                   <Select
                                     value={task.assigneeId || "none"}
-                                    onValueChange={(value) => {
-                                      const member = team.find(m => m.id === value);
-                                      setTasks(prev => prev.map(t =>
-                                        t.id === task.id
-                                          ? { ...t, assigneeId: value === "none" ? undefined : value, assigneeName: value === "none" ? undefined : member?.name, assigneeAvatar: value === "none" ? undefined : member?.avatar }
-                                          : t
-                                      ));
-                                    }}
+                                    onValueChange={(value) =>
+                                      handleReassignFromDetail(task.id, value === "none" ? null : value)
+                                    }
                                   >
                                     <SelectTrigger className="h-7 border-none p-0 bg-transparent font-semibold focus:ring-0">
                                       <SelectValue placeholder="Sin asignar" />
