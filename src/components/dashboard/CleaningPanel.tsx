@@ -186,7 +186,6 @@ export default function CleaningPanel() {
           // Telemetria: si esto se dispara seguido, hay un flujo upstream
           // que esta sembrando datos rotos. Loguear permite detectarlo
           // antes de que el auto-heal lo enmascare en silencio.
-          // eslint-disable-next-line no-console
           console.warn(
             "[cleaning] auto-heal: status incoherente con assigneeId",
             Object.fromEntries(corrections),
@@ -427,41 +426,6 @@ export default function CleaningPanel() {
       return (priorityRank[a.priority] ?? 99) - (priorityRank[b.priority] ?? 99);
     });
   }, [tasks, view, selectedStaff, period]);
-
-  // ─── Linen Summary (ropa de cama necesaria en el periodo activo) ─────────
-  // Se calcula sobre el rango completo de la vista (dia/semana/mes) para
-  // que el host pueda planificar compra y rotacion. Antes solo miraba el
-  // dia activo, lo que en vista Mensual no decia nada.
-  const linenSummary = useMemo(() => {
-    const targetTasks = tasks.filter(
-      (t) => t.dueDate >= period.start && t.dueDate <= period.end,
-    );
-    const beds: Record<string, number> = {};
-    let totalTowels = 0;
-
-    targetTasks.forEach(t => {
-      const prop = properties.find(p => p.id === t.propertyId);
-      if (!prop?.bedConfiguration) return;
-      
-      // Calculate towels (2 per guest)
-      totalTowels += (t.guestCount || 2) * 2;
-
-      // Parse bed configuration
-      prop.bedConfiguration.split(",").forEach(part => {
-        const match = part.trim().match(/^(\d+)\s+(.+)$/);
-        if (match) {
-          const qty = parseInt(match[1]);
-          const type = match[2].trim();
-          beds[type] = (beds[type] || 0) + qty;
-        }
-      });
-    });
-
-    return {
-      beds: Object.entries(beds).map(([type, qty]) => ({ type, qty })),
-      towels: totalTowels
-    };
-  }, [tasks, properties, period]);
 
   const getStatusBadge = (task: CleaningTask) => {
     const effective = getEffectiveStatus(task);
@@ -1210,68 +1174,6 @@ export default function CleaningPanel() {
         ))}
       </div>
 
-      {/* ─── Linen & Workday Summary ────────────────────────────────────────── */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        <Card className="lg:col-span-2 border-none shadow-soft bg-white rounded-[2rem] overflow-hidden">
-          <CardHeader className="pb-2">
-            <div className="flex items-center justify-between">
-              <CardTitle className="text-lg font-bold flex items-center gap-2">
-                <Layers className="h-5 w-5 text-primary" />
-                Logística de Lencería ({period.label})
-              </CardTitle>
-              <Badge variant="outline" className="border-primary/20 text-primary font-bold">
-                {stats.total} Propiedades
-              </Badge>
-            </div>
-          </CardHeader>
-          <CardContent className="p-6">
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
-              {linenSummary.beds.map((item, idx) => (
-                <div key={idx} className="bg-slate-50 p-4 rounded-2xl border border-slate-100 group hover:border-primary/20 transition-all">
-                  <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1 group-hover:text-primary transition-colors">Sábanas {item.type}</p>
-                  <p className="text-2xl font-black text-slate-800">{item.qty} sets</p>
-                </div>
-              ))}
-              <div className="bg-primary/5 p-4 rounded-2xl border border-primary/10">
-                <p className="text-[10px] font-black text-primary uppercase tracking-widest mb-1">Total Toallas</p>
-                <p className="text-2xl font-black text-primary">{linenSummary.towels} unidades</p>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-
-        <Card className="border-none shadow-soft bg-slate-900 text-white rounded-[2rem] overflow-hidden">
-          <CardHeader className="pb-2">
-             <CardTitle className="text-lg font-bold flex items-center gap-2">
-               <Zap className="h-5 w-5 text-amber-400" />
-               Jornada Estimada
-             </CardTitle>
-          </CardHeader>
-          <CardContent className="p-6 space-y-4">
-             <div className="flex items-end justify-between">
-                <div>
-                   <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Horas de Trabajo</p>
-                   <p className="text-3xl font-black text-white">{stats.total * 2.5}h<span className="text-base font-bold text-slate-400 ml-1">aprox</span></p>
-                </div>
-                <div className="text-right">
-                   <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Tareas del periodo</p>
-                   <p className="text-xl font-bold text-amber-400">{stats.total}</p>
-                </div>
-             </div>
-             <div className="h-1.5 w-full bg-slate-800 rounded-full overflow-hidden">
-                <div
-                  className="h-full bg-amber-400 rounded-full transition-all duration-1000"
-                  style={{ width: `${(stats.completed / (stats.total || 1)) * 100}%` }}
-                />
-             </div>
-             <p className="text-[10px] text-slate-400 font-medium">
-               Progreso basado en tareas completadas ({stats.completed}/{stats.total}) · estimado a 2.5h/limpieza
-             </p>
-          </CardContent>
-        </Card>
-      </div>
-
-
       {/* ─── Main Content ───────────────────────────────────────────────── */}
       <div className="grid lg:grid-cols-12 gap-6">
         
@@ -1777,94 +1679,74 @@ export default function CleaningPanel() {
                 <Badge variant="outline" className="border-primary/20 text-primary">{team.length}</Badge>
               </div>
             </CardHeader>
-            <CardContent className="p-4 space-y-4">
+            <CardContent className="p-3 space-y-1.5">
+              {/* Lista compacta: una linea por miembro con avatar + counters
+                  inline. Antes era un card grande con avatar de 40px y
+                  flecha hover; ahora es scannable en un vistazo. */}
               {team.map((member) => {
                 const load = staffLoad.get(member.id) ?? { tasksToday: 0, completedTasks: 0 };
+                const intensityColor = load.tasksToday > 3
+                  ? "text-orange-500"
+                  : load.tasksToday > 0
+                    ? "text-emerald-500"
+                    : "text-slate-400";
                 return (
-                <div key={member.id} className="flex items-center gap-3 p-3 rounded-2xl bg-muted/30 hover:bg-muted/50 transition-all group">
-                  <Avatar className="h-10 w-10">
-                    <AvatarImage src={member.avatar} />
-                    <AvatarFallback>{member.name.charAt(0)}</AvatarFallback>
-                  </Avatar>
-                  <div className="flex-1 min-w-0">
-                    <p className="font-bold text-sm truncate">{member.name}</p>
-                    <div className="flex items-center gap-2 text-[10px] text-muted-foreground font-medium uppercase mt-0.5">
-                       <span className={cn(
-                         load.tasksToday > 3 ? "text-orange-500" : load.tasksToday > 0 ? "text-emerald-500" : "text-slate-400"
-                       )}>
-                         {load.tasksToday} tareas hoy
-                       </span>
-                       <span>•</span>
-                       <span>{load.completedTasks} completadas</span>
-                    </div>
+                  <div
+                    key={member.id}
+                    className="flex items-center gap-2.5 px-3 py-2 rounded-xl hover:bg-muted/40 transition-colors"
+                  >
+                    <Avatar className="h-7 w-7">
+                      <AvatarImage src={member.avatar} />
+                      <AvatarFallback className="text-[10px]">{member.name.charAt(0)}</AvatarFallback>
+                    </Avatar>
+                    <p className="font-semibold text-sm flex-1 truncate">{member.name}</p>
+                    <span className={cn("text-xs font-bold tabular-nums", intensityColor)}>
+                      {load.tasksToday}
+                    </span>
+                    <span className="text-[10px] text-muted-foreground uppercase tracking-wider">hoy</span>
                   </div>
-                  <Button size="icon" variant="ghost" className="h-8 w-8 opacity-0 group-hover:opacity-100 transition-all rounded-full bg-white shadow-soft">
-                    <ArrowRight className="h-4 w-4" />
-                  </Button>
-                </div>
                 );
               })}
+
+              {/* Mini-indicator de asignacion automatica — no una card aparte.
+                  Solo aparece si hay al menos una propiedad configurada. */}
+              {properties.some(p => p.autoAssignCleaner) && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (typeof window !== "undefined") {
+                      window.location.href = "/dashboard?panel=properties";
+                    }
+                  }}
+                  className="w-full flex items-center gap-2 px-3 py-2 rounded-xl text-left hover:bg-emerald-50 transition-colors group"
+                >
+                  <Bot className="h-4 w-4 text-emerald-600 flex-shrink-0" />
+                  <p className="text-xs text-emerald-900 flex-1">
+                    Auto-asignacion activa en{" "}
+                    <span className="font-bold">
+                      {properties.filter(p => p.autoAssignCleaner).length}
+                    </span>{" "}
+                    propiedad{properties.filter(p => p.autoAssignCleaner).length === 1 ? "" : "es"}
+                  </p>
+                  <ArrowRight className="h-3.5 w-3.5 text-emerald-600 opacity-0 group-hover:opacity-100 transition-opacity" />
+                </button>
+              )}
+
               <Button
                 variant="outline"
-                className="w-full h-11 border-dashed border-2 hover:border-primary/50 gap-2 font-semibold"
+                size="sm"
+                className="w-full h-9 border-dashed border hover:border-primary/50 gap-1.5 font-semibold text-xs"
                 onClick={() => {
-                  // Navega al panel "team" del dashboard. La invitacion de
-                  // nuevos miembros vive ahi (form + flujo de email).
                   if (typeof window !== "undefined") {
                     window.location.href = "/dashboard?panel=team";
                   }
                 }}
               >
-                <UserPlus className="h-4 w-4 text-primary" />
+                <UserPlus className="h-3.5 w-3.5 text-primary" />
                 Invitar al equipo
               </Button>
             </CardContent>
           </Card>
-
-          <Card className="border-none shadow-soft bg-gradient-to-br from-primary to-primary/80 text-primary-foreground overflow-hidden relative">
-            <div className="absolute top-0 right-0 p-8 opacity-10 scale-150 rotate-12">
-               <Sparkles className="h-24 w-24" />
-            </div>
-            <CardContent className="p-6 relative z-10">
-              <h4 className="text-lg font-bold mb-2">Optimización IA</h4>
-              <p className="text-sm opacity-90 mb-4 leading-relaxed">
-                Hoy tienes 2 propiedades con entrada inmediata. Hemos marcado estas tareas como "Prioridad Crítica" para que tu equipo empiece por ahí.
-              </p>
-              <Button variant="secondary" className="w-full bg-white/20 hover:bg-white/30 text-white border-0 backdrop-blur-md">
-                Optimizar rutas
-              </Button>
-            </CardContent>
-          </Card>
-
-          {/* Auto-assign status card — clickeable, lleva a configuracion */}
-          {properties.some(p => p.autoAssignCleaner) && (
-            <Card
-              className="border-none shadow-soft overflow-hidden cursor-pointer hover:shadow-md transition-shadow group"
-              onClick={() => {
-                if (typeof window !== "undefined") {
-                  window.location.href = "/dashboard?panel=properties";
-                }
-              }}
-              role="button"
-              tabIndex={0}
-            >
-              <CardContent className="p-5">
-                <div className="flex items-center gap-3 mb-3">
-                  <div className="p-2 rounded-xl bg-emerald-100">
-                    <Bot className="h-5 w-5 text-emerald-600" />
-                  </div>
-                  <div className="flex-1">
-                    <p className="font-bold text-sm">Asignación Automática Activa</p>
-                    <p className="text-xs text-muted-foreground">{properties.filter(p => p.autoAssignCleaner).length} propiedad(es) configurada(s)</p>
-                  </div>
-                  <ArrowRight className="h-4 w-4 text-muted-foreground group-hover:text-primary transition-colors" />
-                </div>
-                <p className="text-xs text-muted-foreground leading-relaxed">
-                  Las nuevas tareas asignarán automáticamente al primer limpiador disponible según la prioridad configurada en cada propiedad.
-                </p>
-              </CardContent>
-            </Card>
-          )}
 
           <Card className="border-none shadow-soft">
              <CardHeader>
