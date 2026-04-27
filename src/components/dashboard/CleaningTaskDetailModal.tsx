@@ -105,6 +105,8 @@ export interface PropertyLite {
   keyboxCode?: string;
   keyboxLocation?: string;
   keyboxPhotoUrl?: string;
+  keyboxShareWithGuest?: boolean;
+  ttlockLockId?: string;
 }
 
 export interface CleaningTaskDetailModalProps {
@@ -326,6 +328,8 @@ export function CleaningTaskDetailModal({
         keyboxCode: property.keyboxCode,
         keyboxLocation: property.keyboxLocation,
         keyboxPhotoUrl: property.keyboxPhotoUrl,
+        keyboxShareWithGuest: property.keyboxShareWithGuest,
+        ttlockLockId: property.ttlockLockId,
       },
       {
         staffName: assignedMember?.name ?? task.assigneeName,

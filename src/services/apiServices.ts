@@ -28,6 +28,8 @@ export interface RawProperty {
   keyboxCode?: string;
   keyboxLocation?: string;
   keyboxPhotoUrl?: string;
+  keyboxShareWithGuest?: boolean;
+  ttlockLockId?: string;
   [key: string]: unknown;
 }
 
@@ -69,10 +71,12 @@ export async function getProperties(): Promise<RawProperty[]> {
       bedConfiguration: p.bed_configuration ?? "",
       standardInstructions: p.standard_instructions ?? "",
       evidenceCriteria: p.evidence_criteria ?? [],
-      accessMethod: (p.access_method as RawProperty["accessMethod"]) ?? (p.ttlock_lock_id ? "ttlock" : "in_person"),
+      accessMethod: (p.access_method as RawProperty["accessMethod"]) ?? "in_person",
       keyboxCode: p.keybox_code ?? undefined,
       keyboxLocation: p.keybox_location ?? undefined,
       keyboxPhotoUrl: p.keybox_photo_url ?? undefined,
+      keyboxShareWithGuest: p.keybox_share_with_guest ?? true,
+      ttlockLockId: p.ttlock_lock_id ?? undefined,
     }));
   } catch {
     return [];

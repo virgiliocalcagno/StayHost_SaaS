@@ -508,6 +508,8 @@ export default function CheckInsPanel() {
     keyboxCode?: string;
     keyboxLocation?: string;
     keyboxPhotoUrl?: string;
+    keyboxShareWithGuest?: boolean;
+    ttlockLockId?: string;
     checkInTime?: string;
     checkOutTime?: string;
   }[]);
@@ -590,6 +592,8 @@ export default function CheckInsPanel() {
         keyboxCode: x.keyboxCode as string | undefined,
         keyboxLocation: x.keyboxLocation as string | undefined,
         keyboxPhotoUrl: x.keyboxPhotoUrl as string | undefined,
+        keyboxShareWithGuest: x.keyboxShareWithGuest as boolean | undefined,
+        ttlockLockId: x.ttlockLockId as string | undefined,
         checkInTime: x.checkInTime as string | undefined,
         checkOutTime: x.checkOutTime as string | undefined,
       })));
@@ -1115,6 +1119,8 @@ export default function CheckInsPanel() {
         keyboxCode: prop?.keyboxCode,
         keyboxLocation: prop?.keyboxLocation,
         keyboxPhotoUrl: prop?.keyboxPhotoUrl,
+        keyboxShareWithGuest: prop?.keyboxShareWithGuest,
+        ttlockLockId: prop?.ttlockLockId,
         wifiName: r.wifiSsid,
         wifiPassword: r.wifiPassword,
       },

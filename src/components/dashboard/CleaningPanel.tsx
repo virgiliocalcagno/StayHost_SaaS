@@ -254,6 +254,8 @@ export default function CleaningPanel() {
     keyboxCode?: string;
     keyboxLocation?: string;
     keyboxPhotoUrl?: string;
+    keyboxShareWithGuest?: boolean;
+    ttlockLockId?: string;
   }[]>([]);
 
   // Nueva Orden modal state
@@ -1002,6 +1004,8 @@ export default function CleaningPanel() {
       keyboxCode: p.keyboxCode,
       keyboxLocation: p.keyboxLocation,
       keyboxPhotoUrl: p.keyboxPhotoUrl,
+      keyboxShareWithGuest: p.keyboxShareWithGuest,
+      ttlockLockId: p.ttlockLockId,
     })),
     [properties],
   );

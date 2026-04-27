@@ -160,6 +160,7 @@ interface Property {
   keyboxCode?: string;
   keyboxLocation?: string;
   keyboxPhotoUrl?: string;
+  keyboxShareWithGuest?: boolean;  // default true — false = caja solo para staff
   icalToken?: string;          // capability secret para /api/ical/export
 }
 
@@ -447,82 +448,116 @@ function DevicesTabContent({ formData, setFormData }: { formData: any; setFormDa
           <Box className="h-4 w-4 text-amber-500" /> Acceso Físico
         </h4>
         <div className="grid gap-4 p-4 rounded-2xl bg-amber-50/40 border border-dashed border-amber-200">
-          <div className="space-y-2">
-            <Label className="text-xs font-semibold">Método de acceso principal</Label>
-            <Select
-              value={formData.accessMethod || "in_person"}
-              onValueChange={(v) => setFormData((p: any) => ({ ...p, accessMethod: v }))}
-            >
-              <SelectTrigger className="bg-white rounded-xl">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="ttlock">🔐 Cerradura inteligente (TTLock)</SelectItem>
-                <SelectItem value="keybox">🗝️ Caja de llaves física</SelectItem>
-                <SelectItem value="in_person">🤝 Recepción en persona</SelectItem>
-                <SelectItem value="doorman">👋 Recepción / Conserje del edificio</SelectItem>
-              </SelectContent>
-            </Select>
-            <p className="text-[10px] text-muted-foreground italic">
-              Determina qué instrucciones se envían al huésped y al equipo de limpieza.
-            </p>
+
+          {/* Caja de llaves física — independiente de TTLock */}
+          <div className="space-y-3">
+            <label className="flex items-start gap-3 cursor-pointer">
+              <Checkbox
+                checked={formData.hasKeybox || false}
+                onCheckedChange={(v) => setFormData((p: any) => ({ ...p, hasKeybox: !!v }))}
+                className="mt-0.5"
+              />
+              <div className="space-y-0.5">
+                <p className="text-sm font-semibold">🗝️ Esta propiedad tiene caja de llaves física</p>
+                <p className="text-[11px] text-muted-foreground">
+                  Puede coexistir con cerradura inteligente — la caja suele ser el respaldo del equipo de limpieza.
+                </p>
+              </div>
+            </label>
+
+            {formData.hasKeybox && (
+              <div className="grid gap-3 p-3 rounded-xl bg-white border border-amber-100 ml-7">
+                <div className="space-y-2">
+                  <Label className="text-xs font-semibold">Código de la caja</Label>
+                  <Input
+                    placeholder="Ej: 4471"
+                    value={formData.keyboxCode}
+                    onChange={(e) => setFormData((p: any) => ({ ...p, keyboxCode: e.target.value }))}
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label className="text-xs font-semibold">Ubicación de la caja</Label>
+                  <Textarea
+                    placeholder="Ej: Jardín derecho del portón, debajo de la maceta de helecho colgante."
+                    rows={2}
+                    value={formData.keyboxLocation}
+                    onChange={(e) => setFormData((p: any) => ({ ...p, keyboxLocation: e.target.value }))}
+                  />
+                  <p className="text-[10px] text-muted-foreground italic">
+                    Sé específico — evita "en la entrada" porque cada huésped la busca distinto.
+                  </p>
+                </div>
+                <div className="space-y-2">
+                  <Label className="text-xs font-semibold">Foto de referencia (URL opcional)</Label>
+                  <Input
+                    placeholder="https://..."
+                    value={formData.keyboxPhotoUrl}
+                    onChange={(e) => setFormData((p: any) => ({ ...p, keyboxPhotoUrl: e.target.value }))}
+                  />
+                  <p className="text-[10px] text-muted-foreground italic">
+                    Una foto reduce dudas a cero. Subila a tu storage y pegá el link.
+                  </p>
+                </div>
+
+                {/* Toggle clave: ¿se le da el código al huésped o solo al staff? */}
+                <div className="rounded-lg bg-amber-50 border border-amber-200 p-3">
+                  <label className="flex items-start gap-3 cursor-pointer">
+                    <Checkbox
+                      checked={formData.keyboxShareWithGuest !== false}
+                      onCheckedChange={(v) => setFormData((p: any) => ({ ...p, keyboxShareWithGuest: !!v }))}
+                      className="mt-0.5"
+                    />
+                    <div className="space-y-0.5">
+                      <p className="text-xs font-semibold">Compartir el código con el huésped</p>
+                      <p className="text-[10px] text-muted-foreground leading-relaxed">
+                        {formData.keyboxShareWithGuest !== false
+                          ? "✓ El código se incluye en el mensaje de bienvenida al huésped."
+                          : "✗ El código solo va al equipo de limpieza/mantenimiento. Útil cuando la caja es respaldo y el huésped entra con TTLock."}
+                      </p>
+                    </div>
+                  </label>
+                </div>
+              </div>
+            )}
           </div>
 
-          {formData.accessMethod === "keybox" && (
-            <div className="grid gap-3 p-3 rounded-xl bg-white border border-amber-100">
-              <div className="space-y-2">
-                <Label className="text-xs font-semibold">Código de la caja</Label>
-                <Input
-                  placeholder="Ej: 4471"
-                  value={formData.keyboxCode}
-                  onChange={(e) => setFormData((p: any) => ({ ...p, keyboxCode: e.target.value }))}
-                />
-              </div>
-              <div className="space-y-2">
-                <Label className="text-xs font-semibold">Ubicación de la caja</Label>
-                <Textarea
-                  placeholder="Ej: Jardín derecho del portón, debajo de la maceta de helecho colgante."
-                  rows={2}
-                  value={formData.keyboxLocation}
-                  onChange={(e) => setFormData((p: any) => ({ ...p, keyboxLocation: e.target.value }))}
-                />
-                <p className="text-[10px] text-muted-foreground italic">
-                  Sé específico — evita "en la entrada" porque cada huésped la busca distinto.
-                </p>
-              </div>
-              <div className="space-y-2">
-                <Label className="text-xs font-semibold">Foto de referencia (URL opcional)</Label>
-                <Input
-                  placeholder="https://..."
-                  value={formData.keyboxPhotoUrl}
-                  onChange={(e) => setFormData((p: any) => ({ ...p, keyboxPhotoUrl: e.target.value }))}
-                />
-                <p className="text-[10px] text-muted-foreground italic">
-                  Una foto reduce dudas a cero. Subila a tu storage y pegá el link.
-                </p>
-              </div>
+          {/* Modo de recepción (fallback cuando no hay TTLock ni caja) */}
+          {!formData.ttlockLockId && !formData.hasKeybox && (
+            <div className="space-y-2 pt-2 border-t border-amber-100">
+              <Label className="text-xs font-semibold">¿Cómo recibís al huésped si no hay acceso digital ni caja?</Label>
+              <Select
+                value={formData.accessMethod || "in_person"}
+                onValueChange={(v) => setFormData((p: any) => ({ ...p, accessMethod: v }))}
+              >
+                <SelectTrigger className="bg-white rounded-xl">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="in_person">🤝 Lo recibo en persona</SelectItem>
+                  <SelectItem value="doorman">👋 Recepción / Conserje del edificio</SelectItem>
+                </SelectContent>
+              </Select>
             </div>
           )}
 
-          {(formData.accessMethod === "in_person" || formData.accessMethod === "doorman") && (
-            <div className="p-3 rounded-xl bg-white border border-amber-100 flex gap-3">
-              <Info className="h-4 w-4 text-amber-500 shrink-0 mt-0.5" />
-              <p className="text-[10px] text-amber-800 leading-relaxed">
-                {formData.accessMethod === "doorman"
-                  ? "El mensaje al huésped y al equipo dirá que pasen por recepción a buscar la llave."
-                  : "El mensaje al huésped pedirá que avise cuando esté cerca para recibirlo en persona."}
-              </p>
-            </div>
-          )}
-
-          {formData.accessMethod === "ttlock" && !formData.ttlockLockId && (
-            <div className="p-3 rounded-xl bg-rose-50 border border-rose-100 flex gap-3">
-              <AlertCircle className="h-4 w-4 text-rose-500 shrink-0 mt-0.5" />
-              <p className="text-[10px] text-rose-700 leading-relaxed">
-                Elegiste TTLock pero la propiedad no tiene cerradura vinculada arriba. Vinculá una o cambiá el método.
-              </p>
-            </div>
-          )}
+          {/* Resumen de qué va a pasar */}
+          <div className="p-3 rounded-xl bg-white/70 border border-amber-100">
+            <p className="text-[10px] font-semibold text-amber-900 mb-1">Resumen de acceso</p>
+            <ul className="text-[10px] text-muted-foreground space-y-0.5 leading-relaxed">
+              {formData.ttlockLockId && (
+                <li>🔐 <span className="font-medium">TTLock activo</span> — PIN automático al huésped en cada reserva.</li>
+              )}
+              {formData.hasKeybox && formData.keyboxShareWithGuest !== false && (
+                <li>🗝️ <span className="font-medium">Caja física</span> — código va al huésped y al equipo.</li>
+              )}
+              {formData.hasKeybox && formData.keyboxShareWithGuest === false && (
+                <li>🗝️ <span className="font-medium">Caja física</span> — solo para el equipo de limpieza/mantenimiento.</li>
+              )}
+              {!formData.ttlockLockId && !formData.hasKeybox && (
+                <li>{formData.accessMethod === "doorman" ? "👋" : "🤝"} <span className="font-medium">{formData.accessMethod === "doorman" ? "Conserje" : "Recepción en persona"}</span> — sin acceso digital ni caja.</li>
+              )}
+            </ul>
+          </div>
         </div>
       </div>
 
@@ -659,10 +694,11 @@ export default function PropertiesPanel() {
           checkInTime: p.check_in_time ?? "14:00",
           checkOutTime: p.check_out_time ?? "12:00",
           ttlockLockId: p.ttlock_lock_id ?? undefined,
-          accessMethod: (p.access_method as Property["accessMethod"]) ?? (p.ttlock_lock_id ? "ttlock" : "in_person"),
+          accessMethod: (p.access_method as Property["accessMethod"]) ?? "in_person",
           keyboxCode: p.keybox_code ?? undefined,
           keyboxLocation: p.keybox_location ?? undefined,
           keyboxPhotoUrl: p.keybox_photo_url ?? undefined,
+          keyboxShareWithGuest: p.keybox_share_with_guest ?? true,
           icalToken: p.ical_token ?? undefined,
         }));
         setProperties(fromDb);
@@ -747,9 +783,11 @@ export default function PropertiesPanel() {
     checkOutTime: "12:00",
     ttlockLockId: "",
     accessMethod: "in_person" as Property["accessMethod"],
+    hasKeybox: false,
     keyboxCode: "",
     keyboxLocation: "",
     keyboxPhotoUrl: "",
+    keyboxShareWithGuest: true,
   });
 
   // ─── Filtered ──────────────────────────────────────────────────────────────
@@ -906,7 +944,7 @@ export default function PropertiesPanel() {
     setModalTab("propiedad");
     setCreationStep("options");
     setAirbnbImportLink("");
-    setFormData({ name: "", address: "", addressUnit: "", neighborhood: "", city: "", postalCode: "", type: "apartment", price: "", beds: "", baths: "", maxGuests: "", airbnbUrl: "", airbnbIcal: "", bookingUrl: "", bookingIcal: "", vrboUrl: "", vrboIcal: "", directaEnabled: false, cleaningFeeOneDay: "", cleaningFeeMoreDays: "", weeklyDiscountPercent: "", energyFeePerDay: "", additionalServicesFee: "", recurringSupplies: [], autoAssignCleaner: false, cleanerPriorities: [], bedConfiguration: "", standardInstructions: "", evidenceCriteria: ["Cocina", "Habitación", "Baño"], descriptionEN: "", descriptionES: "", photoTour: [], amenitiesConfig: { popular: [], bathroom: [], bedroom: [], kitchen: [], outdoor: [] }, wifiSsid: "", wifiPassword: "", electricityEnabled: false, electricityRate: "", checkInTime: "14:00", checkOutTime: "12:00", ttlockLockId: "", accessMethod: "in_person", keyboxCode: "", keyboxLocation: "", keyboxPhotoUrl: "" });
+    setFormData({ name: "", address: "", addressUnit: "", neighborhood: "", city: "", postalCode: "", type: "apartment", price: "", beds: "", baths: "", maxGuests: "", airbnbUrl: "", airbnbIcal: "", bookingUrl: "", bookingIcal: "", vrboUrl: "", vrboIcal: "", directaEnabled: false, cleaningFeeOneDay: "", cleaningFeeMoreDays: "", weeklyDiscountPercent: "", energyFeePerDay: "", additionalServicesFee: "", recurringSupplies: [], autoAssignCleaner: false, cleanerPriorities: [], bedConfiguration: "", standardInstructions: "", evidenceCriteria: ["Cocina", "Habitación", "Baño"], descriptionEN: "", descriptionES: "", photoTour: [], amenitiesConfig: { popular: [], bathroom: [], bedroom: [], kitchen: [], outdoor: [] }, wifiSsid: "", wifiPassword: "", electricityEnabled: false, electricityRate: "", checkInTime: "14:00", checkOutTime: "12:00", ttlockLockId: "", accessMethod: "in_person", hasKeybox: false, keyboxCode: "", keyboxLocation: "", keyboxPhotoUrl: "", keyboxShareWithGuest: true });
     setShowModal(true);
   };
 
@@ -961,10 +999,12 @@ export default function PropertiesPanel() {
       checkInTime: p.checkInTime || "14:00",
       checkOutTime: p.checkOutTime || "12:00",
       ttlockLockId: p.ttlockLockId || "",
-      accessMethod: p.accessMethod || (p.ttlockLockId ? "ttlock" : "in_person"),
+      accessMethod: p.accessMethod || "in_person",
+      hasKeybox: !!p.keyboxCode,
       keyboxCode: p.keyboxCode || "",
       keyboxLocation: p.keyboxLocation || "",
       keyboxPhotoUrl: p.keyboxPhotoUrl || "",
+      keyboxShareWithGuest: p.keyboxShareWithGuest !== false,
     });
     setShowModal(true);
   };
@@ -998,7 +1038,7 @@ export default function PropertiesPanel() {
     let finalProp: Property;
 
     if (editingProperty) {
-      finalProp = { ...editingProperty, name: formData.name, address: formData.address, addressUnit: formData.addressUnit, neighborhood: formData.neighborhood, city: formData.city, postalCode: formData.postalCode, type: formData.type, price: Number(formData.price) || editingProperty.price, beds: Number(formData.beds) || editingProperty.beds, baths: Number(formData.baths) || editingProperty.baths, maxGuests: Number(formData.maxGuests) || editingProperty.maxGuests, channels: updatedChannels, cleaningFeeOneDay: Number(formData.cleaningFeeOneDay) || 0, cleaningFeeMoreDays: Number(formData.cleaningFeeMoreDays) || 0, weeklyDiscountPercent: Number(formData.weeklyDiscountPercent) || 0, energyFeePerDay: Number(formData.energyFeePerDay) || 0, additionalServicesFee: Number(formData.additionalServicesFee) || 0, recurringSupplies: formData.recurringSupplies, autoAssignCleaner: formData.autoAssignCleaner, cleanerPriorities: formData.cleanerPriorities, bedConfiguration: formData.bedConfiguration, standardInstructions: formData.standardInstructions, evidenceCriteria: formData.evidenceCriteria, descriptionES: formData.descriptionES, descriptionEN: formData.descriptionEN, photoTour: formData.photoTour, amenitiesConfig: formData.amenitiesConfig, wifiSsid: formData.wifiSsid, wifiPassword: formData.wifiPassword, electricityEnabled: formData.electricityEnabled, electricityRate: Number(formData.electricityRate) || 0, checkInTime: formData.checkInTime, checkOutTime: formData.checkOutTime, ttlockLockId: formData.ttlockLockId, accessMethod: formData.accessMethod, keyboxCode: formData.keyboxCode || undefined, keyboxLocation: formData.keyboxLocation || undefined, keyboxPhotoUrl: formData.keyboxPhotoUrl || undefined };
+      finalProp = { ...editingProperty, name: formData.name, address: formData.address, addressUnit: formData.addressUnit, neighborhood: formData.neighborhood, city: formData.city, postalCode: formData.postalCode, type: formData.type, price: Number(formData.price) || editingProperty.price, beds: Number(formData.beds) || editingProperty.beds, baths: Number(formData.baths) || editingProperty.baths, maxGuests: Number(formData.maxGuests) || editingProperty.maxGuests, channels: updatedChannels, cleaningFeeOneDay: Number(formData.cleaningFeeOneDay) || 0, cleaningFeeMoreDays: Number(formData.cleaningFeeMoreDays) || 0, weeklyDiscountPercent: Number(formData.weeklyDiscountPercent) || 0, energyFeePerDay: Number(formData.energyFeePerDay) || 0, additionalServicesFee: Number(formData.additionalServicesFee) || 0, recurringSupplies: formData.recurringSupplies, autoAssignCleaner: formData.autoAssignCleaner, cleanerPriorities: formData.cleanerPriorities, bedConfiguration: formData.bedConfiguration, standardInstructions: formData.standardInstructions, evidenceCriteria: formData.evidenceCriteria, descriptionES: formData.descriptionES, descriptionEN: formData.descriptionEN, photoTour: formData.photoTour, amenitiesConfig: formData.amenitiesConfig, wifiSsid: formData.wifiSsid, wifiPassword: formData.wifiPassword, electricityEnabled: formData.electricityEnabled, electricityRate: Number(formData.electricityRate) || 0, checkInTime: formData.checkInTime, checkOutTime: formData.checkOutTime, ttlockLockId: formData.ttlockLockId, accessMethod: formData.accessMethod, keyboxCode: formData.hasKeybox ? (formData.keyboxCode || undefined) : undefined, keyboxLocation: formData.hasKeybox ? (formData.keyboxLocation || undefined) : undefined, keyboxPhotoUrl: formData.hasKeybox ? (formData.keyboxPhotoUrl || undefined) : undefined, keyboxShareWithGuest: formData.hasKeybox ? formData.keyboxShareWithGuest : true };
     } else {
       finalProp = {
         id: crypto.randomUUID(),
@@ -1047,9 +1087,10 @@ export default function PropertiesPanel() {
         checkOutTime: formData.checkOutTime,
         ttlockLockId: formData.ttlockLockId,
         accessMethod: formData.accessMethod,
-        keyboxCode: formData.keyboxCode || undefined,
-        keyboxLocation: formData.keyboxLocation || undefined,
-        keyboxPhotoUrl: formData.keyboxPhotoUrl || undefined,
+        keyboxCode: formData.hasKeybox ? (formData.keyboxCode || undefined) : undefined,
+        keyboxLocation: formData.hasKeybox ? (formData.keyboxLocation || undefined) : undefined,
+        keyboxPhotoUrl: formData.hasKeybox ? (formData.keyboxPhotoUrl || undefined) : undefined,
+        keyboxShareWithGuest: formData.hasKeybox ? formData.keyboxShareWithGuest : true,
       };
     }
 
