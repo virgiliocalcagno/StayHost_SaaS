@@ -63,6 +63,10 @@ import { getTeam, getProperties, type RawTeamMember } from "@/services/apiServic
 // Nuevos componentes universales de Staff
 import { StaffWizard } from "@/components/staff-ui/StaffWizard";
 import { StaffTaskDetail } from "@/components/staff-ui/StaffTaskDetail";
+import { CleaningTaskDetailModal } from "@/components/dashboard/CleaningTaskDetailModal";
+import { getEffectiveStatus, deriveCorrectStatus } from "@/lib/cleaning/status";
+import type { MaintenanceTicket } from "@/types/maintenance";
+import { MAINTENANCE_SEVERITY_LABELS, MAINTENANCE_CATEGORY_LABELS } from "@/types/maintenance";
 
 // ─── Interfaces ─────────────────────────────────────────────────────────────
 
@@ -107,6 +111,8 @@ interface CleaningTask {
   bookingCheckIn?: string;       // ISO date — entrada del huesped saliente
   bookingCheckOut?: string;      // ISO date — checkout (== dueDate)
   guestPhone?: string;
+  createdAt?: string;            // ISO timestamp — creacion de la tarea (audit log)
+  updatedAt?: string;            // ISO timestamp — ultima modificacion (audit log)
 }
 
 interface TeamMember {
@@ -147,7 +153,7 @@ const MOCK_TEAM: TeamMember[] = [
 
 
 export default function CleaningPanel() {
-  const [view, setView] = useState<"day" | "week" | "month">("day");
+  const [view, setView] = useState<"day" | "week" | "month" | "validate" | "unassigned">("day");
   const [activeMonth, setActiveMonth] = useState<string>(() => {
     const d = new Date();
     return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
@@ -158,11 +164,64 @@ export default function CleaningPanel() {
     // Tenant is resolved server-side from the session cookie.
     fetch("/api/cleaning-tasks", { credentials: "same-origin" })
       .then(r => r.json())
-      .then(data => { if (data.tasks?.length) setTasks(data.tasks); })
+      .then(data => {
+        if (!data.tasks?.length) return;
+        const incoming = data.tasks as CleaningTask[];
+
+        // Auto-heal bidireccional: deriveCorrectStatus devuelve el status
+        // que la fila deberia tener segun su data real (assigneeId), o null
+        // si esta coherente. Cubre los dos sentidos:
+        //   - status="assigned" sin assigneeId → "unassigned"
+        //   - status="unassigned" con assigneeId → "assigned"
+        // "rejected" se EXCLUYE a proposito: un rechazo huerfano es estado
+        // valido (esperando reasignacion) y borrarlo perderia el motivo.
+        const corrections = new Map<string, string>();
+        for (const t of incoming) {
+          const correct = deriveCorrectStatus(t);
+          if (correct && correct !== t.status) {
+            corrections.set(t.id, correct);
+          }
+        }
+        if (corrections.size > 0) {
+          // Telemetria: si esto se dispara seguido, hay un flujo upstream
+          // que esta sembrando datos rotos. Loguear permite detectarlo
+          // antes de que el auto-heal lo enmascare en silencio.
+          console.warn(
+            "[cleaning] auto-heal: status incoherente con assigneeId",
+            Object.fromEntries(corrections),
+          );
+        }
+
+        const healed = incoming.map((t) => {
+          const fix = corrections.get(t.id);
+          return fix ? { ...t, status: fix as CleaningTask["status"] } : t;
+        });
+        setTasks(healed);
+
+        for (const [id, status] of corrections) {
+          patchTask(id, { status });
+        }
+      })
       .catch(() => {});
   };
 
   useEffect(() => { loadTasks(); }, []);
+
+  // Incidencias activas: tickets de mantenimiento abiertos asociados a
+  // propiedades del tenant. La sidebar del modulo los muestra como signal
+  // de "que esta roto ahora mismo" — datos reales, sin mock.
+  const [incidents, setIncidents] = useState<MaintenanceTicket[]>([]);
+  useEffect(() => {
+    fetch(
+      "/api/maintenance-tickets?status=open,awaiting_response,confirmed,in_progress,pending_verification",
+      { credentials: "same-origin" },
+    )
+      .then(r => r.json())
+      .then(data => {
+        if (Array.isArray(data.tickets)) setIncidents(data.tickets);
+      })
+      .catch(() => {});
+  }, []);
 
   const patchTask = (id: string, changes: Record<string, unknown>) => {
     fetch(`/api/cleaning-tasks?id=${encodeURIComponent(id)}`, {
@@ -271,6 +330,27 @@ export default function CleaningPanel() {
         short: "semana",
       };
     }
+    if (view === "validate") {
+      // A validar: rango abierto (no acotado a un periodo). Mostramos
+      // todas las tareas que el staff envio, sin importar la fecha.
+      return {
+        start: "0000-00-00",
+        end: "9999-12-31",
+        label: "A validar",
+        short: "a validar",
+      };
+    }
+    if (view === "unassigned") {
+      // Urgentes sin asignar: rango abierto, el filtro real es por
+      // proximidad temporal (proximas 24h). Lo que importa es que el
+      // owner las vea juntas y las pueda asignar de un saque.
+      return {
+        start: "0000-00-00",
+        end: "9999-12-31",
+        label: "Sin asignar urgente",
+        short: "sin asignar",
+      };
+    }
     const [y, m] = activeMonth.split("-").map(Number);
     const lastDay = new Date(y, m, 0).getDate();
     const monthName = new Date(y, m - 1, 1)
@@ -288,78 +368,128 @@ export default function CleaningPanel() {
     const inPeriod = tasks.filter(
       (t) => t.dueDate >= period.start && t.dueDate <= period.end,
     );
+    // Esperando validacion del owner: el staff envio el reporte (fotos +
+    // checklist) y la tarea esta en cola para que el owner la apruebe o
+    // pida refoto. Se cuenta sobre TODAS las tareas, no solo el periodo,
+    // porque son urgentes sin importar la fecha del checkout.
+    const awaitingValidation = tasks.filter((t) => t.isWaitingValidation === true).length;
+
+    // Tareas sin asignar con checkout en menos de 24h o ya pasado: riesgo
+    // real de que la propiedad no se limpie a tiempo. Se cuenta sobre
+    // TODAS las tareas (no solo el periodo de vista) porque cualquier
+    // urgente debe gritar igual aunque el owner este viendo otra semana.
+    const now = Date.now();
+    const unassignedUrgent = tasks.filter((t) => {
+      if (t.assigneeId) return false;
+      if (getEffectiveStatus(t) === "completed") return false;
+      const [hStr, mStr] = (t.dueTime || "11:00").split(":");
+      const [yr, mo, dy] = t.dueDate.split("-").map(Number);
+      const checkout = new Date(
+        yr,
+        (mo || 1) - 1,
+        dy || 1,
+        parseInt(hStr, 10) || 11,
+        parseInt(mStr, 10) || 0,
+      );
+      const hours = (checkout.getTime() - now) / (1000 * 60 * 60);
+      return hours < 24; // incluye atrasadas (hours < 0)
+    }).length;
+
     return {
       total: inPeriod.length,
-      completed: inPeriod.filter((t) => t.status === "completed").length,
-      pending: inPeriod.filter((t) => t.status !== "completed").length,
+      // KPIs usan effective status para que filas con datos inconsistentes
+      // (status="completed" sin que la limpieza realmente termino, etc.)
+      // no inflen los contadores. getEffectiveStatus deja completed/issue
+      // intactos pero corrige los pares assigneeId<->status incoherentes.
+      completed: inPeriod.filter((t) => getEffectiveStatus(t) === "completed").length,
+      pending: inPeriod.filter((t) => getEffectiveStatus(t) !== "completed").length,
       critical: inPeriod.filter((t) => t.priority === "critical").length,
+      awaitingValidation,
+      unassignedUrgent,
     };
   }, [tasks, period]);
 
   const filteredTasks = useMemo(() => {
     let result = tasks;
-    
+
     // Vista diaria: solo hoy.
     // Vista semanal: dia seleccionado en el strip de tabs.
     // Vista mensual: dia seleccionado en el grid de calendario (activeDate).
-    if (view === "day") {
+    // Vista validate: solo tareas que el staff envio y esperan aprobacion
+    //   del owner. Sin filtro de fecha — son urgentes igual.
+    // Filtro de rango segun vista. Antes week/month filtraban a un solo
+    // dia (activeDate), lo que dejaba el calendario como decoracion: el
+    // owner perdia visibilidad de la semana/mes y tenia que clickear dia
+    // por dia. Ahora cada vista muestra TODO su periodo y el strip /
+    // calendario quedan como ancla visual.
+    if (view === "validate") {
+      result = result.filter(t => t.isWaitingValidation === true);
+    } else if (view === "unassigned") {
+      // Mismo criterio que stats.unassignedUrgent: sin asignar y con
+      // checkout en las proximas 24h (incluye atrasadas).
+      const now = Date.now();
+      result = result.filter(t => {
+        if (t.assigneeId) return false;
+        if (getEffectiveStatus(t) === "completed") return false;
+        const [hStr, mStr] = (t.dueTime || "11:00").split(":");
+        const [yr, mo, dy] = t.dueDate.split("-").map(Number);
+        const checkout = new Date(
+          yr,
+          (mo || 1) - 1,
+          dy || 1,
+          parseInt(hStr, 10) || 11,
+          parseInt(mStr, 10) || 0,
+        );
+        return (checkout.getTime() - now) / (1000 * 60 * 60) < 24;
+      });
+    } else if (view === "day") {
       result = result.filter(t => t.dueDate === getDateStr(0));
     } else if (view === "week" || view === "month") {
-      result = result.filter(t => t.dueDate === activeDate);
+      result = result.filter(t => t.dueDate >= period.start && t.dueDate <= period.end);
     }
 
     if (selectedStaff !== "all") {
       result = result.filter(t => t.assigneeId === selectedStaff);
     }
 
+    // Prioridad ordinal — sirve para ordenar dentro de cada dia.
+    const priorityRank: Record<string, number> = {
+      critical: 0, high: 1, medium: 2, low: 3,
+    };
+
     return result.sort((a, b) => {
-      // Vacantes al final (baja prioridad), críticos al frente
+      // En vista validate: por checkout mas viejo primero (la mas urgente
+      // de aprobar es la que lleva mas tiempo esperando).
+      if (view === "validate") {
+        return a.dueDate.localeCompare(b.dueDate);
+      }
+      // En vista unassigned: la mas cercana al checkout primero (mas
+      // urgente de asignar). Mismo criterio temporal que el helper.
+      if (view === "unassigned") {
+        return a.dueDate.localeCompare(b.dueDate) || (a.dueTime || "").localeCompare(b.dueTime || "");
+      }
+      // En week/month: primero por fecha asc (orden cronologico para que
+      // los headers de dia salgan en orden), despues por prioridad desc
+      // dentro del mismo dia.
+      if (view === "week" || view === "month") {
+        const dateCmp = a.dueDate.localeCompare(b.dueDate);
+        if (dateCmp !== 0) return dateCmp;
+        if (a.isVacant !== b.isVacant) return a.isVacant ? 1 : -1;
+        return (priorityRank[a.priority] ?? 99) - (priorityRank[b.priority] ?? 99);
+      }
+      // Vista diaria: vacantes al final, criticos al frente.
       if (a.isVacant && !b.isVacant) return 1;
       if (!a.isVacant && b.isVacant) return -1;
-      return a.priority === "critical" ? -1 : 1;
+      return (priorityRank[a.priority] ?? 99) - (priorityRank[b.priority] ?? 99);
     });
-  }, [tasks, view, selectedStaff, activeDate]);
-
-  // ─── Linen Summary (ropa de cama necesaria en el periodo activo) ─────────
-  // Se calcula sobre el rango completo de la vista (dia/semana/mes) para
-  // que el host pueda planificar compra y rotacion. Antes solo miraba el
-  // dia activo, lo que en vista Mensual no decia nada.
-  const linenSummary = useMemo(() => {
-    const targetTasks = tasks.filter(
-      (t) => t.dueDate >= period.start && t.dueDate <= period.end,
-    );
-    const beds: Record<string, number> = {};
-    let totalTowels = 0;
-
-    targetTasks.forEach(t => {
-      const prop = properties.find(p => p.id === t.propertyId);
-      if (!prop?.bedConfiguration) return;
-      
-      // Calculate towels (2 per guest)
-      totalTowels += (t.guestCount || 2) * 2;
-
-      // Parse bed configuration
-      prop.bedConfiguration.split(",").forEach(part => {
-        const match = part.trim().match(/^(\d+)\s+(.+)$/);
-        if (match) {
-          const qty = parseInt(match[1]);
-          const type = match[2].trim();
-          beds[type] = (beds[type] || 0) + qty;
-        }
-      });
-    });
-
-    return {
-      beds: Object.entries(beds).map(([type, qty]) => ({ type, qty })),
-      towels: totalTowels
-    };
-  }, [tasks, properties, period]);
+  }, [tasks, view, selectedStaff, period]);
 
   const getStatusBadge = (task: CleaningTask) => {
-    if (task.status === "completed") {
-      return <Badge className="bg-emerald-500 hover:bg-emerald-600 text-white border-0">Completado</Badge>;
+    const effective = getEffectiveStatus(task);
+    if (effective === "completed") {
+      return <Badge className="bg-emerald-500 hover:bg-emerald-600 text-white border-0">Completada</Badge>;
     }
-    if (task.status === "in_progress") {
+    if (effective === "in_progress") {
       return (
         <div className="flex flex-col items-end gap-1">
           <Badge className="bg-primary hover:bg-primary/90 text-primary-foreground border-0 italic animate-pulse">En curso</Badge>
@@ -367,22 +497,22 @@ export default function CleaningPanel() {
         </div>
       );
     }
-    if (task.status === "issue") {
+    if (effective === "issue") {
       return <Badge variant="destructive">Incidencia</Badge>;
     }
-    if (task.status === "unassigned") {
+    if (effective === "unassigned") {
       return <Badge className="bg-amber-100 text-amber-700 border-amber-300 animate-pulse">Sin asignar</Badge>;
     }
-    if (task.status === "assigned") {
-      return <Badge className="bg-blue-50 text-blue-700 border-blue-200">Asignado</Badge>;
+    if (effective === "assigned") {
+      return <Badge className="bg-blue-50 text-blue-700 border-blue-200">Asignada</Badge>;
     }
-    if (task.status === "accepted") {
-      return <Badge className="bg-emerald-50 text-emerald-700 border-emerald-200">Aceptado ✓</Badge>;
+    if (effective === "accepted") {
+      return <Badge className="bg-emerald-50 text-emerald-700 border-emerald-200">Aceptada ✓</Badge>;
     }
     if (task.status === "rejected") {
       return (
         <div className="flex flex-col items-end gap-1">
-          <Badge className="bg-rose-100 text-rose-700 border-rose-300">Rechazado</Badge>
+          <Badge className="bg-rose-100 text-rose-700 border-rose-300">Rechazada</Badge>
           {task.rejectionReason && (
             <span className="text-[10px] text-rose-500 max-w-[140px] text-right leading-tight">"{task.rejectionReason}"</span>
           )}
@@ -391,12 +521,84 @@ export default function CleaningPanel() {
     }
     // Fallback: legacy pending — check acceptanceStatus
     if (task.acceptanceStatus === "accepted") {
-      return <Badge variant="outline" className="border-emerald-200 text-emerald-600 bg-emerald-50">Aceptado</Badge>;
+      return <Badge variant="outline" className="border-emerald-200 text-emerald-600 bg-emerald-50">Aceptada</Badge>;
     }
     if (task.acceptanceStatus === "declined") {
-      return <Badge variant="outline" className="border-rose-200 text-rose-600 bg-rose-50">Rechazado</Badge>;
+      return <Badge variant="outline" className="border-rose-200 text-rose-600 bg-rose-50">Rechazada</Badge>;
     }
     return <Badge variant="secondary" className="bg-muted text-muted-foreground border-0">Pendiente</Badge>;
+  };
+
+  // Urgencia de una tarea sin asignar — escala segun horas al checkout.
+  // Permite que la UI grite mas fuerte cuando se acerca la hora sin que
+  // nadie haya tomado la tarea (riesgo real de que la propiedad quede sin
+  // limpiar para el siguiente huesped).
+  type UnassignedLevel = "none" | "scheduled" | "soon" | "urgent" | "critical" | "overdue";
+  const getUnassignedUrgency = (task: CleaningTask): {
+    level: UnassignedLevel;
+    label: string;
+    classes: string;
+    pulse: boolean;
+    hours: number;
+  } => {
+    if (task.assigneeId) {
+      return { level: "none", label: "", classes: "", pulse: false, hours: 0 };
+    }
+    // Calculo cross-timezone: armamos la fecha local (no UTC) sumando la
+    // hora del checkout. Si dueTime no esta seteado, asumimos 11am (default
+    // del sistema).
+    const [hStr, mStr] = (task.dueTime || "11:00").split(":");
+    const h = parseInt(hStr, 10);
+    const m = parseInt(mStr, 10);
+    const [yr, mo, dy] = task.dueDate.split("-").map(Number);
+    const checkout = new Date(yr, (mo || 1) - 1, dy || 1, isNaN(h) ? 11 : h, isNaN(m) ? 0 : m);
+    const hours = (checkout.getTime() - Date.now()) / (1000 * 60 * 60);
+
+    if (hours < 0) {
+      return {
+        level: "overdue",
+        label: `ATRASADA · ${formatTime12(task.dueTime)}`,
+        classes: "bg-rose-600 text-white border-rose-700",
+        pulse: true,
+        hours,
+      };
+    }
+    if (hours < 6) {
+      return {
+        level: "critical",
+        label: `URGENTE · checkout HOY ${formatTime12(task.dueTime)}`,
+        classes: "bg-rose-500 text-white border-rose-600",
+        pulse: true,
+        hours,
+      };
+    }
+    if (hours < 24) {
+      const h_int = Math.floor(hours);
+      return {
+        level: "urgent",
+        label: `Sin asignar · checkout en ${h_int}h`,
+        classes: "bg-rose-100 text-rose-700 border-rose-200",
+        pulse: true,
+        hours,
+      };
+    }
+    if (hours < 48) {
+      return {
+        level: "soon",
+        label: "Sin asignar · mañana",
+        classes: "bg-amber-100 text-amber-700 border-amber-300",
+        pulse: false,
+        hours,
+      };
+    }
+    const days = Math.floor(hours / 24);
+    return {
+      level: "scheduled",
+      label: `Sin asignar · ${days} día${days === 1 ? "" : "s"}`,
+      classes: "bg-slate-100 text-slate-600 border-slate-200",
+      pulse: false,
+      hours,
+    };
   };
 
   // Helpers de presentacion para el header de la tarjeta de tarea ─────────
@@ -540,7 +742,7 @@ export default function CleaningPanel() {
       cells.push({
         date,
         day,
-        pending: dayTasks.filter((t) => t.status !== "completed").length,
+        pending: dayTasks.filter((t) => getEffectiveStatus(t) !== "completed").length,
         total: dayTasks.length,
         isToday: date === todayStr,
       });
@@ -574,7 +776,7 @@ export default function CleaningPanel() {
   const handleSendMessage = (phone: string, property: string, taskId: string) => {
     const link = `${window.location.origin}/dashboard?view=staff&task=${taskId}`;
     const msg = encodeURIComponent(`Hola, tienes una limpieza en ${property}. ✨\nAccede aquí para ver detalles y reportar: ${link}`);
-    window.open(`https://wa.me/${phone}?text=${msg}`, '_blank');
+    window.open(`https://wa.me/${phone}?text=${msg}`, '_blank', 'noopener,noreferrer');
   };
 
   // ─── Auto-assign Logic ───────────────────────────────────────────────────
@@ -746,6 +948,91 @@ export default function CleaningPanel() {
         m.id === task.assigneeId ? { ...m, completedTasks: m.completedTasks + 1, tasksToday: Math.max(0, m.tasksToday - 1) } : m
       ));
     }
+  };
+
+  // ─── Detail modal — owner-side drawer con auditoria + checklist + fotos ──
+  const [detailTaskId, setDetailTaskId] = useState<string | null>(null);
+  const detailTask = useMemo(
+    () => tasks.find(t => t.id === detailTaskId) ?? null,
+    [tasks, detailTaskId],
+  );
+
+  // Carga real por staff member derivada del state de tasks. Antes los
+  // contadores `tasksToday`/`completedTasks` venian de MOCK_TEAM (numeros
+  // hardcodeados), lo cual contradecia los KPIs y el cronograma. Ahora
+  // viene de la verdad: las tareas que el state ya tiene cargadas.
+  const todayStrLocal = getDateStr(0);
+  const staffLoad = useMemo(() => {
+    const map = new Map<string, { tasksToday: number; completedTasks: number }>();
+    for (const t of tasks) {
+      if (!t.assigneeId) continue;
+      const cur = map.get(t.assigneeId) ?? { tasksToday: 0, completedTasks: 0 };
+      const eff = getEffectiveStatus(t);
+      if (t.dueDate === todayStrLocal && eff !== "completed") cur.tasksToday += 1;
+      if (eff === "completed") cur.completedTasks += 1;
+      map.set(t.assigneeId, cur);
+    }
+    return map;
+  }, [tasks, todayStrLocal]);
+
+  // Memoizamos la proyeccion ligera de team y properties para que el modal
+  // no re-renderice por arrays nuevos en cada render del Panel.
+  const detailTeam = useMemo(
+    () => team.map(m => ({ id: m.id, name: m.name, avatar: m.avatar, phone: m.phone })),
+    [team],
+  );
+  const detailProperties = useMemo(
+    () => properties.map(p => ({
+      id: p.id,
+      name: p.name,
+      bedConfiguration: p.bedConfiguration,
+      evidenceCriteria: p.evidenceCriteria,
+    })),
+    [properties],
+  );
+
+  const handleReassignFromDetail = (taskId: string, memberId: string | null) => {
+    const member = memberId ? team.find(m => m.id === memberId) : null;
+    // El nuevo asignado todavia no acepto/inicio: pasamos a "assigned"
+    // (o "unassigned" si se quita el asignado). Misma logica en state y BD.
+    const nextStatus: CleaningTask["status"] = member ? "assigned" : "unassigned";
+    setTasks(prev => prev.map(t =>
+      t.id === taskId
+        ? {
+            ...t,
+            assigneeId: member?.id,
+            assigneeName: member?.name,
+            assigneeAvatar: member?.avatar,
+            status: nextStatus,
+          }
+        : t,
+    ));
+    patchTask(taskId, {
+      assigneeId: member?.id ?? null,
+      assigneeName: member?.name ?? null,
+      assigneeAvatar: member?.avatar ?? null,
+      status: nextStatus,
+    });
+  };
+
+  const handleReopenFromDetail = (taskId: string) => {
+    setTasks(prev => prev.map(t =>
+      t.id === taskId
+        ? { ...t, status: t.assigneeId ? "assigned" : "unassigned", isWaitingValidation: false }
+        : t,
+    ));
+    const t = tasks.find(x => x.id === taskId);
+    patchTask(taskId, {
+      status: t?.assigneeId ? "assigned" : "unassigned",
+      isWaitingValidation: false,
+    });
+  };
+
+  const handleMarkUrgentFromDetail = (taskId: string) => {
+    setTasks(prev => prev.map(t =>
+      t.id === taskId ? { ...t, priority: "critical" } : t,
+    ));
+    patchTask(taskId, { priority: "critical" });
   };
 
   // ─── Staff Views Renderers ───────────────────────────────────────────────
@@ -944,11 +1231,25 @@ export default function CleaningPanel() {
           <p className="text-muted-foreground">Sistema centralizado de limpieza y mantenimiento especializado</p>
         </div>
         <div className="flex items-center gap-3">
-          <Tabs value={view} onValueChange={(v) => setView(v as "day" | "week" | "month")} className="w-auto">
+          <Tabs value={view} onValueChange={(v) => setView(v as "day" | "week" | "month" | "validate")} className="w-auto">
             <TabsList className="bg-muted/50 p-1">
               <TabsTrigger value="day" className="data-[state=active]:bg-white data-[state=active]:shadow-sm px-4">Diaria</TabsTrigger>
               <TabsTrigger value="week" className="data-[state=active]:bg-white data-[state=active]:shadow-sm px-4">Semanal</TabsTrigger>
               <TabsTrigger value="month" className="data-[state=active]:bg-white data-[state=active]:shadow-sm px-4">Mensual</TabsTrigger>
+              <TabsTrigger
+                value="validate"
+                className={cn(
+                  "data-[state=active]:bg-white data-[state=active]:shadow-sm px-4 gap-1.5",
+                  stats.awaitingValidation > 0 && "text-rose-600 font-bold",
+                )}
+              >
+                A validar
+                {stats.awaitingValidation > 0 && (
+                  <Badge className="bg-rose-500 text-white border-0 text-[10px] h-4 px-1.5 font-black animate-pulse">
+                    {stats.awaitingValidation}
+                  </Badge>
+                )}
+              </TabsTrigger>
             </TabsList>
           </Tabs>
           <Button onClick={() => setShowAddTask(true)} className="gradient-gold text-primary-foreground shadow-lg hover:shadow-primary/20 transition-all gap-2 px-6">
@@ -958,15 +1259,90 @@ export default function CleaningPanel() {
         </div>
       </div>
 
+      {/* ─── Banner critico: tareas sin asignar con checkout < 24h ───────
+          Es lo primero que el owner ve al abrir el modulo si hay riesgo
+          real. Click → cambia el cronograma a una vista filtrada que
+          muestra SOLO esas urgentes ordenadas de mas cercana a mas
+          lejana. Vuelve a "Diaria" cuando el owner clickea otra pestana. */}
+      {stats.unassignedUrgent > 0 && view !== "unassigned" && (
+        <button
+          type="button"
+          onClick={() => setView("unassigned")}
+          className="w-full flex items-center gap-3 px-5 py-3.5 rounded-2xl bg-gradient-to-r from-rose-500 to-rose-600 text-white shadow-lg shadow-rose-200 hover:shadow-rose-300 transition-all animate-pulse-gentle text-left"
+        >
+          <div className="p-2 bg-white/20 rounded-xl flex-shrink-0">
+            <AlertTriangle className="h-5 w-5" />
+          </div>
+          <div className="flex-1">
+            <p className="font-black text-sm tracking-wide">
+              {stats.unassignedUrgent} {stats.unassignedUrgent === 1 ? "tarea" : "tareas"} sin asignar
+              {" "}con checkout en las proximas 24h
+            </p>
+            <p className="text-xs text-white/90 font-medium mt-0.5">
+              Click para ver y asignar staff ahora
+            </p>
+          </div>
+          <ArrowRight className="h-5 w-5 flex-shrink-0" />
+        </button>
+      )}
+
+      {/* Breadcrumb cuando estamos en la vista filtrada — para que el
+          owner sepa donde esta y como volver al cronograma normal. */}
+      {view === "unassigned" && (
+        <div className="flex items-center justify-between gap-3 px-4 py-3 rounded-2xl bg-rose-50 border border-rose-200">
+          <div className="flex items-center gap-2.5">
+            <AlertTriangle className="h-5 w-5 text-rose-600 flex-shrink-0" />
+            <div>
+              <p className="font-black text-sm text-rose-900">
+                Sin asignar urgente · proximas 24h
+              </p>
+              <p className="text-xs text-rose-700/80">
+                Asignale staff y volve a la vista normal
+              </p>
+            </div>
+          </div>
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-8 border-rose-300 text-rose-700 hover:bg-rose-100"
+            onClick={() => setView("day")}
+          >
+            Volver al cronograma
+          </Button>
+        </div>
+      )}
+
       {/* ─── Top Dashboard Stats ────────────────────────────────────────── */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+      <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
         {[
-          { label: `Checkouts ${period.short}`, value: stats.total, icon: LogOut, color: "text-primary", bg: "bg-primary/10" },
-          { label: `Back-to-Back ${period.short}`, value: stats.critical, icon: TrendingUp, color: "text-rose-600", bg: "bg-rose-100/50" },
-          { label: `Completadas ${period.short}`, value: stats.completed, icon: CheckCircle2, color: "text-emerald-600", bg: "bg-emerald-100/50" },
-          { label: `Pendientes ${period.short}`, value: stats.pending, icon: Clock, color: "text-muted-foreground", bg: "bg-muted" },
+          { label: `Checkouts ${period.short}`, value: stats.total, icon: LogOut, color: "text-primary", bg: "bg-primary/10", onClick: undefined as (() => void) | undefined, urgent: false },
+          { label: `Back-to-Back ${period.short}`, value: stats.critical, icon: TrendingUp, color: "text-rose-600", bg: "bg-rose-100/50", onClick: undefined, urgent: false },
+          { label: `Completadas ${period.short}`, value: stats.completed, icon: CheckCircle2, color: "text-emerald-600", bg: "bg-emerald-100/50", onClick: undefined, urgent: false },
+          { label: `Pendientes ${period.short}`, value: stats.pending, icon: Clock, color: "text-muted-foreground", bg: "bg-muted", onClick: undefined, urgent: false },
+          // 5to KPI: tareas que el staff envio y esperan aprobacion del owner.
+          // Click → cambia la vista del cronograma a "A validar". Pulsa cuando
+          // hay > 0 para que el owner las atienda al abrir el modulo.
+          {
+            label: "A validar",
+            value: stats.awaitingValidation,
+            icon: ClipboardList,
+            color: stats.awaitingValidation > 0 ? "text-rose-600" : "text-muted-foreground",
+            bg: stats.awaitingValidation > 0 ? "bg-rose-100/60" : "bg-muted",
+            onClick: () => setView("validate"),
+            urgent: stats.awaitingValidation > 0,
+          },
         ].map((stat, i) => (
-          <Card key={i} className="border-none shadow-soft overflow-hidden group">
+          <Card
+            key={i}
+            className={cn(
+              "border-none shadow-soft overflow-hidden group",
+              stat.onClick && "cursor-pointer hover:shadow-md transition-shadow",
+              stat.urgent && "ring-2 ring-rose-200 animate-pulse",
+            )}
+            onClick={stat.onClick}
+            role={stat.onClick ? "button" : undefined}
+            tabIndex={stat.onClick ? 0 : undefined}
+          >
             <CardContent className="p-5 flex items-center gap-4 relative">
               <div className={cn("p-3 rounded-2xl transition-all group-hover:scale-110", stat.bg)}>
                 <stat.icon className={cn("h-6 w-6", stat.color)} />
@@ -979,66 +1355,6 @@ export default function CleaningPanel() {
           </Card>
         ))}
       </div>
-
-      {/* ─── Linen & Workday Summary ────────────────────────────────────────── */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        <Card className="lg:col-span-2 border-none shadow-soft bg-white rounded-[2rem] overflow-hidden">
-          <CardHeader className="pb-2">
-            <div className="flex items-center justify-between">
-              <CardTitle className="text-lg font-bold flex items-center gap-2">
-                <Layers className="h-5 w-5 text-primary" />
-                Logística de Lencería ({period.label})
-              </CardTitle>
-              <Badge variant="outline" className="border-primary/20 text-primary font-bold">
-                {stats.total} Propiedades
-              </Badge>
-            </div>
-          </CardHeader>
-          <CardContent className="p-6">
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
-              {linenSummary.beds.map((item, idx) => (
-                <div key={idx} className="bg-slate-50 p-4 rounded-2xl border border-slate-100 group hover:border-primary/20 transition-all">
-                  <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1 group-hover:text-primary transition-colors">Sábanas {item.type}</p>
-                  <p className="text-2xl font-black text-slate-800">{item.qty} sets</p>
-                </div>
-              ))}
-              <div className="bg-primary/5 p-4 rounded-2xl border border-primary/10">
-                <p className="text-[10px] font-black text-primary uppercase tracking-widest mb-1">Total Toallas</p>
-                <p className="text-2xl font-black text-primary">{linenSummary.towels} unidades</p>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-
-        <Card className="border-none shadow-soft bg-slate-900 text-white rounded-[2rem] overflow-hidden">
-          <CardHeader className="pb-2">
-             <CardTitle className="text-lg font-bold flex items-center gap-2">
-               <Zap className="h-5 w-5 text-amber-400" />
-               Jornada Estimada
-             </CardTitle>
-          </CardHeader>
-          <CardContent className="p-6 space-y-4">
-             <div className="flex items-end justify-between">
-                <div>
-                   <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Horas de Trabajo</p>
-                   <p className="text-3xl font-black text-white">{stats.total * 2.5}h</p>
-                </div>
-                <div className="text-right">
-                   <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Costo Proyectado</p>
-                   <p className="text-xl font-bold text-amber-400">${stats.total * 35}</p>
-                </div>
-             </div>
-             <div className="h-1.5 w-full bg-slate-800 rounded-full overflow-hidden">
-                <div 
-                  className="h-full bg-amber-400 rounded-full transition-all duration-1000" 
-                  style={{ width: `${(stats.completed / (stats.total || 1)) * 100}%` }}
-                />
-             </div>
-             <p className="text-[10px] text-slate-400 font-medium">Progreso basado en tareas completadas ({stats.completed}/{stats.total})</p>
-          </CardContent>
-        </Card>
-      </div>
-
 
       {/* ─── Main Content ───────────────────────────────────────────────── */}
       <div className="grid lg:grid-cols-12 gap-6">
@@ -1211,12 +1527,49 @@ export default function CleaningPanel() {
 
           <div className="space-y-4">
             {filteredTasks.length > 0 ? (
-              filteredTasks.map((task) => {
-                const priority = getPriorityInfo(task);
-                const isWaitingReview = task.isWaitingValidation;
-                
-                return (
-                  <Card key={task.id} className={cn(
+              (() => {
+                // Conteo por dia para el header de seccion. Se calcula
+                // una vez sobre filteredTasks para evitar O(n^2) en el render.
+                const countByDay = new Map<string, number>();
+                for (const t of filteredTasks) {
+                  countByDay.set(t.dueDate, (countByDay.get(t.dueDate) ?? 0) + 1);
+                }
+                const todayStr = getDateStr(0);
+                const tomorrowStr = getDateStr(1);
+                const showHeaders = view === "week" || view === "month" || view === "validate" || view === "unassigned";
+
+                return filteredTasks.map((task, idx) => {
+                  const priority = getPriorityInfo(task);
+                  const isWaitingReview = task.isWaitingValidation;
+                  const prev = idx > 0 ? filteredTasks[idx - 1] : null;
+                  const newDay = !prev || prev.dueDate !== task.dueDate;
+                  const dayLabel =
+                    task.dueDate === todayStr
+                      ? "Hoy"
+                      : task.dueDate === tomorrowStr
+                        ? "Mañana"
+                        : formatLongDate(task.dueDate);
+                  const dayCount = countByDay.get(task.dueDate) ?? 0;
+
+                  return (
+                    <div key={task.id}>
+                      {showHeaders && newDay && (
+                        <div className="flex items-center gap-3 mb-2 mt-2 px-1">
+                          <div className="h-px bg-border flex-1" />
+                          <Badge
+                            variant="outline"
+                            className={cn(
+                              "border-slate-200 text-slate-700 font-bold uppercase tracking-wider text-[10px]",
+                              task.dueDate === todayStr && "bg-primary/10 text-primary border-primary/30",
+                            )}
+                          >
+                            <Calendar className="h-3 w-3 mr-1" />
+                            {dayLabel} · {dayCount} {dayCount === 1 ? "tarea" : "tareas"}
+                          </Badge>
+                          <div className="h-px bg-border flex-1" />
+                        </div>
+                      )}
+                  <Card className={cn(
                     "group hover:shadow-xl transition-all duration-300 border-none shadow-soft overflow-hidden",
                     isWaitingReview && "ring-2 ring-amber-500 bg-amber-50/20",
                     priority.isUrgent && !isWaitingReview && "ring-2 ring-rose-500 bg-rose-50/10 animate-pulse-gentle"
@@ -1300,12 +1653,27 @@ export default function CleaningPanel() {
                               <priority.icon className="h-3 w-3" />
                               {priority.label}
                             </div>
-                            {!task.assigneeId && (
-                              <div className="flex items-center gap-1.5 px-2.5 py-1 bg-amber-50 border border-amber-300 rounded-full animate-pulse">
-                                <AlertTriangle className="h-3 w-3 text-amber-500" />
-                                <span className="text-[10px] font-bold text-amber-600 uppercase tracking-wider">Sin asignar</span>
-                              </div>
-                            )}
+                            {(() => {
+                              // Badge de urgencia dinamico para tareas sin
+                              // asignar — escala desde gris ("3 dias") hasta
+                              // rojo solido pulsante ("URGENTE · checkout HOY").
+                              const urgency = getUnassignedUrgency(task);
+                              if (urgency.level === "none") return null;
+                              return (
+                                <div
+                                  className={cn(
+                                    "flex items-center gap-1.5 px-2.5 py-1 border rounded-full",
+                                    urgency.classes,
+                                    urgency.pulse && "animate-pulse",
+                                  )}
+                                >
+                                  <AlertTriangle className="h-3 w-3" />
+                                  <span className="text-[10px] font-bold uppercase tracking-wider">
+                                    {urgency.label}
+                                  </span>
+                                </div>
+                              );
+                            })()}
                           </div>
                         </div>
 
@@ -1324,14 +1692,9 @@ export default function CleaningPanel() {
                                   <p className="text-xs font-medium text-muted-foreground uppercase mb-0.5">Asignado a</p>
                                   <Select
                                     value={task.assigneeId || "none"}
-                                    onValueChange={(value) => {
-                                      const member = team.find(m => m.id === value);
-                                      setTasks(prev => prev.map(t =>
-                                        t.id === task.id
-                                          ? { ...t, assigneeId: value === "none" ? undefined : value, assigneeName: value === "none" ? undefined : member?.name, assigneeAvatar: value === "none" ? undefined : member?.avatar }
-                                          : t
-                                      ));
-                                    }}
+                                    onValueChange={(value) =>
+                                      handleReassignFromDetail(task.id, value === "none" ? null : value)
+                                    }
                                   >
                                     <SelectTrigger className="h-7 border-none p-0 bg-transparent font-semibold focus:ring-0">
                                       <SelectValue placeholder="Sin asignar" />
@@ -1389,7 +1752,7 @@ export default function CleaningPanel() {
                                   onClick={() => {
                                     const phone = task.guestPhone!.replace(/\D/g, "");
                                     const msg = encodeURIComponent(`Hola ${task.guestName}, te escribo de ${task.propertyName}. ¿Todo bien con tu estancia?`);
-                                    window.open(`https://wa.me/${phone}?text=${msg}`, "_blank");
+                                    window.open(`https://wa.me/${phone}?text=${msg}`, "_blank", "noopener,noreferrer");
                                   }}
                                   title="WhatsApp al huésped"
                                 >
@@ -1420,20 +1783,35 @@ export default function CleaningPanel() {
                         {/* Checklist Preview */}
                         <div className="mt-4 flex items-center gap-4">
                            <div className="flex-1">
-                              <div className="flex items-center justify-between text-[11px] font-bold uppercase tracking-wider mb-2">
-                                <span className="text-muted-foreground">Progreso de limpieza</span>
-                                <span className={cn(
-                                  task.status === "completed" ? "text-emerald-600" : "text-primary"
-                                )}>
-                                  {Math.round((task.checklist.filter(i => i.done).length / task.checklist.length) * 100)}%
-                                </span>
-                              </div>
-                              <Progress 
-                                value={(task.checklist.filter(i => i.done).length / task.checklist.length) * 100} 
-                                className="h-1.5"
-                              />
+                              {(() => {
+                                // El API devuelve `checklist: []` (legacy) y el real
+                                // viene en `checklistItems`. Usar el real evita NaN%
+                                // cuando la lista esta vacia o el legacy no se llena.
+                                const items = task.checklistItems ?? [];
+                                const total = items.length;
+                                const done = items.filter(i => i.done).length;
+                                const pct = total > 0 ? Math.round((done / total) * 100) : 0;
+                                return (
+                                  <>
+                                    <div className="flex items-center justify-between text-[11px] font-bold uppercase tracking-wider mb-2">
+                                      <span className="text-muted-foreground">Progreso de limpieza</span>
+                                      <span className={cn(
+                                        task.status === "completed" ? "text-emerald-600" : "text-primary"
+                                      )}>
+                                        {pct}%
+                                      </span>
+                                    </div>
+                                    <Progress value={pct} className="h-1.5" />
+                                  </>
+                                );
+                              })()}
                            </div>
-                           <Button variant="outline" size="sm" className="h-9 gap-2 group/btn">
+                           <Button
+                              variant="outline"
+                              size="sm"
+                              className="h-9 gap-2 group/btn"
+                              onClick={() => setDetailTaskId(task.id)}
+                            >
                                {isWaitingReview ? "Validar Reporte" : "Ver Detalles"}
                                <ChevronRight className="h-3 w-3 transition-transform group-hover/btn:translate-x-1" />
                             </Button>
@@ -1456,18 +1834,50 @@ export default function CleaningPanel() {
                       </div>
                     </div>
                   </Card>
-                );
-              })
+                    </div>
+                  );
+                });
+              })()
             ) : (
-              <div className="text-center py-20 bg-muted/20 rounded-3xl border-2 border-dashed border-muted">
-                <div className="h-16 w-16 bg-muted rounded-full flex items-center justify-center mx-auto mb-4">
-                  <Calendar className="h-8 w-8 text-muted-foreground" />
+              view === "validate" ? (
+                <div className="text-center py-20 bg-emerald-50/40 rounded-3xl border-2 border-dashed border-emerald-200">
+                  <div className="h-16 w-16 bg-emerald-100 rounded-full flex items-center justify-center mx-auto mb-4">
+                    <CheckCircle2 className="h-8 w-8 text-emerald-600" />
+                  </div>
+                  <h4 className="font-semibold text-lg text-emerald-900">Nada por validar</h4>
+                  <p className="text-emerald-700/70 max-w-xs mx-auto mt-1">
+                    El staff no envio reportes pendientes. Cuando completen una limpieza apareceran aca para que las apruebes.
+                  </p>
                 </div>
-                <h4 className="font-semibold text-lg">No hay tareas programadas</h4>
-                <p className="text-muted-foreground max-w-xs mx-auto mt-1">
-                  Relájate, hoy parece que no tienes checkouts en tu calendario.
-                </p>
-              </div>
+              ) : view === "unassigned" ? (
+                <div className="text-center py-20 bg-emerald-50/40 rounded-3xl border-2 border-dashed border-emerald-200">
+                  <div className="h-16 w-16 bg-emerald-100 rounded-full flex items-center justify-center mx-auto mb-4">
+                    <CheckCircle2 className="h-8 w-8 text-emerald-600" />
+                  </div>
+                  <h4 className="font-semibold text-lg text-emerald-900">Todo bajo control</h4>
+                  <p className="text-emerald-700/70 max-w-xs mx-auto mt-1">
+                    No hay tareas sin asignar con checkout en las proximas 24h. Buen trabajo.
+                  </p>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="mt-4 h-9 border-emerald-300 text-emerald-700 hover:bg-emerald-100"
+                    onClick={() => setView("day")}
+                  >
+                    Volver al cronograma
+                  </Button>
+                </div>
+              ) : (
+                <div className="text-center py-20 bg-muted/20 rounded-3xl border-2 border-dashed border-muted">
+                  <div className="h-16 w-16 bg-muted rounded-full flex items-center justify-center mx-auto mb-4">
+                    <Calendar className="h-8 w-8 text-muted-foreground" />
+                  </div>
+                  <h4 className="font-semibold text-lg">No hay tareas programadas</h4>
+                  <p className="text-muted-foreground max-w-xs mx-auto mt-1">
+                    Relájate, hoy parece que no tienes checkouts en tu calendario.
+                  </p>
+                </div>
+              )
             )}
           </div>
         </div>
@@ -1484,93 +1894,175 @@ export default function CleaningPanel() {
                 <Badge variant="outline" className="border-primary/20 text-primary">{team.length}</Badge>
               </div>
             </CardHeader>
-            <CardContent className="p-4 space-y-4">
-              {team.map((member) => (
-                <div key={member.id} className="flex items-center gap-3 p-3 rounded-2xl bg-muted/30 hover:bg-muted/50 transition-all group">
-                  <Avatar className="h-10 w-10">
-                    <AvatarImage src={member.avatar} />
-                    <AvatarFallback>{member.name.charAt(0)}</AvatarFallback>
-                  </Avatar>
-                  <div className="flex-1 min-w-0">
-                    <p className="font-bold text-sm truncate">{member.name}</p>
-                    <div className="flex items-center gap-2 text-[10px] text-muted-foreground font-medium uppercase mt-0.5">
-                       <span className={cn(
-                         member.tasksToday > 3 ? "text-orange-500" : "text-emerald-500"
-                       )}>
-                         {member.tasksToday} tareas hoy
-                       </span>
-                       <span>•</span>
-                       <span>{member.completedTasks} total</span>
-                    </div>
+            <CardContent className="p-3 space-y-1.5">
+              {/* Lista compacta: una linea por miembro con avatar + counters
+                  inline. Antes era un card grande con avatar de 40px y
+                  flecha hover; ahora es scannable en un vistazo. */}
+              {team.map((member) => {
+                const load = staffLoad.get(member.id) ?? { tasksToday: 0, completedTasks: 0 };
+                const intensityColor = load.tasksToday > 3
+                  ? "text-orange-500"
+                  : load.tasksToday > 0
+                    ? "text-emerald-500"
+                    : "text-slate-400";
+                return (
+                  <div
+                    key={member.id}
+                    className="flex items-center gap-2.5 px-3 py-2 rounded-xl hover:bg-muted/40 transition-colors"
+                  >
+                    <Avatar className="h-7 w-7">
+                      <AvatarImage src={member.avatar} />
+                      <AvatarFallback className="text-[10px]">{member.name.charAt(0)}</AvatarFallback>
+                    </Avatar>
+                    <p className="font-semibold text-sm flex-1 truncate">{member.name}</p>
+                    <span className={cn("text-xs font-bold tabular-nums", intensityColor)}>
+                      {load.tasksToday}
+                    </span>
+                    <span className="text-[10px] text-muted-foreground uppercase tracking-wider">hoy</span>
                   </div>
-                  <Button size="icon" variant="ghost" className="h-8 w-8 opacity-0 group-hover:opacity-100 transition-all rounded-full bg-white shadow-soft">
-                    <ArrowRight className="h-4 w-4" />
-                  </Button>
-                </div>
-              ))}
-              <Button variant="outline" className="w-full h-11 border-dashed border-2 hover:border-primary/50 gap-2 font-semibold">
-                <UserPlus className="h-4 w-4 text-primary" />
+                );
+              })}
+
+              {/* Mini-indicator de asignacion automatica — no una card aparte.
+                  Solo aparece si hay al menos una propiedad configurada. */}
+              {properties.some(p => p.autoAssignCleaner) && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (typeof window !== "undefined") {
+                      window.location.href = "/dashboard?panel=properties";
+                    }
+                  }}
+                  className="w-full flex items-center gap-2 px-3 py-2 rounded-xl text-left hover:bg-emerald-50 transition-colors group"
+                >
+                  <Bot className="h-4 w-4 text-emerald-600 flex-shrink-0" />
+                  <p className="text-xs text-emerald-900 flex-1">
+                    Auto-asignacion activa en{" "}
+                    <span className="font-bold">
+                      {properties.filter(p => p.autoAssignCleaner).length}
+                    </span>{" "}
+                    propiedad{properties.filter(p => p.autoAssignCleaner).length === 1 ? "" : "es"}
+                  </p>
+                  <ArrowRight className="h-3.5 w-3.5 text-emerald-600 opacity-0 group-hover:opacity-100 transition-opacity" />
+                </button>
+              )}
+
+              <Button
+                variant="outline"
+                size="sm"
+                className="w-full h-9 border-dashed border hover:border-primary/50 gap-1.5 font-semibold text-xs"
+                onClick={() => {
+                  if (typeof window !== "undefined") {
+                    window.location.href = "/dashboard?panel=team";
+                  }
+                }}
+              >
+                <UserPlus className="h-3.5 w-3.5 text-primary" />
                 Invitar al equipo
               </Button>
             </CardContent>
           </Card>
-
-          <Card className="border-none shadow-soft bg-gradient-to-br from-primary to-primary/80 text-primary-foreground overflow-hidden relative">
-            <div className="absolute top-0 right-0 p-8 opacity-10 scale-150 rotate-12">
-               <Sparkles className="h-24 w-24" />
-            </div>
-            <CardContent className="p-6 relative z-10">
-              <h4 className="text-lg font-bold mb-2">Optimización IA</h4>
-              <p className="text-sm opacity-90 mb-4 leading-relaxed">
-                Hoy tienes 2 propiedades con entrada inmediata. Hemos marcado estas tareas como "Prioridad Crítica" para que tu equipo empiece por ahí.
-              </p>
-              <Button variant="secondary" className="w-full bg-white/20 hover:bg-white/30 text-white border-0 backdrop-blur-md">
-                Optimizar rutas
-              </Button>
-            </CardContent>
-          </Card>
-
-          {/* Auto-assign status card */}
-          {properties.some(p => p.autoAssignCleaner) && (
-            <Card className="border-none shadow-soft overflow-hidden">
-              <CardContent className="p-5">
-                <div className="flex items-center gap-3 mb-3">
-                  <div className="p-2 rounded-xl bg-emerald-100">
-                    <Bot className="h-5 w-5 text-emerald-600" />
-                  </div>
-                  <div>
-                    <p className="font-bold text-sm">Asignación Automática Activa</p>
-                    <p className="text-xs text-muted-foreground">{properties.filter(p => p.autoAssignCleaner).length} propiedad(es) configurada(s)</p>
-                  </div>
-                  <Zap className="h-4 w-4 text-amber-400 ml-auto" />
-                </div>
-                <p className="text-xs text-muted-foreground leading-relaxed">
-                  Las nuevas tareas asignarán automáticamente al primer limpiador disponible según la prioridad configurada en cada propiedad.
-                </p>
-              </CardContent>
-            </Card>
-          )}
 
           <Card className="border-none shadow-soft">
              <CardHeader>
                 <CardTitle className="text-lg flex items-center gap-2">
                    <AlertCircle className="h-5 w-5 text-rose-500" />
                    Incidencias activas
+                   {incidents.length > 0 && (
+                     <Badge variant="outline" className="border-rose-200 text-rose-600 ml-auto">
+                       {incidents.length}
+                     </Badge>
+                   )}
                 </CardTitle>
              </CardHeader>
-             <CardContent className="p-4 pt-0">
-                <div className="p-4 rounded-2xl bg-rose-50 border border-rose-100 flex gap-3">
-                   <div className="p-2 h-fit bg-white rounded-xl shadow-sm">
-                      <Plus className="h-4 w-4 text-rose-500 rotate-45" />
-                   </div>
-                   <div>
-                      <p className="text-sm font-bold text-rose-900">Grifo goteando</p>
-                      <p className="text-xs text-rose-700/70">Villa Mar Azul • Reportado por Laura</p>
-                      <Button variant="link" className="p-0 h-auto text-rose-600 font-bold text-xs mt-2">
-                        Ver foto del daño
-                      </Button>
-                   </div>
-                </div>
+             <CardContent className="p-4 pt-0 space-y-2">
+                {incidents.length === 0 ? (
+                  <div className="p-6 rounded-2xl bg-emerald-50/50 border border-emerald-100 flex items-center gap-3">
+                    <CheckCircle2 className="h-5 w-5 text-emerald-500 flex-shrink-0" />
+                    <div>
+                      <p className="text-sm font-bold text-emerald-900">Sin incidencias activas</p>
+                      <p className="text-xs text-emerald-700/70">Todas las propiedades estan operativas</p>
+                    </div>
+                  </div>
+                ) : (
+                  incidents.slice(0, 5).map((ticket) => {
+                    const isCritical = ticket.severity === "critical" || ticket.severity === "high";
+                    const photo = ticket.photos[0];
+                    return (
+                      <div
+                        key={ticket.id}
+                        role="button"
+                        tabIndex={0}
+                        onClick={() => {
+                          if (typeof window !== "undefined") {
+                            window.location.href = `/dashboard?panel=maintenance&ticket=${ticket.id}`;
+                          }
+                        }}
+                        className={cn(
+                          "p-3 rounded-2xl border flex gap-3 items-start cursor-pointer transition-all hover:shadow-md group",
+                          isCritical
+                            ? "bg-rose-50 border-rose-100 hover:border-rose-200"
+                            : "bg-amber-50 border-amber-100 hover:border-amber-200",
+                        )}
+                      >
+                        <div className="p-2 h-fit bg-white rounded-xl shadow-sm flex-shrink-0">
+                          <AlertCircle className={cn("h-4 w-4", isCritical ? "text-rose-500" : "text-amber-500")} />
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-start justify-between gap-2">
+                            <p className={cn("text-sm font-bold truncate", isCritical ? "text-rose-900" : "text-amber-900")}>
+                              {ticket.title}
+                            </p>
+                            <ArrowRight className={cn("h-4 w-4 flex-shrink-0 opacity-0 group-hover:opacity-100 transition-opacity", isCritical ? "text-rose-500" : "text-amber-500")} />
+                          </div>
+                          <p className={cn("text-xs truncate", isCritical ? "text-rose-700/70" : "text-amber-700/70")}>
+                            {ticket.propertyName ?? "—"}
+                            {ticket.reportedByName ? ` • Reportado por ${ticket.reportedByName}` : ""}
+                          </p>
+                          {/* Estado de asignacion del ticket: si hay proveedor
+                              asignado lo mostramos con su rol; si no, signal de
+                              "todavia sin proveedor asignado". */}
+                          <div className="flex items-center gap-1.5 mt-1.5 mb-1">
+                            {ticket.assigneeName ? (
+                              <Badge className="bg-emerald-100 text-emerald-700 border-emerald-200 text-[10px] h-5 font-bold gap-1">
+                                <Wrench className="h-3 w-3" />
+                                {ticket.assigneeName}
+                              </Badge>
+                            ) : (
+                              <Badge className="bg-slate-100 text-slate-600 border-slate-200 text-[10px] h-5 font-bold animate-pulse">
+                                Sin proveedor asignado
+                              </Badge>
+                            )}
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <Badge variant="outline" className="text-[9px] h-4 px-1.5 border-slate-200 text-slate-500 font-bold uppercase">
+                              {MAINTENANCE_CATEGORY_LABELS[ticket.category]}
+                            </Badge>
+                            <Badge variant="outline" className="text-[9px] h-4 px-1.5 border-slate-200 text-slate-500 font-bold uppercase">
+                              {MAINTENANCE_SEVERITY_LABELS[ticket.severity]}
+                            </Badge>
+                            {photo && (
+                              <a
+                                href={photo}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                onClick={(e) => e.stopPropagation()}
+                                className={cn("text-[10px] font-bold underline", isCritical ? "text-rose-600" : "text-amber-700")}
+                              >
+                                Ver foto
+                              </a>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })
+                )}
+                {incidents.length > 5 && (
+                  <p className="text-[11px] text-center text-muted-foreground font-semibold pt-1">
+                    + {incidents.length - 5} mas
+                  </p>
+                )}
              </CardContent>
           </Card>
         </div>
@@ -1736,6 +2228,18 @@ export default function CleaningPanel() {
           </div>
         </div>
       )}
+
+      {/* ─── Detail drawer (owner-side) ──────────────────────────────────── */}
+      <CleaningTaskDetailModal
+        task={detailTask}
+        team={detailTeam}
+        properties={detailProperties}
+        onClose={() => setDetailTaskId(null)}
+        onReassign={handleReassignFromDetail}
+        onValidate={(taskId) => { handleValidateTask(taskId); setDetailTaskId(null); }}
+        onReopen={(taskId) => { handleReopenFromDetail(taskId); setDetailTaskId(null); }}
+        onMarkUrgent={handleMarkUrgentFromDetail}
+      />
     </div>
   );
 }

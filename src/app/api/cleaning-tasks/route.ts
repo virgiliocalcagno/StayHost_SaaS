@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getAuthenticatedTenant } from "@/lib/supabase/server";
 import { ensureCleaningTasksForProperty } from "@/lib/cleaning/ensure-tasks";
+import { deriveCorrectStatus } from "@/lib/cleaning/status";
 
 // All handlers resolve the tenant from the authenticated session. Callers no
 // longer pass `email` or `tenantEmail`. RLS ensures the tenant can only
@@ -43,6 +44,8 @@ type CleaningTaskRow = {
   stay_duration: number | null;
   arriving_guest_name: string | null;
   arriving_guest_count: number | null;
+  created_at: string | null;
+  updated_at: string | null;
 };
 
 // GET /api/cleaning-tasks
@@ -175,6 +178,9 @@ export async function GET() {
       bookingCheckIn: booking?.check_in ?? undefined,
       bookingCheckOut: booking?.check_out ?? undefined,
       guestPhone: booking?.guest_phone ?? undefined,
+      // Timestamps para el audit log del modal de detalle
+      createdAt: t.created_at ?? undefined,
+      updatedAt: t.updated_at ?? undefined,
     };
   });
 
@@ -270,6 +276,30 @@ export async function PATCH(req: NextRequest) {
     if (body.rejectionReason !== undefined) update.rejection_reason = body.rejectionReason;
     if (body.declinedByIds !== undefined) update.declined_by_ids = body.declinedByIds;
     if (body.reportedIssues !== undefined) update.reported_issues = body.reportedIssues;
+
+    // Coherencia status <-> assigneeId. Si el caller actualiza UNO solo de
+    // los dos, leemos el otro de la fila actual y derivamos el status que
+    // deberia quedar. Sin esto, un PATCH parcial puede dejar la fila con
+    // assigneeId="x" + status="unassigned" (o el caso inverso).
+    const touchesStatus = body.status !== undefined;
+    const touchesAssignee = body.assigneeId !== undefined;
+    if (touchesStatus !== touchesAssignee) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const { data: current } = await (supabase.from("cleaning_tasks") as any)
+        .select("status, assignee_id")
+        .eq("id", id)
+        .maybeSingle();
+      if (current) {
+        const merged = {
+          status: touchesStatus ? (body.status as string) : (current.status as string),
+          assigneeId: touchesAssignee
+            ? (body.assigneeId ?? undefined)
+            : (current.assignee_id ?? undefined),
+        };
+        const corrected = deriveCorrectStatus(merged);
+        if (corrected) update.status = corrected;
+      }
+    }
 
     const { error, count } = await supabase
       .from("cleaning_tasks")
