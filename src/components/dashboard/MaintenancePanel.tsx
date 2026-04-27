@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -79,6 +80,17 @@ export default function MaintenancePanel() {
 
   const [openTicket, setOpenTicket] = useState<MaintenanceTicket | null>(null);
   const [openCreate, setOpenCreate] = useState(false);
+
+  // Deep-link: ?ticket=ID abre el detalle automaticamente cuando los
+  // tickets terminan de cargar. Lo usan los atajos desde CleaningPanel
+  // ("ver incidencia para dar seguimiento").
+  const searchParams = useSearchParams();
+  useEffect(() => {
+    const ticketId = searchParams.get("ticket");
+    if (!ticketId || tickets.length === 0) return;
+    const found = tickets.find(t => t.id === ticketId);
+    if (found) setOpenTicket(found);
+  }, [searchParams, tickets]);
 
   const loadTickets = useCallback(async () => {
     setLoading(true);

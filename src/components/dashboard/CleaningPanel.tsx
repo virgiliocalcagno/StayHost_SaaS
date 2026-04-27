@@ -1763,25 +1763,50 @@ export default function CleaningPanel() {
                     return (
                       <div
                         key={ticket.id}
+                        role="button"
+                        tabIndex={0}
+                        onClick={() => {
+                          if (typeof window !== "undefined") {
+                            window.location.href = `/dashboard?panel=maintenance&ticket=${ticket.id}`;
+                          }
+                        }}
                         className={cn(
-                          "p-3 rounded-2xl border flex gap-3 items-start",
+                          "p-3 rounded-2xl border flex gap-3 items-start cursor-pointer transition-all hover:shadow-md group",
                           isCritical
-                            ? "bg-rose-50 border-rose-100"
-                            : "bg-amber-50 border-amber-100",
+                            ? "bg-rose-50 border-rose-100 hover:border-rose-200"
+                            : "bg-amber-50 border-amber-100 hover:border-amber-200",
                         )}
                       >
                         <div className="p-2 h-fit bg-white rounded-xl shadow-sm flex-shrink-0">
                           <AlertCircle className={cn("h-4 w-4", isCritical ? "text-rose-500" : "text-amber-500")} />
                         </div>
                         <div className="flex-1 min-w-0">
-                          <p className={cn("text-sm font-bold truncate", isCritical ? "text-rose-900" : "text-amber-900")}>
-                            {ticket.title}
-                          </p>
+                          <div className="flex items-start justify-between gap-2">
+                            <p className={cn("text-sm font-bold truncate", isCritical ? "text-rose-900" : "text-amber-900")}>
+                              {ticket.title}
+                            </p>
+                            <ArrowRight className={cn("h-4 w-4 flex-shrink-0 opacity-0 group-hover:opacity-100 transition-opacity", isCritical ? "text-rose-500" : "text-amber-500")} />
+                          </div>
                           <p className={cn("text-xs truncate", isCritical ? "text-rose-700/70" : "text-amber-700/70")}>
                             {ticket.propertyName ?? "—"}
                             {ticket.reportedByName ? ` • Reportado por ${ticket.reportedByName}` : ""}
                           </p>
-                          <div className="flex items-center gap-2 mt-1.5">
+                          {/* Estado de asignacion del ticket: si hay proveedor
+                              asignado lo mostramos con su rol; si no, signal de
+                              "todavia sin proveedor asignado". */}
+                          <div className="flex items-center gap-1.5 mt-1.5 mb-1">
+                            {ticket.assigneeName ? (
+                              <Badge className="bg-emerald-100 text-emerald-700 border-emerald-200 text-[10px] h-5 font-bold gap-1">
+                                <Wrench className="h-3 w-3" />
+                                {ticket.assigneeName}
+                              </Badge>
+                            ) : (
+                              <Badge className="bg-slate-100 text-slate-600 border-slate-200 text-[10px] h-5 font-bold animate-pulse">
+                                Sin proveedor asignado
+                              </Badge>
+                            )}
+                          </div>
+                          <div className="flex items-center gap-2">
                             <Badge variant="outline" className="text-[9px] h-4 px-1.5 border-slate-200 text-slate-500 font-bold uppercase">
                               {MAINTENANCE_CATEGORY_LABELS[ticket.category]}
                             </Badge>
@@ -1793,6 +1818,7 @@ export default function CleaningPanel() {
                                 href={photo}
                                 target="_blank"
                                 rel="noopener noreferrer"
+                                onClick={(e) => e.stopPropagation()}
                                 className={cn("text-[10px] font-bold underline", isCritical ? "text-rose-600" : "text-amber-700")}
                               >
                                 Ver foto
