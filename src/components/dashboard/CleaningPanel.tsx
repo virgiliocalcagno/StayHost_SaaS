@@ -64,6 +64,7 @@ import { getTeam, getProperties, type RawTeamMember } from "@/services/apiServic
 import { StaffWizard } from "@/components/staff-ui/StaffWizard";
 import { StaffTaskDetail } from "@/components/staff-ui/StaffTaskDetail";
 import { CleaningTaskDetailModal } from "@/components/dashboard/CleaningTaskDetailModal";
+import { getEffectiveStatus, isStatusInconsistent } from "@/lib/cleaning/status";
 
 // ─── Interfaces ─────────────────────────────────────────────────────────────
 
@@ -164,16 +165,34 @@ export default function CleaningPanel() {
       .then(data => {
         if (!data.tasks?.length) return;
         const incoming = data.tasks as CleaningTask[];
-        setTasks(incoming);
-        // Auto-heal: tareas con `status="assigned"` (o assigned/accepted/rejected
-        // legacy) sin `assigneeId` son estado inconsistente sembrado por flujos
-        // viejos. Sanitizar la BD en background para que el dato vuelva a
-        // alinearse con la realidad y no haya cabos sueltos en otras vistas.
-        for (const t of incoming) {
-          const stuck = ["assigned", "accepted", "rejected", "in_progress"].includes(t.status);
-          if (stuck && !t.assigneeId) {
-            patchTask(t.id, { status: "unassigned" });
-          }
+
+        // Auto-heal: tareas con status assigned/accepted/in_progress sin
+        // assigneeId son estado inconsistente sembrado por flujos viejos.
+        // Sanitizamos en BD y en el state local en simultaneo para que la
+        // UI no muestre el dato viejo entre el PATCH y el proximo refresh.
+        // "rejected" se EXCLUYE a proposito: un rechazo huerfano es estado
+        // valido (esperando reasignacion) y borrarlo perderia el motivo.
+        const stuckIds = new Set(
+          incoming.filter(isStatusInconsistent).map((t) => t.id),
+        );
+        if (stuckIds.size > 0) {
+          // Telemetria: si esto se dispara seguido, hay un flujo upstream
+          // que esta sembrando datos rotos. Loguear permite detectarlo
+          // antes de que el auto-heal lo enmascare en silencio.
+          // eslint-disable-next-line no-console
+          console.warn(
+            "[cleaning] auto-heal: tasks with assignee-required status but no assigneeId",
+            Array.from(stuckIds),
+          );
+        }
+
+        const healed = incoming.map((t) =>
+          stuckIds.has(t.id) ? { ...t, status: "unassigned" as const } : t,
+        );
+        setTasks(healed);
+
+        for (const id of stuckIds) {
+          patchTask(id, { status: "unassigned" });
         }
       })
       .catch(() => {});
@@ -372,26 +391,10 @@ export default function CleaningPanel() {
     };
   }, [tasks, properties, period]);
 
-  // Estado visible derivado del estado real de la tarea. Sin esto, podiamos
-  // tener `status="assigned"` con `assigneeId=null` (estado inconsistente
-  // sembrado por flujos viejos) y mostrar "Asignado" + "Sin asignar" en la
-  // misma tarjeta. Esta funcion garantiza coherencia entre todos los renders
-  // (badge superior, pill amber, Select, modal de detalle).
-  const getEffectiveStatus = (task: CleaningTask): CleaningTask["status"] => {
-    if (task.status === "completed") return "completed";
-    if (task.status === "in_progress") return "in_progress";
-    if (task.status === "issue") return "issue";
-    // Si no hay assignee, el status real es "sin asignar" sin importar lo
-    // que diga el campo en BD. Dispara tambien una correccion en background
-    // para sanear la fila (ver auto-heal en useEffect mas abajo).
-    if (!task.assigneeId) return "unassigned";
-    return task.status;
-  };
-
   const getStatusBadge = (task: CleaningTask) => {
     const effective = getEffectiveStatus(task);
     if (effective === "completed") {
-      return <Badge className="bg-emerald-500 hover:bg-emerald-600 text-white border-0">Completado</Badge>;
+      return <Badge className="bg-emerald-500 hover:bg-emerald-600 text-white border-0">Completada</Badge>;
     }
     if (effective === "in_progress") {
       return (
@@ -408,15 +411,15 @@ export default function CleaningPanel() {
       return <Badge className="bg-amber-100 text-amber-700 border-amber-300 animate-pulse">Sin asignar</Badge>;
     }
     if (effective === "assigned") {
-      return <Badge className="bg-blue-50 text-blue-700 border-blue-200">Asignado</Badge>;
+      return <Badge className="bg-blue-50 text-blue-700 border-blue-200">Asignada</Badge>;
     }
     if (effective === "accepted") {
-      return <Badge className="bg-emerald-50 text-emerald-700 border-emerald-200">Aceptado ✓</Badge>;
+      return <Badge className="bg-emerald-50 text-emerald-700 border-emerald-200">Aceptada ✓</Badge>;
     }
     if (task.status === "rejected") {
       return (
         <div className="flex flex-col items-end gap-1">
-          <Badge className="bg-rose-100 text-rose-700 border-rose-300">Rechazado</Badge>
+          <Badge className="bg-rose-100 text-rose-700 border-rose-300">Rechazada</Badge>
           {task.rejectionReason && (
             <span className="text-[10px] text-rose-500 max-w-[140px] text-right leading-tight">"{task.rejectionReason}"</span>
           )}
@@ -425,10 +428,10 @@ export default function CleaningPanel() {
     }
     // Fallback: legacy pending — check acceptanceStatus
     if (task.acceptanceStatus === "accepted") {
-      return <Badge variant="outline" className="border-emerald-200 text-emerald-600 bg-emerald-50">Aceptado</Badge>;
+      return <Badge variant="outline" className="border-emerald-200 text-emerald-600 bg-emerald-50">Aceptada</Badge>;
     }
     if (task.acceptanceStatus === "declined") {
-      return <Badge variant="outline" className="border-rose-200 text-rose-600 bg-rose-50">Rechazado</Badge>;
+      return <Badge variant="outline" className="border-rose-200 text-rose-600 bg-rose-50">Rechazada</Badge>;
     }
     return <Badge variant="secondary" className="bg-muted text-muted-foreground border-0">Pendiente</Badge>;
   };
@@ -608,7 +611,7 @@ export default function CleaningPanel() {
   const handleSendMessage = (phone: string, property: string, taskId: string) => {
     const link = `${window.location.origin}/dashboard?view=staff&task=${taskId}`;
     const msg = encodeURIComponent(`Hola, tienes una limpieza en ${property}. ✨\nAccede aquí para ver detalles y reportar: ${link}`);
-    window.open(`https://wa.me/${phone}?text=${msg}`, '_blank');
+    window.open(`https://wa.me/${phone}?text=${msg}`, '_blank', 'noopener,noreferrer');
   };
 
   // ─── Auto-assign Logic ───────────────────────────────────────────────────
@@ -787,6 +790,22 @@ export default function CleaningPanel() {
   const detailTask = useMemo(
     () => tasks.find(t => t.id === detailTaskId) ?? null,
     [tasks, detailTaskId],
+  );
+
+  // Memoizamos la proyeccion ligera de team y properties para que el modal
+  // no re-renderice por arrays nuevos en cada render del Panel.
+  const detailTeam = useMemo(
+    () => team.map(m => ({ id: m.id, name: m.name, avatar: m.avatar, phone: m.phone })),
+    [team],
+  );
+  const detailProperties = useMemo(
+    () => properties.map(p => ({
+      id: p.id,
+      name: p.name,
+      bedConfiguration: p.bedConfiguration,
+      evidenceCriteria: p.evidenceCriteria,
+    })),
+    [properties],
   );
 
   const handleReassignFromDetail = (taskId: string, memberId: string | null) => {
@@ -1471,7 +1490,7 @@ export default function CleaningPanel() {
                                   onClick={() => {
                                     const phone = task.guestPhone!.replace(/\D/g, "");
                                     const msg = encodeURIComponent(`Hola ${task.guestName}, te escribo de ${task.propertyName}. ¿Todo bien con tu estancia?`);
-                                    window.open(`https://wa.me/${phone}?text=${msg}`, "_blank");
+                                    window.open(`https://wa.me/${phone}?text=${msg}`, "_blank", "noopener,noreferrer");
                                   }}
                                   title="WhatsApp al huésped"
                                 >
@@ -1837,13 +1856,8 @@ export default function CleaningPanel() {
       {/* ─── Detail drawer (owner-side) ──────────────────────────────────── */}
       <CleaningTaskDetailModal
         task={detailTask}
-        team={team.map(m => ({ id: m.id, name: m.name, avatar: m.avatar, phone: m.phone }))}
-        properties={properties.map(p => ({
-          id: p.id,
-          name: p.name,
-          bedConfiguration: p.bedConfiguration,
-          evidenceCriteria: p.evidenceCriteria,
-        }))}
+        team={detailTeam}
+        properties={detailProperties}
         onClose={() => setDetailTaskId(null)}
         onReassign={handleReassignFromDetail}
         onValidate={(taskId) => { handleValidateTask(taskId); setDetailTaskId(null); }}

@@ -42,6 +42,7 @@ import {
   X,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { getEffectiveStatus as deriveEffectiveStatus } from "@/lib/cleaning/status";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 // Importable shape — matches the CleaningTask shape used in CleaningPanel.
@@ -126,7 +127,10 @@ function getChannelMeta(channel?: string) {
 function getReservationCode(task: CleaningTaskDetailData): string {
   if (task.bookingChannelCode) return task.bookingChannelCode;
   if (task.bookingId) return `SH${task.bookingId.replace(/-/g, "").slice(0, 8).toUpperCase()}`;
-  return "SH" + task.id.slice(0, 8).toUpperCase();
+  // Fallback final: el id de tareas manuales suele venir como `task-<ts>`.
+  // Stripeamos el prefijo legible para que el codigo final no diga "SHTASK".
+  const cleanId = task.id.replace(/^(task-|booking-|block-)/, "").replace(/-/g, "");
+  return "SH" + cleanId.slice(0, 8).toUpperCase();
 }
 
 function formatLongDate(iso?: string): string {
@@ -185,18 +189,6 @@ const STATUS_PILL: Record<string, { label: string; cls: string }> = {
 
 function getStatusPill(status: string) {
   return STATUS_PILL[status] ?? STATUS_PILL.pending;
-}
-
-// Coherencia: si la tarea esta marcada como assigned/accepted/in_progress
-// pero no tiene assigneeId, en realidad esta sin asignar. Sin esto, el badge
-// del modal puede contradecir al Select y al pill amber de la tarjeta.
-function getEffectiveStatus(task: CleaningTaskDetailData): string {
-  if (task.status === "completed") return "completed";
-  if (task.status === "issue") return "issue";
-  if (!task.assigneeId && ["assigned", "accepted", "rejected", "in_progress"].includes(task.status)) {
-    return "unassigned";
-  }
-  return task.status;
 }
 
 // Audit log derivado de los timestamps que ya tenemos. Sin migration nueva:
@@ -321,7 +313,7 @@ export function CleaningTaskDetailModal({
   if (!task) return null;
 
   const channelMeta = getChannelMeta(task.bookingChannel);
-  const statusPill = getStatusPill(getEffectiveStatus(task));
+  const statusPill = getStatusPill(deriveEffectiveStatus(task));
   const nights = computeNights(task.bookingCheckIn, task.bookingCheckOut ?? task.dueDate);
   const reservationCode = getReservationCode(task);
 
@@ -331,7 +323,9 @@ export function CleaningTaskDetailModal({
     const msg = encodeURIComponent(
       `Hola ${task.guestName}, te escribo de ${task.propertyName}. ¿Todo bien con tu estancia?`,
     );
-    window.open(`https://wa.me/${phone}?text=${msg}`, "_blank");
+    // noopener,noreferrer evita reverse tabnabbing — sin esto el dominio
+    // de WhatsApp Web tendria acceso al window.opener del SaaS.
+    window.open(`https://wa.me/${phone}?text=${msg}`, "_blank", "noopener,noreferrer");
   };
 
   const handleWhatsAppStaff = () => {
@@ -342,7 +336,7 @@ export function CleaningTaskDetailModal({
     const msg = encodeURIComponent(
       `Hola ${member.name}, tienes una limpieza en ${task.propertyName}. ✨\nAccede aqui: ${link}`,
     );
-    window.open(`https://wa.me/${phone}?text=${msg}`, "_blank");
+    window.open(`https://wa.me/${phone}?text=${msg}`, "_blank", "noopener,noreferrer");
   };
 
   return (
