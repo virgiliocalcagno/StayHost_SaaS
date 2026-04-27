@@ -67,6 +67,12 @@ export function StaffAccessDialog({ open, onOpenChange, memberId, memberName, pr
   const [showForm, setShowForm] = useState(false);
   const [submitting, setSubmitting] = useState(false);
 
+  // Si el caller no pasa propiedades (o pasa array vacío porque localStorage
+  // todavía no tiene el cache), las pedimos directo a la BD. La fuente de
+  // verdad es Supabase, no localStorage.
+  const [fetchedProperties, setFetchedProperties] = useState<PropertyOption[]>([]);
+  const effectiveProperties = properties.length > 0 ? properties : fetchedProperties;
+
   const [form, setForm] = useState({
     propertyId: "",
     windowStart: "08:00",
@@ -97,8 +103,27 @@ export function StaffAccessDialog({ open, onOpenChange, memberId, memberName, pr
     }
   }, [open, memberId, refresh]);
 
+  // Si no recibimos propiedades por prop, las pedimos a la API al abrir.
+  useEffect(() => {
+    if (!open || properties.length > 0) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch("/api/properties", { credentials: "same-origin" });
+        if (!res.ok) return;
+        const data = await res.json() as { properties?: Array<{ id: string; name: string }> };
+        if (!cancelled) {
+          setFetchedProperties((data.properties ?? []).map((p) => ({ id: p.id, name: p.name })));
+        }
+      } catch {
+        // no-op
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [open, properties.length]);
+
   const assignedPropertyIds = new Set(assignments.map((a) => a.property_id));
-  const availableProperties = properties.filter((p) => !assignedPropertyIds.has(p.id));
+  const availableProperties = effectiveProperties.filter((p) => !assignedPropertyIds.has(p.id));
 
   const handleAdd = async () => {
     if (!form.propertyId) {

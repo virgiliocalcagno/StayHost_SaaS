@@ -928,6 +928,15 @@ export default function TeamPanel() {
                       {member.available ? <Eye className="h-3.5 w-3.5" /> : <EyeOff className="h-3.5 w-3.5" />}
                     </button>
                   )}
+                  {(member.role === "cleaner" || member.role === "maintenance" || member.role === "co_host") && (
+                    <button
+                      onClick={(e) => { e.stopPropagation(); setAccessDialogMember(member); }}
+                      title="Gestionar accesos a propiedades"
+                      className="p-2 rounded-md border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/20 text-amber-600 hover:bg-amber-100 dark:hover:bg-amber-900/40 transition-colors"
+                    >
+                      <KeyRound className="h-3.5 w-3.5" />
+                    </button>
+                  )}
                 </div>
               </CardContent>
             </Card>
