@@ -161,7 +161,21 @@ export default function CleaningPanel() {
     // Tenant is resolved server-side from the session cookie.
     fetch("/api/cleaning-tasks", { credentials: "same-origin" })
       .then(r => r.json())
-      .then(data => { if (data.tasks?.length) setTasks(data.tasks); })
+      .then(data => {
+        if (!data.tasks?.length) return;
+        const incoming = data.tasks as CleaningTask[];
+        setTasks(incoming);
+        // Auto-heal: tareas con `status="assigned"` (o assigned/accepted/rejected
+        // legacy) sin `assigneeId` son estado inconsistente sembrado por flujos
+        // viejos. Sanitizar la BD en background para que el dato vuelva a
+        // alinearse con la realidad y no haya cabos sueltos en otras vistas.
+        for (const t of incoming) {
+          const stuck = ["assigned", "accepted", "rejected", "in_progress"].includes(t.status);
+          if (stuck && !t.assigneeId) {
+            patchTask(t.id, { status: "unassigned" });
+          }
+        }
+      })
       .catch(() => {});
   };
 
@@ -358,11 +372,28 @@ export default function CleaningPanel() {
     };
   }, [tasks, properties, period]);
 
+  // Estado visible derivado del estado real de la tarea. Sin esto, podiamos
+  // tener `status="assigned"` con `assigneeId=null` (estado inconsistente
+  // sembrado por flujos viejos) y mostrar "Asignado" + "Sin asignar" en la
+  // misma tarjeta. Esta funcion garantiza coherencia entre todos los renders
+  // (badge superior, pill amber, Select, modal de detalle).
+  const getEffectiveStatus = (task: CleaningTask): CleaningTask["status"] => {
+    if (task.status === "completed") return "completed";
+    if (task.status === "in_progress") return "in_progress";
+    if (task.status === "issue") return "issue";
+    // Si no hay assignee, el status real es "sin asignar" sin importar lo
+    // que diga el campo en BD. Dispara tambien una correccion en background
+    // para sanear la fila (ver auto-heal en useEffect mas abajo).
+    if (!task.assigneeId) return "unassigned";
+    return task.status;
+  };
+
   const getStatusBadge = (task: CleaningTask) => {
-    if (task.status === "completed") {
+    const effective = getEffectiveStatus(task);
+    if (effective === "completed") {
       return <Badge className="bg-emerald-500 hover:bg-emerald-600 text-white border-0">Completado</Badge>;
     }
-    if (task.status === "in_progress") {
+    if (effective === "in_progress") {
       return (
         <div className="flex flex-col items-end gap-1">
           <Badge className="bg-primary hover:bg-primary/90 text-primary-foreground border-0 italic animate-pulse">En curso</Badge>
@@ -370,16 +401,16 @@ export default function CleaningPanel() {
         </div>
       );
     }
-    if (task.status === "issue") {
+    if (effective === "issue") {
       return <Badge variant="destructive">Incidencia</Badge>;
     }
-    if (task.status === "unassigned") {
+    if (effective === "unassigned") {
       return <Badge className="bg-amber-100 text-amber-700 border-amber-300 animate-pulse">Sin asignar</Badge>;
     }
-    if (task.status === "assigned") {
+    if (effective === "assigned") {
       return <Badge className="bg-blue-50 text-blue-700 border-blue-200">Asignado</Badge>;
     }
-    if (task.status === "accepted") {
+    if (effective === "accepted") {
       return <Badge className="bg-emerald-50 text-emerald-700 border-emerald-200">Aceptado ✓</Badge>;
     }
     if (task.status === "rejected") {
@@ -1471,18 +1502,28 @@ export default function CleaningPanel() {
                         {/* Checklist Preview */}
                         <div className="mt-4 flex items-center gap-4">
                            <div className="flex-1">
-                              <div className="flex items-center justify-between text-[11px] font-bold uppercase tracking-wider mb-2">
-                                <span className="text-muted-foreground">Progreso de limpieza</span>
-                                <span className={cn(
-                                  task.status === "completed" ? "text-emerald-600" : "text-primary"
-                                )}>
-                                  {Math.round((task.checklist.filter(i => i.done).length / task.checklist.length) * 100)}%
-                                </span>
-                              </div>
-                              <Progress 
-                                value={(task.checklist.filter(i => i.done).length / task.checklist.length) * 100} 
-                                className="h-1.5"
-                              />
+                              {(() => {
+                                // El API devuelve `checklist: []` (legacy) y el real
+                                // viene en `checklistItems`. Usar el real evita NaN%
+                                // cuando la lista esta vacia o el legacy no se llena.
+                                const items = task.checklistItems ?? [];
+                                const total = items.length;
+                                const done = items.filter(i => i.done).length;
+                                const pct = total > 0 ? Math.round((done / total) * 100) : 0;
+                                return (
+                                  <>
+                                    <div className="flex items-center justify-between text-[11px] font-bold uppercase tracking-wider mb-2">
+                                      <span className="text-muted-foreground">Progreso de limpieza</span>
+                                      <span className={cn(
+                                        task.status === "completed" ? "text-emerald-600" : "text-primary"
+                                      )}>
+                                        {pct}%
+                                      </span>
+                                    </div>
+                                    <Progress value={pct} className="h-1.5" />
+                                  </>
+                                );
+                              })()}
                            </div>
                            <Button
                               variant="outline"

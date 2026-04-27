@@ -187,6 +187,18 @@ function getStatusPill(status: string) {
   return STATUS_PILL[status] ?? STATUS_PILL.pending;
 }
 
+// Coherencia: si la tarea esta marcada como assigned/accepted/in_progress
+// pero no tiene assigneeId, en realidad esta sin asignar. Sin esto, el badge
+// del modal puede contradecir al Select y al pill amber de la tarjeta.
+function getEffectiveStatus(task: CleaningTaskDetailData): string {
+  if (task.status === "completed") return "completed";
+  if (task.status === "issue") return "issue";
+  if (!task.assigneeId && ["assigned", "accepted", "rejected", "in_progress"].includes(task.status)) {
+    return "unassigned";
+  }
+  return task.status;
+}
+
 // Audit log derivado de los timestamps que ya tenemos. Sin migration nueva:
 // `created_at`, `start_time`, `updated_at` + flags de status alcanzan para
 // armar una linea de tiempo decente. P1 movera esto a `cleaning_task_events`.
@@ -309,7 +321,7 @@ export function CleaningTaskDetailModal({
   if (!task) return null;
 
   const channelMeta = getChannelMeta(task.bookingChannel);
-  const statusPill = getStatusPill(task.status);
+  const statusPill = getStatusPill(getEffectiveStatus(task));
   const nights = computeNights(task.bookingCheckIn, task.bookingCheckOut ?? task.dueDate);
   const reservationCode = getReservationCode(task);
 
