@@ -12,6 +12,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { cascadeCancelBooking } from "@/lib/bookings/cleanup";
 import { ensureCleaningTasksForProperty } from "@/lib/cleaning/ensure-tasks";
+import { syncBookingDownstream } from "@/lib/bookings/sync-downstream";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnySupabase = SupabaseClient<any, any, any>;
@@ -186,6 +187,24 @@ export async function syncIcalForProperty(args: {
         booking_url: isBlock ? null : ev.bookingUrl,
       };
 
+      // Snapshot del estado previo del booking (si ya existia). Lo usamos
+      // despues del upsert para detectar cambios de check_in/check_out/
+      // guest_name y propagar a cleaning_tasks + access_pins. Sin esto, una
+      // reserva Airbnb que cambia su DTEND queda con la task y el PIN en
+      // las dates viejas.
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const { data: existingRow } = await (supabase.from("bookings") as any)
+        .select("id, check_in, check_out, guest_name")
+        .eq("property_id", propertyId)
+        .eq("source_uid", ev.uid)
+        .maybeSingle();
+      const previous = existingRow as {
+        id: string;
+        check_in: string;
+        check_out: string;
+        guest_name: string | null;
+      } | null;
+
       // Fallback acumulativo de columnas faltantes (migraciones pendientes)
       const droppedCols = new Set<string>();
       const tryUpsert = async () => {
@@ -217,6 +236,26 @@ export async function syncIcalForProperty(args: {
         if (isBlock) result.blocksImported++;
         else result.imported++;
         seenUids.add(ev.uid);
+
+        // Si el booking ya existia y algun campo crítico cambio, propagar
+        // downstream: cleaning_task.due_date / guest_name + access_pins
+        // valid_from/valid_to + remarcar para resync TTLock.
+        if (
+          previous &&
+          (previous.check_in !== ev.dtstart ||
+            previous.check_out !== ev.dtend ||
+            previous.guest_name !== baseRow.guest_name)
+        ) {
+          try {
+            await syncBookingDownstream(previous.id);
+          } catch (downstreamErr) {
+            result.errors.push({
+              feed: feed.source,
+              uid: ev.uid,
+              message: `Downstream sync failed: ${downstreamErr instanceof Error ? downstreamErr.message : String(downstreamErr)}`,
+            });
+          }
+        }
       } else {
         result.errors.push({
           feed: feed.source,
