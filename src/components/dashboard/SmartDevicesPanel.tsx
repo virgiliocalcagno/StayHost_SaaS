@@ -180,6 +180,50 @@ export default function SmartDevicesPanel() {
   const [unlockingId, setUnlockingId] = useState<string | null>(null);
   const [unlockMsg, setUnlockMsg] = useState<{ deviceId: string; text: string; ok: boolean } | null>(null);
 
+  // Estado de gateways TTLock por propertyId. Lo refrescamos al entrar a
+  // la pestaña Dispositivos. Si TTLock tarda en responder o falla,
+  // dejamos `null` (= "no sabemos") y la UI muestra estado neutro en vez
+  // de un falso "offline".
+  type GatewayInfo = {
+    isOnline: boolean;
+    networkName: string | null;
+    signal: number | null;
+    reason: "no_account" | "no_gateway" | null;
+  };
+  const [gatewayByProp, setGatewayByProp] = useState<Record<string, GatewayInfo | null>>({});
+  const [gatewaysLoading, setGatewaysLoading] = useState(false);
+
+  const refreshGateways = useCallback(async () => {
+    setGatewaysLoading(true);
+    try {
+      const res = await fetch("/api/gateways/status", { credentials: "same-origin" });
+      if (!res.ok) return;
+      const json = (await res.json()) as {
+        gateways?: Array<{
+          propertyId: string;
+          isOnline: boolean;
+          networkName: string | null;
+          signal: number | null;
+          reason: "no_account" | "no_gateway" | null;
+        }>;
+      };
+      const map: Record<string, GatewayInfo | null> = {};
+      for (const g of json.gateways ?? []) {
+        map[g.propertyId] = {
+          isOnline: g.isOnline,
+          networkName: g.networkName,
+          signal: g.signal,
+          reason: g.reason,
+        };
+      }
+      setGatewayByProp(map);
+    } catch (err) {
+      console.warn("[gateways/status] fetch failed:", err);
+    } finally {
+      setGatewaysLoading(false);
+    }
+  }, []);
+
   // Pin form
   const [showPinForm, setShowPinForm] = useState(false);
   const [pinForm, setPinForm] = useState({
@@ -378,14 +422,16 @@ export default function SmartDevicesPanel() {
     }
   }, [refreshProperties, refreshLocks, refreshPins, accounts]);
 
-  // Cuando el usuario vuelve a la pestaña "Dispositivos", re-leer properties.
-  // Esto cubre el caso común: asignar una cerradura en Config y volver a
-  // Dispositivos — antes de este effect la pestaña mostraba la foto vieja.
+  // Cuando el usuario vuelve a la pestaña "Dispositivos", re-leer properties
+  // y estado de gateways. Sin re-fetch del gateway, el badge "online/offline"
+  // queda con la foto del primer load — un gateway que se cae mientras el
+  // host esta en otra pestaña no se reflejaria.
   useEffect(() => {
     if (activeTab === "devices") {
       void refreshProperties();
+      void refreshGateways();
     }
-  }, [activeTab, refreshProperties]);
+  }, [activeTab, refreshProperties, refreshGateways]);
 
   // ── PIN create / update ────────────────────────────────────────────────────
   const resetPinForm = () => {
@@ -830,6 +876,44 @@ export default function SmartDevicesPanel() {
                               <span className="h-0.5 w-0.5 rounded-full bg-slate-300" />
                               Sinc: {device.lastSync ? new Date(device.lastSync).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "—"}
                             </p>
+                            {device.type === "lock_ttlock" && (() => {
+                              const gw = gatewayByProp[device.propertyId];
+                              if (gw === undefined) return null; // todavia cargando
+                              if (gw === null) return null;
+                              if (gw.reason === "no_account") {
+                                return (
+                                  <p className="text-[10px] text-amber-700 mt-0.5 flex items-center gap-1.5 font-bold">
+                                    <span className="h-1.5 w-1.5 rounded-full bg-amber-500" />
+                                    Gateway: cuenta TTLock no asignada
+                                  </p>
+                                );
+                              }
+                              if (gw.reason === "no_gateway") {
+                                return (
+                                  <p className="text-[10px] text-amber-700 mt-0.5 flex items-center gap-1.5 font-bold">
+                                    <span className="h-1.5 w-1.5 rounded-full bg-amber-500" />
+                                    Sin gateway WiFi asignado
+                                  </p>
+                                );
+                              }
+                              if (gw.isOnline) {
+                                return (
+                                  <p className="text-[10px] text-green-700 mt-0.5 flex items-center gap-1.5 font-bold">
+                                    <span className="h-1.5 w-1.5 rounded-full bg-green-500 animate-pulse" />
+                                    Gateway ONLINE
+                                    {gw.networkName ? <span className="text-muted-foreground font-normal">· WiFi: {gw.networkName}</span> : null}
+                                    {gw.signal != null ? <span className="text-muted-foreground font-normal">· {gw.signal} dBm</span> : null}
+                                  </p>
+                                );
+                              }
+                              return (
+                                <p className="text-[10px] text-red-600 mt-0.5 flex items-center gap-1.5 font-bold">
+                                  <span className="h-1.5 w-1.5 rounded-full bg-red-500 animate-pulse" />
+                                  Gateway OFFLINE
+                                  {gw.networkName ? <span className="text-muted-foreground font-normal">· WiFi: {gw.networkName}</span> : null}
+                                </p>
+                              );
+                            })()}
                           </div>
 
                           <div className="flex items-center gap-3 text-xs shrink-0">
