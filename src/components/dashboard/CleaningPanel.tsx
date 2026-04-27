@@ -65,6 +65,8 @@ import { StaffWizard } from "@/components/staff-ui/StaffWizard";
 import { StaffTaskDetail } from "@/components/staff-ui/StaffTaskDetail";
 import { CleaningTaskDetailModal } from "@/components/dashboard/CleaningTaskDetailModal";
 import { getEffectiveStatus, deriveCorrectStatus } from "@/lib/cleaning/status";
+import type { MaintenanceTicket } from "@/types/maintenance";
+import { MAINTENANCE_SEVERITY_LABELS, MAINTENANCE_CATEGORY_LABELS } from "@/types/maintenance";
 
 // ─── Interfaces ─────────────────────────────────────────────────────────────
 
@@ -205,6 +207,22 @@ export default function CleaningPanel() {
   };
 
   useEffect(() => { loadTasks(); }, []);
+
+  // Incidencias activas: tickets de mantenimiento abiertos asociados a
+  // propiedades del tenant. La sidebar del modulo los muestra como signal
+  // de "que esta roto ahora mismo" — datos reales, sin mock.
+  const [incidents, setIncidents] = useState<MaintenanceTicket[]>([]);
+  useEffect(() => {
+    fetch(
+      "/api/maintenance-tickets?status=open,awaiting_response,confirmed,in_progress,pending_verification",
+      { credentials: "same-origin" },
+    )
+      .then(r => r.json())
+      .then(data => {
+        if (Array.isArray(data.tickets)) setIncidents(data.tickets);
+      })
+      .catch(() => {});
+  }, []);
 
   const patchTask = (id: string, changes: Record<string, unknown>) => {
     fetch(`/api/cleaning-tasks?id=${encodeURIComponent(id)}`, {
@@ -802,6 +820,24 @@ export default function CleaningPanel() {
     [tasks, detailTaskId],
   );
 
+  // Carga real por staff member derivada del state de tasks. Antes los
+  // contadores `tasksToday`/`completedTasks` venian de MOCK_TEAM (numeros
+  // hardcodeados), lo cual contradecia los KPIs y el cronograma. Ahora
+  // viene de la verdad: las tareas que el state ya tiene cargadas.
+  const todayStrLocal = getDateStr(0);
+  const staffLoad = useMemo(() => {
+    const map = new Map<string, { tasksToday: number; completedTasks: number }>();
+    for (const t of tasks) {
+      if (!t.assigneeId) continue;
+      const cur = map.get(t.assigneeId) ?? { tasksToday: 0, completedTasks: 0 };
+      const eff = getEffectiveStatus(t);
+      if (t.dueDate === todayStrLocal && eff !== "completed") cur.tasksToday += 1;
+      if (eff === "completed") cur.completedTasks += 1;
+      map.set(t.assigneeId, cur);
+    }
+    return map;
+  }, [tasks, todayStrLocal]);
+
   // Memoizamos la proyeccion ligera de team y properties para que el modal
   // no re-renderice por arrays nuevos en cada render del Panel.
   const detailTeam = useMemo(
@@ -1135,20 +1171,22 @@ export default function CleaningPanel() {
              <div className="flex items-end justify-between">
                 <div>
                    <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Horas de Trabajo</p>
-                   <p className="text-3xl font-black text-white">{stats.total * 2.5}h</p>
+                   <p className="text-3xl font-black text-white">{stats.total * 2.5}h<span className="text-base font-bold text-slate-400 ml-1">aprox</span></p>
                 </div>
                 <div className="text-right">
-                   <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Costo Proyectado</p>
-                   <p className="text-xl font-bold text-amber-400">${stats.total * 35}</p>
+                   <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Tareas del periodo</p>
+                   <p className="text-xl font-bold text-amber-400">{stats.total}</p>
                 </div>
              </div>
              <div className="h-1.5 w-full bg-slate-800 rounded-full overflow-hidden">
-                <div 
-                  className="h-full bg-amber-400 rounded-full transition-all duration-1000" 
+                <div
+                  className="h-full bg-amber-400 rounded-full transition-all duration-1000"
                   style={{ width: `${(stats.completed / (stats.total || 1)) * 100}%` }}
                 />
              </div>
-             <p className="text-[10px] text-slate-400 font-medium">Progreso basado en tareas completadas ({stats.completed}/{stats.total})</p>
+             <p className="text-[10px] text-slate-400 font-medium">
+               Progreso basado en tareas completadas ({stats.completed}/{stats.total}) · estimado a 2.5h/limpieza
+             </p>
           </CardContent>
         </Card>
       </div>
@@ -1609,7 +1647,9 @@ export default function CleaningPanel() {
               </div>
             </CardHeader>
             <CardContent className="p-4 space-y-4">
-              {team.map((member) => (
+              {team.map((member) => {
+                const load = staffLoad.get(member.id) ?? { tasksToday: 0, completedTasks: 0 };
+                return (
                 <div key={member.id} className="flex items-center gap-3 p-3 rounded-2xl bg-muted/30 hover:bg-muted/50 transition-all group">
                   <Avatar className="h-10 w-10">
                     <AvatarImage src={member.avatar} />
@@ -1619,20 +1659,31 @@ export default function CleaningPanel() {
                     <p className="font-bold text-sm truncate">{member.name}</p>
                     <div className="flex items-center gap-2 text-[10px] text-muted-foreground font-medium uppercase mt-0.5">
                        <span className={cn(
-                         member.tasksToday > 3 ? "text-orange-500" : "text-emerald-500"
+                         load.tasksToday > 3 ? "text-orange-500" : load.tasksToday > 0 ? "text-emerald-500" : "text-slate-400"
                        )}>
-                         {member.tasksToday} tareas hoy
+                         {load.tasksToday} tareas hoy
                        </span>
                        <span>•</span>
-                       <span>{member.completedTasks} total</span>
+                       <span>{load.completedTasks} completadas</span>
                     </div>
                   </div>
                   <Button size="icon" variant="ghost" className="h-8 w-8 opacity-0 group-hover:opacity-100 transition-all rounded-full bg-white shadow-soft">
                     <ArrowRight className="h-4 w-4" />
                   </Button>
                 </div>
-              ))}
-              <Button variant="outline" className="w-full h-11 border-dashed border-2 hover:border-primary/50 gap-2 font-semibold">
+                );
+              })}
+              <Button
+                variant="outline"
+                className="w-full h-11 border-dashed border-2 hover:border-primary/50 gap-2 font-semibold"
+                onClick={() => {
+                  // Navega al panel "team" del dashboard. La invitacion de
+                  // nuevos miembros vive ahi (form + flujo de email).
+                  if (typeof window !== "undefined") {
+                    window.location.href = "/dashboard?panel=team";
+                  }
+                }}
+              >
                 <UserPlus className="h-4 w-4 text-primary" />
                 Invitar al equipo
               </Button>
@@ -1654,19 +1705,28 @@ export default function CleaningPanel() {
             </CardContent>
           </Card>
 
-          {/* Auto-assign status card */}
+          {/* Auto-assign status card — clickeable, lleva a configuracion */}
           {properties.some(p => p.autoAssignCleaner) && (
-            <Card className="border-none shadow-soft overflow-hidden">
+            <Card
+              className="border-none shadow-soft overflow-hidden cursor-pointer hover:shadow-md transition-shadow group"
+              onClick={() => {
+                if (typeof window !== "undefined") {
+                  window.location.href = "/dashboard?panel=properties";
+                }
+              }}
+              role="button"
+              tabIndex={0}
+            >
               <CardContent className="p-5">
                 <div className="flex items-center gap-3 mb-3">
                   <div className="p-2 rounded-xl bg-emerald-100">
                     <Bot className="h-5 w-5 text-emerald-600" />
                   </div>
-                  <div>
+                  <div className="flex-1">
                     <p className="font-bold text-sm">Asignación Automática Activa</p>
                     <p className="text-xs text-muted-foreground">{properties.filter(p => p.autoAssignCleaner).length} propiedad(es) configurada(s)</p>
                   </div>
-                  <Zap className="h-4 w-4 text-amber-400 ml-auto" />
+                  <ArrowRight className="h-4 w-4 text-muted-foreground group-hover:text-primary transition-colors" />
                 </div>
                 <p className="text-xs text-muted-foreground leading-relaxed">
                   Las nuevas tareas asignarán automáticamente al primer limpiador disponible según la prioridad configurada en cada propiedad.
@@ -1680,21 +1740,75 @@ export default function CleaningPanel() {
                 <CardTitle className="text-lg flex items-center gap-2">
                    <AlertCircle className="h-5 w-5 text-rose-500" />
                    Incidencias activas
+                   {incidents.length > 0 && (
+                     <Badge variant="outline" className="border-rose-200 text-rose-600 ml-auto">
+                       {incidents.length}
+                     </Badge>
+                   )}
                 </CardTitle>
              </CardHeader>
-             <CardContent className="p-4 pt-0">
-                <div className="p-4 rounded-2xl bg-rose-50 border border-rose-100 flex gap-3">
-                   <div className="p-2 h-fit bg-white rounded-xl shadow-sm">
-                      <Plus className="h-4 w-4 text-rose-500 rotate-45" />
-                   </div>
-                   <div>
-                      <p className="text-sm font-bold text-rose-900">Grifo goteando</p>
-                      <p className="text-xs text-rose-700/70">Villa Mar Azul • Reportado por Laura</p>
-                      <Button variant="link" className="p-0 h-auto text-rose-600 font-bold text-xs mt-2">
-                        Ver foto del daño
-                      </Button>
-                   </div>
-                </div>
+             <CardContent className="p-4 pt-0 space-y-2">
+                {incidents.length === 0 ? (
+                  <div className="p-6 rounded-2xl bg-emerald-50/50 border border-emerald-100 flex items-center gap-3">
+                    <CheckCircle2 className="h-5 w-5 text-emerald-500 flex-shrink-0" />
+                    <div>
+                      <p className="text-sm font-bold text-emerald-900">Sin incidencias activas</p>
+                      <p className="text-xs text-emerald-700/70">Todas las propiedades estan operativas</p>
+                    </div>
+                  </div>
+                ) : (
+                  incidents.slice(0, 5).map((ticket) => {
+                    const isCritical = ticket.severity === "critical" || ticket.severity === "high";
+                    const photo = ticket.photos[0];
+                    return (
+                      <div
+                        key={ticket.id}
+                        className={cn(
+                          "p-3 rounded-2xl border flex gap-3 items-start",
+                          isCritical
+                            ? "bg-rose-50 border-rose-100"
+                            : "bg-amber-50 border-amber-100",
+                        )}
+                      >
+                        <div className="p-2 h-fit bg-white rounded-xl shadow-sm flex-shrink-0">
+                          <AlertCircle className={cn("h-4 w-4", isCritical ? "text-rose-500" : "text-amber-500")} />
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <p className={cn("text-sm font-bold truncate", isCritical ? "text-rose-900" : "text-amber-900")}>
+                            {ticket.title}
+                          </p>
+                          <p className={cn("text-xs truncate", isCritical ? "text-rose-700/70" : "text-amber-700/70")}>
+                            {ticket.propertyName ?? "—"}
+                            {ticket.reportedByName ? ` • Reportado por ${ticket.reportedByName}` : ""}
+                          </p>
+                          <div className="flex items-center gap-2 mt-1.5">
+                            <Badge variant="outline" className="text-[9px] h-4 px-1.5 border-slate-200 text-slate-500 font-bold uppercase">
+                              {MAINTENANCE_CATEGORY_LABELS[ticket.category]}
+                            </Badge>
+                            <Badge variant="outline" className="text-[9px] h-4 px-1.5 border-slate-200 text-slate-500 font-bold uppercase">
+                              {MAINTENANCE_SEVERITY_LABELS[ticket.severity]}
+                            </Badge>
+                            {photo && (
+                              <a
+                                href={photo}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className={cn("text-[10px] font-bold underline", isCritical ? "text-rose-600" : "text-amber-700")}
+                              >
+                                Ver foto
+                              </a>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })
+                )}
+                {incidents.length > 5 && (
+                  <p className="text-[11px] text-center text-muted-foreground font-semibold pt-1">
+                    + {incidents.length - 5} mas
+                  </p>
+                )}
              </CardContent>
           </Card>
         </div>

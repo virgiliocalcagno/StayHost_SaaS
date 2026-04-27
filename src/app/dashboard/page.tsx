@@ -77,6 +77,21 @@ function DashboardContent() {
     if (view === "staff") {
       setActivePanel("cleaning");
     }
+    // Permite navegar entre paneles via URL (?panel=team, ?panel=properties).
+    // Lo usan atajos como "Invitar al equipo" o "Ver propiedades configuradas"
+    // desde otros paneles, sin acoplarlos al sidebar.
+    const panel = searchParams.get("panel");
+    if (panel) {
+      const valid: PanelType[] = [
+        "overview", "properties", "calendar", "messages", "cleaning",
+        "pricing", "bookings", "devices", "upsells", "agreements",
+        "reviews", "tasks", "team", "check-ins", "accounts", "keys",
+        "maintenance", "vendors", "reports",
+      ];
+      if ((valid as string[]).includes(panel)) {
+        setActivePanel(panel as PanelType);
+      }
+    }
   }, [searchParams]);
 
   const renderPanel = () => {
