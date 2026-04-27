@@ -362,6 +362,28 @@ export default function CleaningPanel() {
     // pida refoto. Se cuenta sobre TODAS las tareas, no solo el periodo,
     // porque son urgentes sin importar la fecha del checkout.
     const awaitingValidation = tasks.filter((t) => t.isWaitingValidation === true).length;
+
+    // Tareas sin asignar con checkout en menos de 24h o ya pasado: riesgo
+    // real de que la propiedad no se limpie a tiempo. Se cuenta sobre
+    // TODAS las tareas (no solo el periodo de vista) porque cualquier
+    // urgente debe gritar igual aunque el owner este viendo otra semana.
+    const now = Date.now();
+    const unassignedUrgent = tasks.filter((t) => {
+      if (t.assigneeId) return false;
+      if (getEffectiveStatus(t) === "completed") return false;
+      const [hStr, mStr] = (t.dueTime || "11:00").split(":");
+      const [yr, mo, dy] = t.dueDate.split("-").map(Number);
+      const checkout = new Date(
+        yr,
+        (mo || 1) - 1,
+        dy || 1,
+        parseInt(hStr, 10) || 11,
+        parseInt(mStr, 10) || 0,
+      );
+      const hours = (checkout.getTime() - now) / (1000 * 60 * 60);
+      return hours < 24; // incluye atrasadas (hours < 0)
+    }).length;
+
     return {
       total: inPeriod.length,
       // KPIs usan effective status para que filas con datos inconsistentes
@@ -372,6 +394,7 @@ export default function CleaningPanel() {
       pending: inPeriod.filter((t) => getEffectiveStatus(t) !== "completed").length,
       critical: inPeriod.filter((t) => t.priority === "critical").length,
       awaitingValidation,
+      unassignedUrgent,
     };
   }, [tasks, period]);
 
@@ -470,6 +493,78 @@ export default function CleaningPanel() {
       return <Badge variant="outline" className="border-rose-200 text-rose-600 bg-rose-50">Rechazada</Badge>;
     }
     return <Badge variant="secondary" className="bg-muted text-muted-foreground border-0">Pendiente</Badge>;
+  };
+
+  // Urgencia de una tarea sin asignar — escala segun horas al checkout.
+  // Permite que la UI grite mas fuerte cuando se acerca la hora sin que
+  // nadie haya tomado la tarea (riesgo real de que la propiedad quede sin
+  // limpiar para el siguiente huesped).
+  type UnassignedLevel = "none" | "scheduled" | "soon" | "urgent" | "critical" | "overdue";
+  const getUnassignedUrgency = (task: CleaningTask): {
+    level: UnassignedLevel;
+    label: string;
+    classes: string;
+    pulse: boolean;
+    hours: number;
+  } => {
+    if (task.assigneeId) {
+      return { level: "none", label: "", classes: "", pulse: false, hours: 0 };
+    }
+    // Calculo cross-timezone: armamos la fecha local (no UTC) sumando la
+    // hora del checkout. Si dueTime no esta seteado, asumimos 11am (default
+    // del sistema).
+    const [hStr, mStr] = (task.dueTime || "11:00").split(":");
+    const h = parseInt(hStr, 10);
+    const m = parseInt(mStr, 10);
+    const [yr, mo, dy] = task.dueDate.split("-").map(Number);
+    const checkout = new Date(yr, (mo || 1) - 1, dy || 1, isNaN(h) ? 11 : h, isNaN(m) ? 0 : m);
+    const hours = (checkout.getTime() - Date.now()) / (1000 * 60 * 60);
+
+    if (hours < 0) {
+      return {
+        level: "overdue",
+        label: `ATRASADA · ${formatTime12(task.dueTime)}`,
+        classes: "bg-rose-600 text-white border-rose-700",
+        pulse: true,
+        hours,
+      };
+    }
+    if (hours < 6) {
+      return {
+        level: "critical",
+        label: `URGENTE · checkout HOY ${formatTime12(task.dueTime)}`,
+        classes: "bg-rose-500 text-white border-rose-600",
+        pulse: true,
+        hours,
+      };
+    }
+    if (hours < 24) {
+      const h_int = Math.floor(hours);
+      return {
+        level: "urgent",
+        label: `Sin asignar · checkout en ${h_int}h`,
+        classes: "bg-rose-100 text-rose-700 border-rose-200",
+        pulse: true,
+        hours,
+      };
+    }
+    if (hours < 48) {
+      return {
+        level: "soon",
+        label: "Sin asignar · mañana",
+        classes: "bg-amber-100 text-amber-700 border-amber-300",
+        pulse: false,
+        hours,
+      };
+    }
+    const days = Math.floor(hours / 24);
+    return {
+      level: "scheduled",
+      label: `Sin asignar · ${days} día${days === 1 ? "" : "s"}`,
+      classes: "bg-slate-100 text-slate-600 border-slate-200",
+      pulse: false,
+      hours,
+    };
   };
 
   // Helpers de presentacion para el header de la tarjeta de tarea ─────────
@@ -1130,6 +1225,37 @@ export default function CleaningPanel() {
         </div>
       </div>
 
+      {/* ─── Banner critico: tareas sin asignar con checkout < 24h ───────
+          Es lo primero que el owner ve al abrir el modulo si hay riesgo
+          real. Click → filtra el cronograma a las urgentes para resolver
+          en el acto. Solo aparece cuando hay > 0. */}
+      {stats.unassignedUrgent > 0 && (
+        <button
+          type="button"
+          onClick={() => {
+            setView("day");
+            // El cronograma de "day" muestra tareas de hoy. Si la urgente
+            // es de hoy aparece directo; si es de manana, queda en
+            // semanal. Mantenemos simple: alertar y dejar al owner navegar.
+          }}
+          className="w-full flex items-center gap-3 px-5 py-3.5 rounded-2xl bg-gradient-to-r from-rose-500 to-rose-600 text-white shadow-lg shadow-rose-200 hover:shadow-rose-300 transition-all animate-pulse-gentle text-left"
+        >
+          <div className="p-2 bg-white/20 rounded-xl flex-shrink-0">
+            <AlertTriangle className="h-5 w-5" />
+          </div>
+          <div className="flex-1">
+            <p className="font-black text-sm tracking-wide">
+              {stats.unassignedUrgent} {stats.unassignedUrgent === 1 ? "tarea" : "tareas"} sin asignar
+              {" "}con checkout en las proximas 24h
+            </p>
+            <p className="text-xs text-white/90 font-medium mt-0.5">
+              Riesgo de que la propiedad no se limpie a tiempo. Asignale staff ya.
+            </p>
+          </div>
+          <ArrowRight className="h-5 w-5 flex-shrink-0" />
+        </button>
+      )}
+
       {/* ─── Top Dashboard Stats ────────────────────────────────────────── */}
       <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
         {[
@@ -1471,12 +1597,27 @@ export default function CleaningPanel() {
                               <priority.icon className="h-3 w-3" />
                               {priority.label}
                             </div>
-                            {!task.assigneeId && (
-                              <div className="flex items-center gap-1.5 px-2.5 py-1 bg-amber-50 border border-amber-300 rounded-full animate-pulse">
-                                <AlertTriangle className="h-3 w-3 text-amber-500" />
-                                <span className="text-[10px] font-bold text-amber-600 uppercase tracking-wider">Sin asignar</span>
-                              </div>
-                            )}
+                            {(() => {
+                              // Badge de urgencia dinamico para tareas sin
+                              // asignar — escala desde gris ("3 dias") hasta
+                              // rojo solido pulsante ("URGENTE · checkout HOY").
+                              const urgency = getUnassignedUrgency(task);
+                              if (urgency.level === "none") return null;
+                              return (
+                                <div
+                                  className={cn(
+                                    "flex items-center gap-1.5 px-2.5 py-1 border rounded-full",
+                                    urgency.classes,
+                                    urgency.pulse && "animate-pulse",
+                                  )}
+                                >
+                                  <AlertTriangle className="h-3 w-3" />
+                                  <span className="text-[10px] font-bold uppercase tracking-wider">
+                                    {urgency.label}
+                                  </span>
+                                </div>
+                              );
+                            })()}
                           </div>
                         </div>
 
