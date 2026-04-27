@@ -85,8 +85,59 @@ export async function GET() {
     .eq("tenant_id", tenantId)
     .order("due_date", { ascending: true });
 
-  const result = ((allTasks ?? []) as CleaningTaskRow[]).map((t) => {
+  const taskRows = (allTasks ?? []) as CleaningTaskRow[];
+
+  // Enriquecer con datos de la reserva (channel_code, source, check_in)
+  // para que la tarjeta del cronograma muestre el numero de reserva y la
+  // estancia completa. Una sola query por todos los booking_ids — evita
+  // N+1 cuando hay muchas tareas.
+  const bookingIds = Array.from(
+    new Set(taskRows.map((t) => t.booking_id).filter((v): v is string => !!v)),
+  );
+  const bookingMap: Record<
+    string,
+    { source: string | null; channel_code: string | null; check_in: string | null; check_out: string | null; guest_phone: string | null }
+  > = {};
+  if (bookingIds.length) {
+    // channel_code/guest_phone son columnas opcionales — si la migracion
+    // no esta aplicada en este entorno, hacemos fallback a las columnas
+    // base. Asi no rompemos el GET en branches sin la migracion.
+    const tryBookingsSelect = async (cols: string) => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const { data, error } = await (supabase.from("bookings") as any)
+        .select(cols)
+        .in("id", bookingIds);
+      return { data, error };
+    };
+    let { data: bks, error: bkErr } = await tryBookingsSelect(
+      "id, source, channel_code, check_in, check_out, guest_phone",
+    );
+    if (bkErr) {
+      // 42703 = undefined_column. Reintenta con campos seguros.
+      const r = await tryBookingsSelect("id, source, check_in, check_out");
+      bks = r.data;
+    }
+    for (const b of (bks ?? []) as Array<{
+      id: string;
+      source: string | null;
+      channel_code?: string | null;
+      check_in: string | null;
+      check_out: string | null;
+      guest_phone?: string | null;
+    }>) {
+      bookingMap[b.id] = {
+        source: b.source ?? null,
+        channel_code: b.channel_code ?? null,
+        check_in: b.check_in ?? null,
+        check_out: b.check_out ?? null,
+        guest_phone: b.guest_phone ?? null,
+      };
+    }
+  }
+
+  const result = taskRows.map((t) => {
     const prop = propMap[t.property_id] ?? ({} as Partial<Property>);
+    const booking = t.booking_id ? bookingMap[t.booking_id] : null;
     return {
       id: t.id,
       propertyId: t.property_id,
@@ -117,6 +168,13 @@ export async function GET() {
       stayDuration: t.stay_duration ?? 2,
       arrivingGuestName: t.arriving_guest_name ?? undefined,
       arrivingGuestCount: t.arriving_guest_count ?? undefined,
+      // Datos de la reserva asociada — alimentan el header de la tarjeta.
+      bookingId: t.booking_id ?? undefined,
+      bookingChannel: booking?.source ?? undefined,
+      bookingChannelCode: booking?.channel_code ?? undefined,
+      bookingCheckIn: booking?.check_in ?? undefined,
+      bookingCheckOut: booking?.check_out ?? undefined,
+      guestPhone: booking?.guest_phone ?? undefined,
     };
   });
 
