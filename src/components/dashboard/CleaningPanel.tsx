@@ -18,6 +18,7 @@ import {
   AlertCircle,
   Calendar,
   MessageSquare,
+  ChevronLeft,
   ChevronRight,
   UserPlus,
   ArrowRight,
@@ -139,7 +140,11 @@ const MOCK_TEAM: TeamMember[] = [
 
 
 export default function CleaningPanel() {
-  const [view, setView] = useState<"day" | "week">("day");
+  const [view, setView] = useState<"day" | "week" | "month">("day");
+  const [activeMonth, setActiveMonth] = useState<string>(() => {
+    const d = new Date();
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+  });
   const [tasks, setTasks] = useState<CleaningTask[]>([]);
 
   const loadTasks = () => {
@@ -242,21 +247,58 @@ export default function CleaningPanel() {
     getProperties().then(setProperties).catch(() => {});
   }, []);
 
-  const stats = useMemo(() => ({
-    total: tasks.filter(t => t.dueDate === getDateStr(0)).length,
-    completed: tasks.filter(t => t.dueDate === getDateStr(0) && t.status === "completed").length,
-    pending: tasks.filter(t => t.dueDate === getDateStr(0) && t.status !== "completed").length,
-    critical: tasks.filter(t => t.dueDate === getDateStr(0) && t.priority === "critical").length,
-  }), [tasks]);
+  // Rango de fechas que cubre la vista activa. Los KPIs y los costos
+  // estimados se calculan sobre este rango — antes siempre usaban "hoy"
+  // aunque el usuario estuviera viendo Semanal o Mensual, lo que daba
+  // numeros que no encajaban con la lista de abajo.
+  const period = useMemo(() => {
+    if (view === "day") {
+      const today = getDateStr(0);
+      return { start: today, end: today, label: "Hoy", short: "hoy" };
+    }
+    if (view === "week") {
+      return {
+        start: getDateStr(0),
+        end: getDateStr(6),
+        label: "Esta semana",
+        short: "semana",
+      };
+    }
+    const [y, m] = activeMonth.split("-").map(Number);
+    const lastDay = new Date(y, m, 0).getDate();
+    const monthName = new Date(y, m - 1, 1)
+      .toLocaleDateString("es-ES", { month: "long" })
+      .replace(/^./, (c) => c.toUpperCase());
+    return {
+      start: `${activeMonth}-01`,
+      end: `${activeMonth}-${String(lastDay).padStart(2, "0")}`,
+      label: monthName,
+      short: monthName,
+    };
+  }, [view, activeMonth]);
+
+  const stats = useMemo(() => {
+    const inPeriod = tasks.filter(
+      (t) => t.dueDate >= period.start && t.dueDate <= period.end,
+    );
+    return {
+      total: inPeriod.length,
+      completed: inPeriod.filter((t) => t.status === "completed").length,
+      pending: inPeriod.filter((t) => t.status !== "completed").length,
+      critical: inPeriod.filter((t) => t.priority === "critical").length,
+    };
+  }, [tasks, period]);
 
   const filteredTasks = useMemo(() => {
     let result = tasks;
     
-    // Si estamos en vista semana, filtramos por la fecha seleccionada en las pestañas
-    if (view === "week") {
-      result = result.filter(t => t.dueDate === activeDate);
-    } else if (view === "day") {
+    // Vista diaria: solo hoy.
+    // Vista semanal: dia seleccionado en el strip de tabs.
+    // Vista mensual: dia seleccionado en el grid de calendario (activeDate).
+    if (view === "day") {
       result = result.filter(t => t.dueDate === getDateStr(0));
+    } else if (view === "week" || view === "month") {
+      result = result.filter(t => t.dueDate === activeDate);
     }
 
     if (selectedStaff !== "all") {
@@ -271,9 +313,14 @@ export default function CleaningPanel() {
     });
   }, [tasks, view, selectedStaff, activeDate]);
 
-  // ─── Linen Summary (ropa de cama necesaria hoy) ───────────────────────────
+  // ─── Linen Summary (ropa de cama necesaria en el periodo activo) ─────────
+  // Se calcula sobre el rango completo de la vista (dia/semana/mes) para
+  // que el host pueda planificar compra y rotacion. Antes solo miraba el
+  // dia activo, lo que en vista Mensual no decia nada.
   const linenSummary = useMemo(() => {
-    const targetTasks = tasks.filter(t => t.dueDate === activeDate);
+    const targetTasks = tasks.filter(
+      (t) => t.dueDate >= period.start && t.dueDate <= period.end,
+    );
     const beds: Record<string, number> = {};
     let totalTowels = 0;
 
@@ -299,7 +346,7 @@ export default function CleaningPanel() {
       beds: Object.entries(beds).map(([type, qty]) => ({ type, qty })),
       towels: totalTowels
     };
-  }, [tasks, properties]);
+  }, [tasks, properties, period]);
 
   const getStatusBadge = (task: CleaningTask) => {
     if (task.status === "completed") {
@@ -416,6 +463,45 @@ export default function CleaningPanel() {
     }
     return days;
   }, [tasks]);
+
+  // Grid mensual: cada celda representa un dia del mes activo, con
+  // contador de tareas para que el host detecte "dias calientes" de un
+  // vistazo. Incluye las celdas vacias del inicio para alinear lunes.
+  const monthGrid = useMemo(() => {
+    const [y, m] = activeMonth.split("-").map(Number);
+    const firstDay = new Date(y, m - 1, 1);
+    const lastDay = new Date(y, m, 0).getDate();
+    // getDay(): 0=Dom, 1=Lun... Convertimos a semana lun=0..dom=6.
+    const startWeekday = (firstDay.getDay() + 6) % 7;
+    const cells: Array<{ date: string | null; day: number | null; count: number; isToday: boolean }> = [];
+    const todayStr = getDateStr(0);
+    for (let i = 0; i < startWeekday; i++) {
+      cells.push({ date: null, day: null, count: 0, isToday: false });
+    }
+    for (let day = 1; day <= lastDay; day++) {
+      const date = `${activeMonth}-${String(day).padStart(2, "0")}`;
+      cells.push({
+        date,
+        day,
+        count: tasks.filter((t) => t.dueDate === date).length,
+        isToday: date === todayStr,
+      });
+    }
+    return cells;
+  }, [activeMonth, tasks]);
+
+  const monthLabel = useMemo(() => {
+    const [y, m] = activeMonth.split("-").map(Number);
+    return new Date(y, m - 1, 1)
+      .toLocaleDateString("es-ES", { month: "long", year: "numeric" })
+      .replace(/^./, (c) => c.toUpperCase());
+  }, [activeMonth]);
+
+  const shiftMonth = (delta: number) => {
+    const [y, m] = activeMonth.split("-").map(Number);
+    const d = new Date(y, m - 1 + delta, 1);
+    setActiveMonth(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`);
+  };
 
   const handleSendMessage = (phone: string, property: string, taskId: string) => {
     const link = `${window.location.origin}/dashboard?view=staff&task=${taskId}`;
@@ -790,10 +876,11 @@ export default function CleaningPanel() {
           <p className="text-muted-foreground">Sistema centralizado de limpieza y mantenimiento especializado</p>
         </div>
         <div className="flex items-center gap-3">
-          <Tabs value={view} onValueChange={(v) => setView(v as "day" | "week")} className="w-auto">
+          <Tabs value={view} onValueChange={(v) => setView(v as "day" | "week" | "month")} className="w-auto">
             <TabsList className="bg-muted/50 p-1">
               <TabsTrigger value="day" className="data-[state=active]:bg-white data-[state=active]:shadow-sm px-4">Diaria</TabsTrigger>
               <TabsTrigger value="week" className="data-[state=active]:bg-white data-[state=active]:shadow-sm px-4">Semanal</TabsTrigger>
+              <TabsTrigger value="month" className="data-[state=active]:bg-white data-[state=active]:shadow-sm px-4">Mensual</TabsTrigger>
             </TabsList>
           </Tabs>
           <Button onClick={() => setShowAddTask(true)} className="gradient-gold text-primary-foreground shadow-lg hover:shadow-primary/20 transition-all gap-2 px-6">
@@ -806,10 +893,10 @@ export default function CleaningPanel() {
       {/* ─── Top Dashboard Stats ────────────────────────────────────────── */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         {[
-          { label: "Checkouts Hoy", value: stats.total, icon: LogOut, color: "text-primary", bg: "bg-primary/10" },
-          { label: "Back-to-Back", value: stats.critical, icon: TrendingUp, color: "text-rose-600", bg: "bg-rose-100/50" },
-          { label: "Completadas", value: stats.completed, icon: CheckCircle2, color: "text-emerald-600", bg: "bg-emerald-100/50" },
-          { label: "Pendientes", value: stats.pending, icon: Clock, color: "text-muted-foreground", bg: "bg-muted" },
+          { label: `Checkouts ${period.short}`, value: stats.total, icon: LogOut, color: "text-primary", bg: "bg-primary/10" },
+          { label: `Back-to-Back ${period.short}`, value: stats.critical, icon: TrendingUp, color: "text-rose-600", bg: "bg-rose-100/50" },
+          { label: `Completadas ${period.short}`, value: stats.completed, icon: CheckCircle2, color: "text-emerald-600", bg: "bg-emerald-100/50" },
+          { label: `Pendientes ${period.short}`, value: stats.pending, icon: Clock, color: "text-muted-foreground", bg: "bg-muted" },
         ].map((stat, i) => (
           <Card key={i} className="border-none shadow-soft overflow-hidden group">
             <CardContent className="p-5 flex items-center gap-4 relative">
@@ -832,7 +919,7 @@ export default function CleaningPanel() {
             <div className="flex items-center justify-between">
               <CardTitle className="text-lg font-bold flex items-center gap-2">
                 <Layers className="h-5 w-5 text-primary" />
-                Logística de Lencería para Hoy
+                Logística de Lencería ({period.label})
               </CardTitle>
               <Badge variant="outline" className="border-primary/20 text-primary font-bold">
                 {stats.total} Propiedades
@@ -891,6 +978,73 @@ export default function CleaningPanel() {
         {/* Left Column: Tasks and Planning */}
         <div className="lg:col-span-8 space-y-6">
           
+          {/* Month calendar grid — vista mensual */}
+          {view === "month" && (
+            <div className="space-y-3 bg-white rounded-2xl border border-muted p-4 shadow-soft">
+              <div className="flex items-center justify-between">
+                <button
+                  onClick={() => shiftMonth(-1)}
+                  className="p-2 rounded-xl hover:bg-slate-100 transition-colors"
+                  aria-label="Mes anterior"
+                >
+                  <ChevronLeft className="h-4 w-4 text-slate-600" />
+                </button>
+                <span className="font-bold uppercase text-slate-700 tracking-wider text-sm">
+                  {monthLabel}
+                </span>
+                <button
+                  onClick={() => shiftMonth(1)}
+                  className="p-2 rounded-xl hover:bg-slate-100 transition-colors"
+                  aria-label="Mes siguiente"
+                >
+                  <ChevronRight className="h-4 w-4 text-slate-600" />
+                </button>
+              </div>
+              <div className="grid grid-cols-7 gap-1 text-[10px] font-bold uppercase text-slate-400 text-center">
+                {["Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom"].map((d) => (
+                  <div key={d} className="py-1">{d}</div>
+                ))}
+              </div>
+              <div className="grid grid-cols-7 gap-1">
+                {monthGrid.map((cell, idx) => {
+                  if (!cell.date) {
+                    return <div key={idx} className="aspect-square" />;
+                  }
+                  const isActive = cell.date === activeDate;
+                  return (
+                    <button
+                      key={idx}
+                      onClick={() => setActiveDate(cell.date!)}
+                      className={cn(
+                        "aspect-square flex flex-col items-center justify-center rounded-xl border transition-all relative",
+                        isActive
+                          ? "bg-primary/10 border-primary/30 ring-1 ring-primary/30"
+                          : cell.isToday
+                          ? "bg-amber-50 border-amber-200"
+                          : "bg-white border-muted hover:border-primary/20 hover:bg-slate-50",
+                      )}
+                    >
+                      <span className={cn(
+                        "text-sm font-bold",
+                        isActive ? "text-primary" : cell.isToday ? "text-amber-700" : "text-slate-700",
+                      )}>
+                        {cell.day}
+                      </span>
+                      {cell.count > 0 && (
+                        <span className={cn(
+                          "absolute bottom-1 text-[9px] font-black px-1.5 rounded-full",
+                          isActive ? "bg-primary text-white" : "bg-amber-400 text-white",
+                        )}>
+                          {cell.count}
+                        </span>
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
           {/* Day selection for Weekly view */}
           {view === "week" && (
             <div className="flex gap-2 overflow-x-auto pb-2 scrollbar-none">
