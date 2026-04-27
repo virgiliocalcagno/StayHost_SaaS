@@ -10,7 +10,7 @@
  * interpreta. Sin esto adivinamos a ciegas.
  */
 import { NextResponse } from "next/server";
-import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { createSupabaseServerClient, getAuthenticatedTenant } from "@/lib/supabase/server";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 
 const TTLOCK_API = process.env.TTLOCK_API_URL ?? "https://euapi.ttlock.com";
@@ -77,13 +77,8 @@ export async function GET() {
   const email = (user.email ?? "").trim().toLowerCase();
   if (email !== MASTER_EMAIL) return NextResponse.json({ error: "Forbidden" }, { status: 403 });
 
-  // Tenant del master
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const { data: tu } = await (supabaseAdmin.from("tenant_users") as any)
-    .select("tenant_id")
-    .eq("user_id", user.id)
-    .maybeSingle();
-  const tenantId = (tu as { tenant_id?: string } | null)?.tenant_id;
+  // Tenant del usuario autenticado (helper estandar del proyecto).
+  const { tenantId } = await getAuthenticatedTenant();
   if (!tenantId) return NextResponse.json({ error: "No tenant" }, { status: 400 });
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
