@@ -1037,16 +1037,84 @@ export default function SmartDevicesPanel() {
                       <WifiOff className="h-3.5 w-3.5 text-amber-400 shrink-0" />
                       <div className="flex-1 min-w-0">
                         <p className="text-[11px] font-bold truncate">{d.name}</p>
-                        <p className="text-[9px] text-amber-400">Sin conexión</p>
+                        <p className="text-[9px] text-amber-400">Cerradura sin conexión</p>
                       </div>
                     </div>
                   ))}
-                  {devices.length > 0 && devices.every((d) => d.online && (d.battery ?? 100) > 20) && (
-                    <div className="flex items-center gap-2 p-2 rounded-xl bg-green-500/10 border border-green-500/20">
-                      <CheckCircle2 className="h-3.5 w-3.5 text-green-400" />
-                      <p className="text-[11px] font-bold text-green-300">Todo en orden</p>
-                    </div>
-                  )}
+                  {/* Gateway offline: la cerradura puede aparecer Online por
+                      cache pero los PINs nuevos no llegan. Riesgo real para
+                      reservas inminentes. */}
+                  {devices
+                    .filter((d) => d.type === "lock_ttlock")
+                    .filter((d) => {
+                      const gw = gatewayByProp[d.propertyId];
+                      return gw && gw.reason === null && gw.isOnline === false;
+                    })
+                    .map((d) => {
+                      const gw = gatewayByProp[d.propertyId]!;
+                      return (
+                        <div key={`gw-${d.id}`} className="flex items-center gap-2 p-2 rounded-xl bg-orange-500/10 border border-orange-500/20">
+                          <WifiOff className="h-3.5 w-3.5 text-orange-400 shrink-0" />
+                          <div className="flex-1 min-w-0">
+                            <p className="text-[11px] font-bold truncate">{d.propertyName}</p>
+                            <p className="text-[9px] text-orange-400 truncate">
+                              Gateway {gw.gatewayName ?? ""} offline{gw.networkName ? ` · ${gw.networkName}` : ""}
+                            </p>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  {/* PINs criticos: huesped llega en proximas 24h y el PIN
+                      todavia no esta cargado en la cerradura. Si pasan las
+                      24h sin que el sync lo levante, el huesped no entra. */}
+                  {pins
+                    .filter((p) => {
+                      if (p.status !== "active") return false;
+                      if (p.ttlockPwdId) return false; // ya sincronizado
+                      const validFromMs = new Date(p.validFrom).getTime();
+                      const now = Date.now();
+                      const in24h = now + 24 * 60 * 60 * 1000;
+                      return validFromMs >= now && validFromMs <= in24h;
+                    })
+                    .slice(0, 4)
+                    .map((p) => {
+                      const hoursUntil = Math.max(
+                        0,
+                        Math.round((new Date(p.validFrom).getTime() - Date.now()) / (60 * 60 * 1000)),
+                      );
+                      return (
+                        <div key={`pin-${p.id}`} className="flex items-center gap-2 p-2 rounded-xl bg-red-500/15 border border-red-500/30">
+                          <Key className="h-3.5 w-3.5 text-red-400 shrink-0" />
+                          <div className="flex-1 min-w-0">
+                            <p className="text-[11px] font-bold truncate">{p.guestName}</p>
+                            <p className="text-[9px] text-red-300 truncate">
+                              PIN no sincronizado · check-in en {hoursUntil}h
+                            </p>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  {/* "Todo en orden" solo si NINGUNA alerta critica. Ojo:
+                      ahora el chequeo incluye gateway y PINs criticos. */}
+                  {devices.length > 0 &&
+                    devices.every((d) => d.online && (d.battery ?? 100) > 20) &&
+                    devices
+                      .filter((d) => d.type === "lock_ttlock")
+                      .every((d) => {
+                        const gw = gatewayByProp[d.propertyId];
+                        return !gw || gw.reason !== null || gw.isOnline;
+                      }) &&
+                    !pins.some((p) => {
+                      if (p.status !== "active" || p.ttlockPwdId) return false;
+                      const validFromMs = new Date(p.validFrom).getTime();
+                      const now = Date.now();
+                      return validFromMs >= now && validFromMs <= now + 24 * 60 * 60 * 1000;
+                    }) && (
+                      <div className="flex items-center gap-2 p-2 rounded-xl bg-green-500/10 border border-green-500/20">
+                        <CheckCircle2 className="h-3.5 w-3.5 text-green-400" />
+                        <p className="text-[11px] font-bold text-green-300">Todo en orden</p>
+                      </div>
+                    )}
                 </div>
               </CardContent>
             </Card>
