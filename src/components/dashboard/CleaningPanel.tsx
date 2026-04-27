@@ -100,6 +100,13 @@ interface CleaningTask {
   reportedIssues?: string[];
   suppliesReport?: { item: string; needed: number; status: "ok" | "missing" | "replenished" }[];
   checklistItems?: { id: string; label: string; done: boolean; type: "general" | "appliance" }[];
+  // Datos de la reserva asociada (para el header de la tarjeta)
+  bookingId?: string;
+  bookingChannel?: string;       // "airbnb" | "vrbo" | "booking" | "manual" | "block"
+  bookingChannelCode?: string;   // ej. HMNFA2954Y, codigo del canal
+  bookingCheckIn?: string;       // ISO date — entrada del huesped saliente
+  bookingCheckOut?: string;      // ISO date — checkout (== dueDate)
+  guestPhone?: string;
 }
 
 interface TeamMember {
@@ -392,6 +399,54 @@ export default function CleaningPanel() {
     return <Badge variant="secondary" className="bg-muted text-muted-foreground border-0">Pendiente</Badge>;
   };
 
+  // Helpers de presentacion para el header de la tarjeta de tarea ─────────
+  const CHANNEL_INFO: Record<string, { label: string; color: string }> = {
+    airbnb: { label: "Airbnb", color: "bg-rose-500" },
+    vrbo: { label: "VRBO", color: "bg-blue-500" },
+    booking: { label: "Booking.com", color: "bg-blue-700" },
+    manual: { label: "Reserva directa", color: "bg-emerald-600" },
+    direct: { label: "Reserva directa", color: "bg-emerald-600" },
+    block: { label: "Bloqueo", color: "bg-slate-500" },
+  };
+
+  const getChannelBadge = (task: CleaningTask) => {
+    const key = (task.bookingChannel ?? "manual").toLowerCase();
+    return CHANNEL_INFO[key] ?? { label: key, color: "bg-slate-500" };
+  };
+
+  const getReservationCode = (task: CleaningTask) => {
+    if (task.bookingChannelCode) return task.bookingChannelCode.toUpperCase();
+    if (task.bookingId) return `SH${task.bookingId.replace(/-/g, "").slice(0, 8).toUpperCase()}`;
+    return "MANUAL";
+  };
+
+  const formatLongDate = (iso: string) => {
+    if (!iso) return "—";
+    const d = new Date(iso + (iso.includes("T") ? "" : "T00:00:00"));
+    return d.toLocaleDateString("es-ES", {
+      weekday: "short",
+      day: "2-digit",
+      month: "short",
+    });
+  };
+
+  const formatTime12 = (time: string) => {
+    if (!time) return "";
+    const [h, m] = time.split(":").map(Number);
+    if (Number.isNaN(h)) return time;
+    const period = h >= 12 ? "PM" : "AM";
+    const h12 = ((h + 11) % 12) + 1;
+    return `${h12}:${String(m ?? 0).padStart(2, "0")} ${period}`;
+  };
+
+  const computeNights = (checkIn?: string, checkOut?: string) => {
+    if (!checkIn || !checkOut) return null;
+    const a = new Date(checkIn + (checkIn.includes("T") ? "" : "T00:00:00")).getTime();
+    const b = new Date(checkOut + (checkOut.includes("T") ? "" : "T00:00:00")).getTime();
+    if (Number.isNaN(a) || Number.isNaN(b)) return null;
+    return Math.max(1, Math.round((b - a) / (24 * 60 * 60 * 1000)));
+  };
+
   const getPriorityInfo = (task: CleaningTask) => {
     const isToday = task.dueDate === getDateStr(0);
     const isTomorrow = task.dueDate === getDateStr(1);
@@ -465,30 +520,43 @@ export default function CleaningPanel() {
   }, [tasks]);
 
   // Grid mensual: cada celda representa un dia del mes activo, con
-  // contador de tareas para que el host detecte "dias calientes" de un
-  // vistazo. Incluye las celdas vacias del inicio para alinear lunes.
+  // contador de tareas pendientes (no completadas) para que el host
+  // detecte "dias calientes" de un vistazo. Las completadas no son
+  // accionables — incluirlas ensucia la senal visual.
   const monthGrid = useMemo(() => {
     const [y, m] = activeMonth.split("-").map(Number);
     const firstDay = new Date(y, m - 1, 1);
     const lastDay = new Date(y, m, 0).getDate();
     // getDay(): 0=Dom, 1=Lun... Convertimos a semana lun=0..dom=6.
     const startWeekday = (firstDay.getDay() + 6) % 7;
-    const cells: Array<{ date: string | null; day: number | null; count: number; isToday: boolean }> = [];
+    const cells: Array<{ date: string | null; day: number | null; pending: number; total: number; isToday: boolean }> = [];
     const todayStr = getDateStr(0);
     for (let i = 0; i < startWeekday; i++) {
-      cells.push({ date: null, day: null, count: 0, isToday: false });
+      cells.push({ date: null, day: null, pending: 0, total: 0, isToday: false });
     }
     for (let day = 1; day <= lastDay; day++) {
       const date = `${activeMonth}-${String(day).padStart(2, "0")}`;
+      const dayTasks = tasks.filter((t) => t.dueDate === date);
       cells.push({
         date,
         day,
-        count: tasks.filter((t) => t.dueDate === date).length,
+        pending: dayTasks.filter((t) => t.status !== "completed").length,
+        total: dayTasks.length,
         isToday: date === todayStr,
       });
     }
     return cells;
   }, [activeMonth, tasks]);
+
+  // "Hoy" para el calendario: vuelve al mes actual + selecciona el dia
+  // de hoy. Necesario porque al navegar 6 meses adelante el host
+  // perderia el ancla sin esto.
+  const goToToday = () => {
+    const today = getDateStr(0);
+    const [y, m] = today.split("-");
+    setActiveMonth(`${y}-${m}`);
+    setActiveDate(today);
+  };
 
   const monthLabel = useMemo(() => {
     const [y, m] = activeMonth.split("-").map(Number);
@@ -981,7 +1049,7 @@ export default function CleaningPanel() {
           {/* Month calendar grid — vista mensual */}
           {view === "month" && (
             <div className="space-y-3 bg-white rounded-2xl border border-muted p-4 shadow-soft">
-              <div className="flex items-center justify-between">
+              <div className="flex items-center justify-between gap-2">
                 <button
                   onClick={() => shiftMonth(-1)}
                   className="p-2 rounded-xl hover:bg-slate-100 transition-colors"
@@ -989,9 +1057,19 @@ export default function CleaningPanel() {
                 >
                   <ChevronLeft className="h-4 w-4 text-slate-600" />
                 </button>
-                <span className="font-bold uppercase text-slate-700 tracking-wider text-sm">
-                  {monthLabel}
-                </span>
+                <div className="flex items-center gap-2 flex-1 justify-center">
+                  <span className="font-bold uppercase text-slate-700 tracking-wider text-sm">
+                    {monthLabel}
+                  </span>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={goToToday}
+                    className="h-7 text-[11px] font-bold border-primary/30 text-primary hover:bg-primary/5 px-3"
+                  >
+                    Hoy
+                  </Button>
+                </div>
                 <button
                   onClick={() => shiftMonth(1)}
                   className="p-2 rounded-xl hover:bg-slate-100 transition-colors"
@@ -1011,6 +1089,7 @@ export default function CleaningPanel() {
                     return <div key={idx} className="aspect-square" />;
                   }
                   const isActive = cell.date === activeDate;
+                  const allDone = cell.total > 0 && cell.pending === 0;
                   return (
                     <button
                       key={idx}
@@ -1023,6 +1102,11 @@ export default function CleaningPanel() {
                           ? "bg-amber-50 border-amber-200"
                           : "bg-white border-muted hover:border-primary/20 hover:bg-slate-50",
                       )}
+                      title={
+                        cell.total === 0
+                          ? "Sin tareas"
+                          : `${cell.pending} pendiente${cell.pending === 1 ? "" : "s"} · ${cell.total} total`
+                      }
                     >
                       <span className={cn(
                         "text-sm font-bold",
@@ -1030,12 +1114,17 @@ export default function CleaningPanel() {
                       )}>
                         {cell.day}
                       </span>
-                      {cell.count > 0 && (
+                      {cell.pending > 0 && (
                         <span className={cn(
                           "absolute bottom-1 text-[9px] font-black px-1.5 rounded-full",
                           isActive ? "bg-primary text-white" : "bg-amber-400 text-white",
                         )}>
-                          {cell.count}
+                          {cell.pending}
+                        </span>
+                      )}
+                      {allDone && (
+                        <span className="absolute bottom-1 text-[9px] font-black px-1.5 rounded-full bg-emerald-500 text-white">
+                          ✓
                         </span>
                       )}
                     </button>
@@ -1162,6 +1251,32 @@ export default function CleaningPanel() {
 
                       {/* Content */}
                       <div className="flex-1 p-5">
+                        {/* Booking strip — codigo de reserva + canal + fecha completa */}
+                        <div className="flex flex-wrap items-center gap-2 mb-3 pb-3 border-b border-muted/60">
+                          <Badge className={cn(
+                            "text-white border-0 text-[10px] font-black tracking-wider px-2",
+                            getChannelBadge(task).color,
+                          )}>
+                            {getChannelBadge(task).label}
+                          </Badge>
+                          <span className="font-mono text-xs font-bold text-slate-700 tracking-tight">
+                            {getReservationCode(task)}
+                          </span>
+                          <span className="text-muted-foreground text-xs">·</span>
+                          <span className="text-xs font-semibold text-slate-600 flex items-center gap-1">
+                            <Calendar className="h-3 w-3" />
+                            Salida {formatLongDate(task.dueDate)} · {formatTime12(task.dueTime)}
+                          </span>
+                          {(() => {
+                            const nights = computeNights(task.bookingCheckIn, task.bookingCheckOut);
+                            return nights ? (
+                              <Badge variant="secondary" className="bg-slate-100 text-slate-700 text-[10px] h-5 font-bold border-0">
+                                {nights} {nights === 1 ? "noche" : "noches"}
+                              </Badge>
+                            ) : null;
+                          })()}
+                        </div>
+
                         <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-4 mb-4">
                           <div>
                             <div className="flex items-center gap-2 mb-1">
@@ -1172,6 +1287,12 @@ export default function CleaningPanel() {
                               <MapPin className="h-3.5 w-3.5" />
                               {task.address}
                             </div>
+                            {task.bookingCheckIn && (
+                              <div className="flex items-center gap-1.5 text-xs text-slate-500 mt-1.5">
+                                <Clock className="h-3 w-3" />
+                                Estancia: {formatLongDate(task.bookingCheckIn)} → {formatLongDate(task.dueDate)}
+                              </div>
+                            )}
                           </div>
                           <div className="flex flex-col items-end gap-2">
                             {getStatusBadge(task)}
@@ -1238,32 +1359,42 @@ export default function CleaningPanel() {
                            </div>
 
                            {/* Guest Info (Out/In) */}
-                           <div className="flex-1 px-4 py-2 bg-slate-50 border border-slate-100 rounded-xl flex items-center justify-between">
-                              <div className="flex items-center gap-3">
-                                 <div className="h-8 w-8 rounded-full bg-white flex items-center justify-center text-slate-400 shadow-sm">
+                           <div className="flex-1 px-4 py-2 bg-slate-50 border border-slate-100 rounded-xl flex items-center justify-between gap-3">
+                              <div className="flex items-center gap-3 min-w-0">
+                                 <div className="h-8 w-8 rounded-full bg-white flex items-center justify-center text-slate-400 shadow-sm flex-shrink-0">
                                     <User className="h-4 w-4" />
                                  </div>
-                                 <div className="flex flex-col sm:flex-row sm:items-center sm:gap-6">
-                                    <div>
+                                 <div className="flex flex-col sm:flex-row sm:items-center sm:gap-6 min-w-0">
+                                    <div className="min-w-0">
                                        <p className="text-[9px] uppercase text-muted-foreground font-bold leading-none mb-1">
-                                         Salida: {task.dueTime}
+                                         Huésped saliente {task.guestCount ? `· ${task.guestCount} pax` : ""}
                                        </p>
-                                       <p className="text-xs font-bold truncate max-w-[100px]">{task.guestName}</p>
+                                       <p className="text-sm font-bold text-slate-800 truncate">{task.guestName}</p>
                                     </div>
                                     {task.isBackToBack && task.arrivingGuestName && (
-                                       <div className="pt-2 sm:pt-0 sm:pl-4 sm:border-l border-slate-200">
+                                       <div className="pt-2 sm:pt-0 sm:pl-4 sm:border-l border-slate-200 min-w-0">
                                           <p className="text-[9px] uppercase text-emerald-600 font-bold leading-none mb-1">
-                                            Entrada hoy
+                                            Entrada hoy {task.arrivingGuestCount ? `· ${task.arrivingGuestCount} pax` : ""}
                                           </p>
-                                          <p className="text-xs font-bold text-slate-700 truncate max-w-[100px]">{task.arrivingGuestName}</p>
+                                          <p className="text-sm font-bold text-slate-700 truncate">{task.arrivingGuestName}</p>
                                        </div>
                                     )}
                                  </div>
                               </div>
-                              {task.stayDuration && (
-                                <Badge variant="secondary" className="bg-white text-[9px] h-5 font-bold border-slate-100">
-                                  {task.stayDuration} noches
-                                </Badge>
+                              {task.guestPhone && (
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  className="h-8 px-2 text-emerald-600 hover:bg-emerald-50 flex-shrink-0"
+                                  onClick={() => {
+                                    const phone = task.guestPhone!.replace(/\D/g, "");
+                                    const msg = encodeURIComponent(`Hola ${task.guestName}, te escribo de ${task.propertyName}. ¿Todo bien con tu estancia?`);
+                                    window.open(`https://wa.me/${phone}?text=${msg}`, "_blank");
+                                  }}
+                                  title="WhatsApp al huésped"
+                                >
+                                  <MessageSquare className="h-4 w-4" />
+                                </Button>
                               )}
                            </div>
 
