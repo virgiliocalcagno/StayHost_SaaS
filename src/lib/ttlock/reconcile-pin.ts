@@ -20,6 +20,39 @@ import { supabaseAdmin } from "@/lib/supabase/admin";
 
 const TTLOCK_API = process.env.TTLOCK_API_URL ?? "https://euapi.ttlock.com";
 const TTLOCK_REQUEST_TIMEOUT_MS = 5000;
+const TTLOCK_PWD_NAME_MAX = 32;
+
+/**
+ * Construye el nombre trazable que va al `keyboardPwdName` de TTLock.
+ *
+ * Formato: `<NUMERO_RESERVA> - <NOMBRE_HUESPED>`. Ejemplos:
+ *   SH75E74DEE - yo                       (reserva directa StayHost)
+ *   HMF5B83RFW - Reserva Confirmada       (iCal Airbnb sin nombre real)
+ *   HMZFMHKXSM - Juan Perez               (iCal Airbnb con nombre)
+ *   A95CC9C9 - Maria                      (manual sin channel_code → bookingId)
+ *
+ * Reglas:
+ * - Sin prefijo SH#: el formato del channel_code (SH..., HM..., VRBO...)
+ *   ya identifica el origen sin ruido visual.
+ * - 32 chars max (limite TTLock). Si el nombre no entra, se trunca al
+ *   final — el codigo va primero porque es la pieza critica para trazar.
+ * - Fallback a `Reserva` si no hay guest_name (caso bloqueos).
+ */
+export function buildPinTrazableName(args: {
+  channelCode: string | null;
+  bookingId: string | null;
+  guestName: string | null;
+}): string {
+  const { channelCode, bookingId, guestName } = args;
+  const code =
+    channelCode ??
+    (bookingId
+      ? bookingId.replace(/-/g, "").slice(0, 8).toUpperCase()
+      : "MANUAL");
+  const name = (guestName ?? "Reserva").trim() || "Reserva";
+  const full = `${code} - ${name}`;
+  return full.slice(0, TTLOCK_PWD_NAME_MAX);
+}
 
 type TokenResponse = {
   access_token?: string;
@@ -292,11 +325,11 @@ export async function reconcileTTLockPin(pinId: string): Promise<ReconcileResult
       .eq("id", pin.booking_id)
       .maybeSingle();
     const channelCode = (bk as { channel_code?: string | null } | null)?.channel_code ?? null;
-    const traceId = channelCode ?? pin.booking_id.replace(/-/g, "").slice(0, 8).toUpperCase();
-    const guestShort = (pin.guest_name ?? "Huesped").slice(0, 18);
-    // Mismo criterio que sync-pin: SH# solo si traceId no empieza con SH.
-    const renamePrefix = traceId.startsWith("SH") ? "" : "SH#";
-    const newName = `${renamePrefix}${traceId} ${guestShort}`.slice(0, 32);
+    const newName = buildPinTrazableName({
+      channelCode,
+      bookingId: pin.booking_id,
+      guestName: pin.guest_name,
+    });
     const renameRes = await renameKeyboardPwd({
       accessToken,
       clientId,
@@ -366,20 +399,21 @@ export async function renamePinToTrazable(pinId: string): Promise<RenameResult> 
   const clientId = process.env.TTLOCK_CLIENT_ID;
   if (!clientId) return { ok: false, reason: "no_token", detail: "TTLOCK_CLIENT_ID no configurado" };
 
-  // Construir el nombre trazable nuevo (mismo criterio que sync-pin.ts).
-  let traceId = "manual";
+  // Construir el nombre trazable nuevo via helper compartido.
+  let channelCode: string | null = null;
   if (pin.booking_id) {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const { data: bk } = await (supabaseAdmin.from("bookings") as any)
       .select("channel_code")
       .eq("id", pin.booking_id)
       .maybeSingle();
-    const channelCode = (bk as { channel_code?: string | null } | null)?.channel_code ?? null;
-    traceId = channelCode ?? pin.booking_id.replace(/-/g, "").slice(0, 8).toUpperCase();
+    channelCode = (bk as { channel_code?: string | null } | null)?.channel_code ?? null;
   }
-  const guestShort = (pin.guest_name ?? "Huesped").slice(0, 18);
-  const prefix = traceId.startsWith("SH") ? "" : "SH#";
-  const newName = `${prefix}${traceId} ${guestShort}`.slice(0, 32);
+  const newName = buildPinTrazableName({
+    channelCode,
+    bookingId: pin.booking_id,
+    guestName: pin.guest_name,
+  });
 
   const renameRes = await renameKeyboardPwd({
     accessToken,

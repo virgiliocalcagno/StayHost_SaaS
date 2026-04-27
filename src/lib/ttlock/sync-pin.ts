@@ -23,7 +23,7 @@
 
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { deleteTTLockPin } from "./delete-pin";
-import { reconcileTTLockPin, isTTLockAlreadyExistsError } from "./reconcile-pin";
+import { reconcileTTLockPin, isTTLockAlreadyExistsError, buildPinTrazableName } from "./reconcile-pin";
 
 const TTLOCK_API = process.env.TTLOCK_API_URL ?? "https://euapi.ttlock.com";
 const MAX_ATTEMPTS = 6;
@@ -266,23 +266,20 @@ export async function syncPinToLock(pinId: string): Promise<SyncPinResult> {
   // existe ese codigo" se pueda identificar de que reserva vino con un
   // SELECT directo en bookings. TTLock acepta hasta 32 caracteres en este
   // campo, asi que trim agresivo.
-  let traceId = "manual";
+  let channelCode: string | null = null;
   if (pin.booking_id) {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const { data: bk } = await (supabaseAdmin.from("bookings") as any)
       .select("channel_code")
       .eq("id", pin.booking_id)
       .maybeSingle();
-    const channelCode = (bk as { channel_code?: string | null } | null)?.channel_code ?? null;
-    traceId = channelCode ?? pin.booking_id.replace(/-/g, "").slice(0, 8).toUpperCase();
+    channelCode = (bk as { channel_code?: string | null } | null)?.channel_code ?? null;
   }
-  const guestShort = (pin.guest_name ?? "Huesped").slice(0, 18);
-  // Si el traceId ya empieza con "SH" (channel_code de reserva directa),
-  // omitimos el prefijo SH# para no quedar con SH#SH... redundante. Para
-  // canales externos (Airbnb HM..., VRBO, etc.) o bookingIds, el SH# vale
-  // porque distingue PINs de StayHost de los manuales (ej. "ismairi").
-  const prefix = traceId.startsWith("SH") ? "" : "SH#";
-  const keyboardPwdName = `${prefix}${traceId} ${guestShort}`.slice(0, 32);
+  const keyboardPwdName = buildPinTrazableName({
+    channelCode,
+    bookingId: pin.booking_id,
+    guestName: pin.guest_name,
+  });
 
   const startDate = new Date(pin.valid_from).getTime();
   const endDate = new Date(pin.valid_to).getTime();
