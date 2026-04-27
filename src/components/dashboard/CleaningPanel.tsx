@@ -153,7 +153,7 @@ const MOCK_TEAM: TeamMember[] = [
 
 
 export default function CleaningPanel() {
-  const [view, setView] = useState<"day" | "week" | "month" | "validate">("day");
+  const [view, setView] = useState<"day" | "week" | "month" | "validate" | "unassigned">("day");
   const [activeMonth, setActiveMonth] = useState<string>(() => {
     const d = new Date();
     return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
@@ -340,6 +340,17 @@ export default function CleaningPanel() {
         short: "a validar",
       };
     }
+    if (view === "unassigned") {
+      // Urgentes sin asignar: rango abierto, el filtro real es por
+      // proximidad temporal (proximas 24h). Lo que importa es que el
+      // owner las vea juntas y las pueda asignar de un saque.
+      return {
+        start: "0000-00-00",
+        end: "9999-12-31",
+        label: "Sin asignar urgente",
+        short: "sin asignar",
+      };
+    }
     const [y, m] = activeMonth.split("-").map(Number);
     const lastDay = new Date(y, m, 0).getDate();
     const monthName = new Date(y, m - 1, 1)
@@ -413,6 +424,24 @@ export default function CleaningPanel() {
     // calendario quedan como ancla visual.
     if (view === "validate") {
       result = result.filter(t => t.isWaitingValidation === true);
+    } else if (view === "unassigned") {
+      // Mismo criterio que stats.unassignedUrgent: sin asignar y con
+      // checkout en las proximas 24h (incluye atrasadas).
+      const now = Date.now();
+      result = result.filter(t => {
+        if (t.assigneeId) return false;
+        if (getEffectiveStatus(t) === "completed") return false;
+        const [hStr, mStr] = (t.dueTime || "11:00").split(":");
+        const [yr, mo, dy] = t.dueDate.split("-").map(Number);
+        const checkout = new Date(
+          yr,
+          (mo || 1) - 1,
+          dy || 1,
+          parseInt(hStr, 10) || 11,
+          parseInt(mStr, 10) || 0,
+        );
+        return (checkout.getTime() - now) / (1000 * 60 * 60) < 24;
+      });
     } else if (view === "day") {
       result = result.filter(t => t.dueDate === getDateStr(0));
     } else if (view === "week" || view === "month") {
@@ -433,6 +462,11 @@ export default function CleaningPanel() {
       // de aprobar es la que lleva mas tiempo esperando).
       if (view === "validate") {
         return a.dueDate.localeCompare(b.dueDate);
+      }
+      // En vista unassigned: la mas cercana al checkout primero (mas
+      // urgente de asignar). Mismo criterio temporal que el helper.
+      if (view === "unassigned") {
+        return a.dueDate.localeCompare(b.dueDate) || (a.dueTime || "").localeCompare(b.dueTime || "");
       }
       // En week/month: primero por fecha asc (orden cronologico para que
       // los headers de dia salgan en orden), despues por prioridad desc
@@ -1227,17 +1261,13 @@ export default function CleaningPanel() {
 
       {/* ─── Banner critico: tareas sin asignar con checkout < 24h ───────
           Es lo primero que el owner ve al abrir el modulo si hay riesgo
-          real. Click → filtra el cronograma a las urgentes para resolver
-          en el acto. Solo aparece cuando hay > 0. */}
-      {stats.unassignedUrgent > 0 && (
+          real. Click → cambia el cronograma a una vista filtrada que
+          muestra SOLO esas urgentes ordenadas de mas cercana a mas
+          lejana. Vuelve a "Diaria" cuando el owner clickea otra pestana. */}
+      {stats.unassignedUrgent > 0 && view !== "unassigned" && (
         <button
           type="button"
-          onClick={() => {
-            setView("day");
-            // El cronograma de "day" muestra tareas de hoy. Si la urgente
-            // es de hoy aparece directo; si es de manana, queda en
-            // semanal. Mantenemos simple: alertar y dejar al owner navegar.
-          }}
+          onClick={() => setView("unassigned")}
           className="w-full flex items-center gap-3 px-5 py-3.5 rounded-2xl bg-gradient-to-r from-rose-500 to-rose-600 text-white shadow-lg shadow-rose-200 hover:shadow-rose-300 transition-all animate-pulse-gentle text-left"
         >
           <div className="p-2 bg-white/20 rounded-xl flex-shrink-0">
@@ -1249,11 +1279,37 @@ export default function CleaningPanel() {
               {" "}con checkout en las proximas 24h
             </p>
             <p className="text-xs text-white/90 font-medium mt-0.5">
-              Riesgo de que la propiedad no se limpie a tiempo. Asignale staff ya.
+              Click para ver y asignar staff ahora
             </p>
           </div>
           <ArrowRight className="h-5 w-5 flex-shrink-0" />
         </button>
+      )}
+
+      {/* Breadcrumb cuando estamos en la vista filtrada — para que el
+          owner sepa donde esta y como volver al cronograma normal. */}
+      {view === "unassigned" && (
+        <div className="flex items-center justify-between gap-3 px-4 py-3 rounded-2xl bg-rose-50 border border-rose-200">
+          <div className="flex items-center gap-2.5">
+            <AlertTriangle className="h-5 w-5 text-rose-600 flex-shrink-0" />
+            <div>
+              <p className="font-black text-sm text-rose-900">
+                Sin asignar urgente · proximas 24h
+              </p>
+              <p className="text-xs text-rose-700/80">
+                Asignale staff y volve a la vista normal
+              </p>
+            </div>
+          </div>
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-8 border-rose-300 text-rose-700 hover:bg-rose-100"
+            onClick={() => setView("day")}
+          >
+            Volver al cronograma
+          </Button>
+        </div>
       )}
 
       {/* ─── Top Dashboard Stats ────────────────────────────────────────── */}
@@ -1480,7 +1536,7 @@ export default function CleaningPanel() {
                 }
                 const todayStr = getDateStr(0);
                 const tomorrowStr = getDateStr(1);
-                const showHeaders = view === "week" || view === "month" || view === "validate";
+                const showHeaders = view === "week" || view === "month" || view === "validate" || view === "unassigned";
 
                 return filteredTasks.map((task, idx) => {
                   const priority = getPriorityInfo(task);
@@ -1792,6 +1848,24 @@ export default function CleaningPanel() {
                   <p className="text-emerald-700/70 max-w-xs mx-auto mt-1">
                     El staff no envio reportes pendientes. Cuando completen una limpieza apareceran aca para que las apruebes.
                   </p>
+                </div>
+              ) : view === "unassigned" ? (
+                <div className="text-center py-20 bg-emerald-50/40 rounded-3xl border-2 border-dashed border-emerald-200">
+                  <div className="h-16 w-16 bg-emerald-100 rounded-full flex items-center justify-center mx-auto mb-4">
+                    <CheckCircle2 className="h-8 w-8 text-emerald-600" />
+                  </div>
+                  <h4 className="font-semibold text-lg text-emerald-900">Todo bajo control</h4>
+                  <p className="text-emerald-700/70 max-w-xs mx-auto mt-1">
+                    No hay tareas sin asignar con checkout en las proximas 24h. Buen trabajo.
+                  </p>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="mt-4 h-9 border-emerald-300 text-emerald-700 hover:bg-emerald-100"
+                    onClick={() => setView("day")}
+                  >
+                    Volver al cronograma
+                  </Button>
                 </div>
               ) : (
                 <div className="text-center py-20 bg-muted/20 rounded-3xl border-2 border-dashed border-muted">
