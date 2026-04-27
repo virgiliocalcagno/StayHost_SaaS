@@ -63,6 +63,7 @@ import { getTeam, getProperties, type RawTeamMember } from "@/services/apiServic
 // Nuevos componentes universales de Staff
 import { StaffWizard } from "@/components/staff-ui/StaffWizard";
 import { StaffTaskDetail } from "@/components/staff-ui/StaffTaskDetail";
+import { CleaningTaskDetailModal } from "@/components/dashboard/CleaningTaskDetailModal";
 
 // ─── Interfaces ─────────────────────────────────────────────────────────────
 
@@ -107,6 +108,8 @@ interface CleaningTask {
   bookingCheckIn?: string;       // ISO date — entrada del huesped saliente
   bookingCheckOut?: string;      // ISO date — checkout (== dueDate)
   guestPhone?: string;
+  createdAt?: string;            // ISO timestamp — creacion de la tarea (audit log)
+  updatedAt?: string;            // ISO timestamp — ultima modificacion (audit log)
 }
 
 interface TeamMember {
@@ -746,6 +749,54 @@ export default function CleaningPanel() {
         m.id === task.assigneeId ? { ...m, completedTasks: m.completedTasks + 1, tasksToday: Math.max(0, m.tasksToday - 1) } : m
       ));
     }
+  };
+
+  // ─── Detail modal — owner-side drawer con auditoria + checklist + fotos ──
+  const [detailTaskId, setDetailTaskId] = useState<string | null>(null);
+  const detailTask = useMemo(
+    () => tasks.find(t => t.id === detailTaskId) ?? null,
+    [tasks, detailTaskId],
+  );
+
+  const handleReassignFromDetail = (taskId: string, memberId: string | null) => {
+    const member = memberId ? team.find(m => m.id === memberId) : null;
+    setTasks(prev => prev.map(t =>
+      t.id === taskId
+        ? {
+            ...t,
+            assigneeId: member?.id,
+            assigneeName: member?.name,
+            assigneeAvatar: member?.avatar,
+            status: member ? (t.status === "unassigned" ? "assigned" : t.status) : "unassigned",
+          }
+        : t,
+    ));
+    patchTask(taskId, {
+      assigneeId: member?.id ?? null,
+      assigneeName: member?.name ?? null,
+      assigneeAvatar: member?.avatar ?? null,
+      status: member ? "assigned" : "unassigned",
+    });
+  };
+
+  const handleReopenFromDetail = (taskId: string) => {
+    setTasks(prev => prev.map(t =>
+      t.id === taskId
+        ? { ...t, status: t.assigneeId ? "assigned" : "unassigned", isWaitingValidation: false }
+        : t,
+    ));
+    const t = tasks.find(x => x.id === taskId);
+    patchTask(taskId, {
+      status: t?.assigneeId ? "assigned" : "unassigned",
+      isWaitingValidation: false,
+    });
+  };
+
+  const handleMarkUrgentFromDetail = (taskId: string) => {
+    setTasks(prev => prev.map(t =>
+      t.id === taskId ? { ...t, priority: "critical" } : t,
+    ));
+    patchTask(taskId, { priority: "critical" });
   };
 
   // ─── Staff Views Renderers ───────────────────────────────────────────────
@@ -1433,7 +1484,12 @@ export default function CleaningPanel() {
                                 className="h-1.5"
                               />
                            </div>
-                           <Button variant="outline" size="sm" className="h-9 gap-2 group/btn">
+                           <Button
+                              variant="outline"
+                              size="sm"
+                              className="h-9 gap-2 group/btn"
+                              onClick={() => setDetailTaskId(task.id)}
+                            >
                                {isWaitingReview ? "Validar Reporte" : "Ver Detalles"}
                                <ChevronRight className="h-3 w-3 transition-transform group-hover/btn:translate-x-1" />
                             </Button>
@@ -1736,6 +1792,23 @@ export default function CleaningPanel() {
           </div>
         </div>
       )}
+
+      {/* ─── Detail drawer (owner-side) ──────────────────────────────────── */}
+      <CleaningTaskDetailModal
+        task={detailTask}
+        team={team.map(m => ({ id: m.id, name: m.name, avatar: m.avatar, phone: m.phone }))}
+        properties={properties.map(p => ({
+          id: p.id,
+          name: p.name,
+          bedConfiguration: p.bedConfiguration,
+          evidenceCriteria: p.evidenceCriteria,
+        }))}
+        onClose={() => setDetailTaskId(null)}
+        onReassign={handleReassignFromDetail}
+        onValidate={(taskId) => { handleValidateTask(taskId); setDetailTaskId(null); }}
+        onReopen={(taskId) => { handleReopenFromDetail(taskId); setDetailTaskId(null); }}
+        onMarkUrgent={handleMarkUrgentFromDetail}
+      />
     </div>
   );
 }

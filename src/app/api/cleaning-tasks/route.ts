@@ -43,6 +43,8 @@ type CleaningTaskRow = {
   stay_duration: number | null;
   arriving_guest_name: string | null;
   arriving_guest_count: number | null;
+  created_at: string | null;
+  updated_at: string | null;
 };
 
 // GET /api/cleaning-tasks
@@ -175,6 +177,9 @@ export async function GET() {
       bookingCheckIn: booking?.check_in ?? undefined,
       bookingCheckOut: booking?.check_out ?? undefined,
       guestPhone: booking?.guest_phone ?? undefined,
+      // Timestamps para el audit log del modal de detalle
+      createdAt: t.created_at ?? undefined,
+      updatedAt: t.updated_at ?? undefined,
     };
   });
 
