@@ -378,16 +378,23 @@ export async function PATCH(req: NextRequest) {
       await cascadeCancelBooking(bookingId);
     }
 
-    // Sincronizar cleaning_task de bloqueos cuando cambian flag, tipo o
-    // check_out. ensureCleaningTaskForBlock hace upsert: si la task ya
-    // existe (no-completed), updatea label y due_date; si no, la crea.
-    // - requires_cleaning true → ensure (insert o update segun caso)
-    // - requires_cleaning false → quitar task pendiente
-    if ("requires_cleaning" in patch || "block_type" in patch || patch.check_out) {
+    // Sincronizar cleaning_task asociada cuando cambian campos relevantes.
+    // Dos paths segun source:
+    //   - block: ensure/remove segun requires_cleaning, label segun
+    //     block_type. Helper hace UPDATE in-place si la task ya existia.
+    //   - reserva real: UPDATE de due_date (si cambio check_out) y
+    //     guest_name (si cambio el nombre). Preserva id e historial de la
+    //     task. No tocamos completed (historial inmutable).
+    const taskTriggers =
+      "requires_cleaning" in patch ||
+      "block_type" in patch ||
+      patch.check_out ||
+      patch.guest_name;
+    if (taskTriggers) {
       try {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const { data: bk } = await (supabaseAdmin.from("bookings") as any)
-          .select("source, property_id, tenant_id, check_out, block_type, requires_cleaning")
+          .select("source, property_id, tenant_id, check_out, block_type, requires_cleaning, guest_name")
           .eq("id", bookingId)
           .single();
         if (bk && bk.source === "block") {
@@ -403,9 +410,23 @@ export async function PATCH(req: NextRequest) {
           } else {
             await removeCleaningTaskForBlock({ supabase: supabaseAdmin, bookingId });
           }
+        } else if (bk) {
+          // Reserva real: UPDATE inline. Solo aplicamos los campos que
+          // cambiaron para no sobrescribir cosas que el host pudo haber
+          // ajustado a mano en el panel de Limpiezas (priority, notas).
+          const taskPatch: Record<string, unknown> = {};
+          if (patch.check_out) taskPatch.due_date = bk.check_out;
+          if (patch.guest_name) taskPatch.guest_name = bk.guest_name;
+          if (Object.keys(taskPatch).length > 0) {
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            await (supabaseAdmin.from("cleaning_tasks") as any)
+              .update(taskPatch)
+              .eq("booking_id", bookingId)
+              .neq("status", "completed");
+          }
         }
       } catch (taskErr) {
-        console.error("[bookings/PATCH] block task sync failed (non-fatal):", taskErr);
+        console.error("[bookings/PATCH] cleaning task sync failed (non-fatal):", taskErr);
       }
     }
 
