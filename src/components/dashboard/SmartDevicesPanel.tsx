@@ -37,6 +37,8 @@ import {
   CHANNEL_LABELS,
   CHANNEL_COLORS,
   batteryColor,
+  BATTERY_CRITICAL_THRESHOLD,
+  BATTERY_WARNING_THRESHOLD,
   isExpiredPin,
   formatDateTime,
   localInputToIso,
@@ -383,7 +385,10 @@ export default function SmartDevicesPanel() {
   };
   const online = devices.filter(isDeviceFullyOnline).length;
   const offline = devices.length - online;
-  const lowBattery = devices.filter((d) => (d.battery ?? 100) <= 20).length;
+  // Counter "Bateria baja" = todas las que necesitan atencion (<=50%).
+  // Las criticas (<=30%) se distinguen por color rojo en la card y por
+  // alerta separada en el panel "Alertas Activas".
+  const lowBattery = devices.filter((d) => (d.battery ?? 100) <= BATTERY_WARNING_THRESHOLD).length;
   const activePins = pins.filter((p) => p.status === "active" && !isExpiredPin(p.validTo)).length;
 
   // ── Remote unlock (server-side via account) ────────────────────────────────
@@ -1023,12 +1028,27 @@ export default function SmartDevicesPanel() {
                   <h4 className="font-bold text-sm">Alertas Activas</h4>
                 </div>
                 <div className="space-y-2">
-                  {devices.filter((d) => (d.battery ?? 100) <= 20).map((d) => (
-                    <div key={d.id} className="flex items-center gap-2 p-2 rounded-xl bg-red-500/10 border border-red-500/20">
+                  {/* Bateria critica: <= 30% — riesgo de cerradura no
+                      funcional, cambio inmediato. */}
+                  {devices.filter((d) => (d.battery ?? 100) <= BATTERY_CRITICAL_THRESHOLD).map((d) => (
+                    <div key={`bat-crit-${d.id}`} className="flex items-center gap-2 p-2 rounded-xl bg-red-500/15 border border-red-500/30">
                       <Battery className="h-3.5 w-3.5 text-red-400 shrink-0" />
                       <div className="flex-1 min-w-0">
                         <p className="text-[11px] font-bold truncate">{d.name}</p>
-                        <p className="text-[9px] text-red-400">{d.battery}% — Cambiar batería pronto</p>
+                        <p className="text-[9px] text-red-300">{d.battery}% — CAMBIO INMEDIATO · puede no funcionar</p>
+                      </div>
+                    </div>
+                  ))}
+                  {/* Bateria media: 31-50% — cambio pronto, sigue funcionando. */}
+                  {devices.filter((d) => {
+                    const pct = d.battery ?? 100;
+                    return pct > BATTERY_CRITICAL_THRESHOLD && pct <= BATTERY_WARNING_THRESHOLD;
+                  }).map((d) => (
+                    <div key={`bat-warn-${d.id}`} className="flex items-center gap-2 p-2 rounded-xl bg-amber-500/10 border border-amber-500/20">
+                      <Battery className="h-3.5 w-3.5 text-amber-400 shrink-0" />
+                      <div className="flex-1 min-w-0">
+                        <p className="text-[11px] font-bold truncate">{d.name}</p>
+                        <p className="text-[9px] text-amber-400">{d.battery}% — cambio pronto</p>
                       </div>
                     </div>
                   ))}
@@ -1097,7 +1117,7 @@ export default function SmartDevicesPanel() {
                   {/* "Todo en orden" solo si NINGUNA alerta critica. Ojo:
                       ahora el chequeo incluye gateway y PINs criticos. */}
                   {devices.length > 0 &&
-                    devices.every((d) => d.online && (d.battery ?? 100) > 20) &&
+                    devices.every((d) => d.online && (d.battery ?? 100) > BATTERY_WARNING_THRESHOLD) &&
                     devices
                       .filter((d) => d.type === "lock_ttlock")
                       .every((d) => {
