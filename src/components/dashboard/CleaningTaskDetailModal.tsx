@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useMemo } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import {
   Sheet,
   SheetContent,
@@ -39,6 +39,8 @@ import {
   Sparkles,
   ListChecks,
   History,
+  KeyRound,
+  DoorOpen,
   X,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -318,17 +320,16 @@ export function CleaningTaskDetailModal({
   const handleShareAccessWithStaff = async () => {
     if (!task || !property) return;
 
-    // Si hay TTLock + staff asignado, intentamos buscar su PIN cíclico para
-    // incluirlo en el mensaje. Best-effort — si falla la llamada o no hay
-    // asignación, el helper deja el placeholder genérico.
+    // PIN fijo del staff por propiedad. Best-effort — si no hay asignación,
+    // el helper deja el placeholder genérico.
     let staffPinCode: string | undefined;
     if (property.ttlockLockId && task.assigneeId) {
       try {
         const url = `/api/staff-access?team_member_id=${encodeURIComponent(task.assigneeId)}&property_id=${encodeURIComponent(task.propertyId)}`;
         const res = await fetch(url, { credentials: "same-origin" });
         if (res.ok) {
-          const data = await res.json() as { assignments?: Array<{ access_pins?: { pin?: string } }> };
-          const pin = data.assignments?.[0]?.access_pins?.pin;
+          const data = await res.json() as { assignments?: Array<{ pin_code?: string }> };
+          const pin = data.assignments?.[0]?.pin_code;
           if (pin) staffPinCode = pin;
         }
       } catch {
@@ -359,6 +360,37 @@ export function CleaningTaskDetailModal({
     );
     void shareAccessMessage(text, assignedMember?.phone);
   };
+
+  // Aperturas de la cerradura para esta propiedad en el día de la tarea.
+  // Solo si la propiedad tiene TTLock — si no, ni mostramos el bloque.
+  type LockOpening = {
+    id: number;
+    timestamp: string;
+    recordType: number | null;
+    success: number | null;
+    keyboardPwd: string | null;
+    username: string | null;
+    who: { kind: "staff" | "guest" | "owner" | "unknown"; name: string };
+  };
+  const [openings, setOpenings] = useState<LockOpening[]>([]);
+  const [openingsLoading, setOpeningsLoading] = useState(false);
+  useEffect(() => {
+    if (!task || !property?.ttlockLockId) {
+      setOpenings([]);
+      return;
+    }
+    let cancelled = false;
+    setOpeningsLoading(true);
+    const url = `/api/ttlock-events?property_id=${encodeURIComponent(task.propertyId)}&date=${encodeURIComponent(task.dueDate)}`;
+    fetch(url, { credentials: "same-origin" })
+      .then((r) => r.json())
+      .then((data: { events?: LockOpening[] }) => {
+        if (!cancelled) setOpenings(data.events ?? []);
+      })
+      .catch(() => { if (!cancelled) setOpenings([]); })
+      .finally(() => { if (!cancelled) setOpeningsLoading(false); });
+    return () => { cancelled = true; };
+  }, [task, property?.ttlockLockId, task?.propertyId, task?.dueDate]);
 
   const checklistStats = useMemo(() => {
     if (!task?.checklistItems || task.checklistItems.length === 0) {
@@ -755,6 +787,76 @@ export function CleaningTaskDetailModal({
                 <Wrench className="h-4 w-4 mr-2" />
                 Crear ticket de mantenimiento
               </Button>
+            </Section>
+          )}
+
+          {/* Aperturas de la cerradura del día — solo si la propiedad tiene TTLock */}
+          {property?.ttlockLockId && (
+            <Section
+              icon={DoorOpen}
+              title="Aperturas del día"
+              badge={openings.length > 0 ? String(openings.length) : undefined}
+            >
+              {openingsLoading ? (
+                <p className="text-xs text-slate-400 italic">Cargando aperturas...</p>
+              ) : openings.length === 0 ? (
+                <p className="text-xs text-slate-400 italic">
+                  Sin aperturas registradas hoy. Cuando alguien abra con su PIN, aparecerá acá.
+                </p>
+              ) : (
+                <ul className="space-y-2">
+                  {openings.map((ev) => {
+                    const time = new Date(ev.timestamp).toLocaleTimeString("es", {
+                      hour: "2-digit",
+                      minute: "2-digit",
+                    });
+                    const failed = ev.success !== null && ev.success !== 1;
+                    const tone =
+                      ev.who.kind === "staff"
+                        ? "bg-amber-50 border-amber-200 text-amber-900"
+                        : ev.who.kind === "guest"
+                          ? "bg-emerald-50 border-emerald-200 text-emerald-900"
+                          : ev.who.kind === "owner"
+                            ? "bg-sky-50 border-sky-200 text-sky-900"
+                            : "bg-slate-50 border-slate-200 text-slate-700";
+                    const label =
+                      ev.who.kind === "staff"
+                        ? "Limpieza"
+                        : ev.who.kind === "guest"
+                          ? "Huésped"
+                          : ev.who.kind === "owner"
+                            ? "Owner"
+                            : "Desconocido";
+                    return (
+                      <li
+                        key={ev.id}
+                        className={cn(
+                          "flex items-center gap-3 p-2.5 rounded-lg border text-sm",
+                          tone,
+                        )}
+                      >
+                        <KeyRound className="h-4 w-4 flex-shrink-0" />
+                        <div className="flex-1 min-w-0">
+                          <p className="font-bold text-sm truncate">
+                            {ev.who.name}{" "}
+                            <span className="text-[10px] font-black uppercase tracking-widest opacity-70 ml-1">
+                              {label}
+                            </span>
+                          </p>
+                          {failed && (
+                            <p className="text-[11px] font-semibold text-rose-700">
+                              Intento fallido
+                            </p>
+                          )}
+                        </div>
+                        <span className="text-xs font-mono font-bold whitespace-nowrap">
+                          {time}
+                        </span>
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
             </Section>
           )}
 

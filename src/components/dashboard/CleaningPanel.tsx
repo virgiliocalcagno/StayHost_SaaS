@@ -231,6 +231,18 @@ export default function CleaningPanel() {
     }).catch(() => {});
   };
 
+  // Reconcilia el access_pin de TTLock para una tarea — genera o revoca
+  // según assignee/status. Idempotente. Se llama después de cambios
+  // relevantes (asignar, completar, cancelar, reabrir).
+  const syncTaskAccess = (taskId: string) => {
+    fetch("/api/staff-access/sync-task", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "same-origin",
+      body: JSON.stringify({ taskId }),
+    }).catch(() => {});
+  };
+
   const [selectedStaff, setSelectedStaff] = useState<string>("all");
   const [activeDate, setActiveDate] = useState<string>(getDateStr(0));
   const [team, setTeam] = useState<TeamMember[]>(MOCK_TEAM);
@@ -906,6 +918,7 @@ export default function CleaningPanel() {
       t.id === activeTaskId ? { ...t, status: "completed", isWaitingValidation: true, closurePhotos: tempPhotos } : t
     ));
     patchTask(activeTaskId, { status: "completed", isWaitingValidation: true, closurePhotos: tempPhotos });
+    syncTaskAccess(activeTaskId);
     setViewMode("admin");
     setActiveTaskId(null);
     setWizardStep(1);
@@ -943,6 +956,7 @@ export default function CleaningPanel() {
       t.id === taskId ? { ...t, status: "in_progress", startTime: now } : t
     ));
     patchTask(taskId, { status: "in_progress", startTime: now });
+    syncTaskAccess(taskId);
     setWizardStep(1);
   };
 
@@ -951,6 +965,7 @@ export default function CleaningPanel() {
       t.id === taskId ? { ...t, isWaitingValidation: false, status: "completed" } : t
     ));
     patchTask(taskId, { status: "completed", isWaitingValidation: false });
+    syncTaskAccess(taskId);
     const task = tasks.find(t => t.id === taskId);
     if (task?.assigneeId) {
       setTeam(prev => prev.map(m =>
@@ -1032,6 +1047,8 @@ export default function CleaningPanel() {
       assigneeAvatar: member?.avatar ?? null,
       status: nextStatus,
     });
+    // Asignación cambió → genera el PIN del staff o revoca el anterior.
+    syncTaskAccess(taskId);
   };
 
   const handleReopenFromDetail = (taskId: string) => {
@@ -1045,6 +1062,8 @@ export default function CleaningPanel() {
       status: t?.assigneeId ? "assigned" : "unassigned",
       isWaitingValidation: false,
     });
+    // Reabierta vuelve a estado activo → reactivar PIN si corresponde.
+    syncTaskAccess(taskId);
   };
 
   const handleMarkUrgentFromDetail = (taskId: string) => {
