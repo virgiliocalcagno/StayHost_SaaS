@@ -1,18 +1,18 @@
 import { supabase } from "@/lib/supabase/client";
 
 /**
- * Cierra la sesion (server + cliente) y manda al usuario a /acceso.
+ * Cierra la sesion (server + cliente + storage local) y manda al usuario
+ * a /acceso.
  *
- * Llamamos al endpoint server-side `/api/auth/signout` para que las cookies
- * de Supabase se borren via `Set-Cookie` en la respuesta — el signOut puro
- * del cliente no siempre logra eliminarlas en preview/prod, y eso provoca
- * que el siguiente request a /acceso encuentre sesion viva y haga bypass
- * del login.
- *
- * El signOut del cliente queda como fallback para limpiar el estado en
- * memoria (subscriptions, listeners). Despues forzamos full page load con
- * `window.location.assign` para que el middleware corra con la cookie ya
- * borrada — sin esto, una soft navigation puede servir RSC cacheado.
+ * El orden importa:
+ *   1. POST /api/auth/signout — borra cookies sb-* via Set-Cookie. Esta
+ *      es la unica forma confiable de eliminar las cookies de @supabase/ssr,
+ *      el signOut puro del cliente no siempre lo logra.
+ *   2. supabase.auth.signOut() — limpia listeners y estado en memoria.
+ *   3. localStorage purge — por si quedaron tokens de un Supabase legacy.
+ *   4. window.location.assign — full page load para que el middleware
+ *      corra con la cookie nueva (vacia). Sin esto una soft navigation
+ *      podria servir RSC cacheado.
  */
 export async function logoutAndRedirect(target: string = "/acceso") {
   try {
@@ -25,5 +25,15 @@ export async function logoutAndRedirect(target: string = "/acceso") {
   } catch (err) {
     console.error("[logout] client signOut failed:", err);
   }
+  try {
+    if (typeof window !== "undefined") {
+      const keys = Object.keys(window.localStorage);
+      for (const k of keys) {
+        if (k.startsWith("sb-") || k.startsWith("supabase.")) {
+          window.localStorage.removeItem(k);
+        }
+      }
+    }
+  } catch {}
   window.location.assign(target);
 }
