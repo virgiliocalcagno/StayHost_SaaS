@@ -45,13 +45,13 @@ function LoginForm() {
       if (!active) return;
       if (data.user) {
         const next = searchParams.get("next") ?? "/dashboard";
-        router.replace(next);
+        window.location.replace(next);
       }
     })();
     return () => {
       active = false;
     };
-  }, [router, searchParams]);
+  }, [searchParams]);
 
   const handleLogin = async () => {
     setError("");
@@ -81,7 +81,11 @@ function LoginForm() {
       }
 
       const next = searchParams.get("next") ?? "/dashboard";
-      router.push(next);
+      // Full page load (not router.push) so the middleware sees the freshly
+      // written session cookie. Soft navigation can hit a cached RSC payload
+      // that bypasses middleware, leaving the user "logged in" client-side
+      // but bounced back to /acceso by the next protected request.
+      window.location.assign(next);
     } catch (err) {
       console.error("[login] unexpected error:", err);
       setError("Error al iniciar sesión. Intenta de nuevo.");
