@@ -28,6 +28,21 @@ export async function POST(req: NextRequest) {
     const direct_enabled =
       channels.find((c) => c.name?.toLowerCase() === "directa")?.connected ?? property.directEnabled ?? false;
 
+    // Si la propiedad existe y tiene TTLock vinculado, leer el ttlock_account_id
+    // actual para conservarlo en el upsert. El front no lo edita desde acá
+    // (se gestiona en el panel de Dispositivos Inteligentes), entonces no
+    // viene en el body. Sin esto, el upsert sobrescribe a NULL y viola el
+    // constraint properties_lock_requires_account.
+    let preservedTtlockAccountId: string | null = null;
+    if (property.ttlockLockId) {
+      const { data: existing } = await supabase
+        .from("properties")
+        .select("ttlock_account_id")
+        .eq("id", property.id)
+        .maybeSingle<{ ttlock_account_id: string | null }>();
+      preservedTtlockAccountId = existing?.ttlock_account_id ?? null;
+    }
+
     const { data, error: propErr } = await supabase
       .from("properties")
       .upsert(
@@ -51,6 +66,7 @@ export async function POST(req: NextRequest) {
           check_out_time: property.checkOutTime ?? "12:00",
           direct_enabled,
           ttlock_lock_id: property.ttlockLockId ?? null,
+          ttlock_account_id: preservedTtlockAccountId,
           property_type: property.type ?? "apartment",
           price: property.price ?? 0,
           cleaning_fee_one_day: property.cleaningFeeOneDay ?? 0,
