@@ -58,6 +58,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
+import { logoutAndRedirect } from "@/lib/auth/logout";
 import { getTeam, getProperties, type RawTeamMember } from "@/services/apiServices";
 
 // Nuevos componentes universales de Staff
@@ -1218,10 +1219,7 @@ export default function CleaningPanel() {
           variant="outline" 
           size="sm" 
           className="fixed bottom-6 right-6 rounded-full shadow-2xl h-12 px-6 border-slate-200 bg-white"
-          onClick={() => {
-            window.history.pushState({}, '', '/dashboard');
-            window.location.reload(); 
-          }}
+          onClick={() => { void logoutAndRedirect(); }}
         >
           <LogOut className="h-4 w-4 mr-2" /> Salir del Portal
         </Button>

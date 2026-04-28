@@ -14,6 +14,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Bell, Search, Menu, Plus, ChevronDown } from "lucide-react";
 import { supabase } from "@/lib/supabase/client";
+import { logoutAndRedirect } from "@/lib/auth/logout";
 
 const MASTER_EMAIL = (process.env.NEXT_PUBLIC_MASTER_EMAIL || "virgiliocalcagno@gmail.com").trim().toLowerCase();
 
@@ -182,7 +183,15 @@ export default function DashboardHeader({ activePanel, sidebarOpen, setSidebarOp
             <DropdownMenuItem>Configuracion</DropdownMenuItem>
             <DropdownMenuItem>Facturacion</DropdownMenuItem>
             <DropdownMenuSeparator />
-            <DropdownMenuItem className="text-destructive">Cerrar Sesion</DropdownMenuItem>
+            <DropdownMenuItem
+              className="text-destructive"
+              onSelect={(e) => {
+                e.preventDefault();
+                void logoutAndRedirect();
+              }}
+            >
+              Cerrar Sesion
+            </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
       </div>

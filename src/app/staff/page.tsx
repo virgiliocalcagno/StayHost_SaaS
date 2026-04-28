@@ -3,6 +3,7 @@
 import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { cn } from "@/lib/utils";
+import { logoutAndRedirect } from "@/lib/auth/logout";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -359,11 +360,8 @@ export default function StaffPage() {
           ))
         );
       }
-      // Sign out from Supabase to clear the httpOnly cookie
-      const { supabase } = await import("@/lib/supabase/client");
-      await supabase.auth.signOut();
     } catch {}
-    router.replace("/acceso");
+    await logoutAndRedirect();
   };
 
   const toggleChecklistItem = (taskId: string, itemId: string) => {
