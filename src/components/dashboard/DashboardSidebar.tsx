@@ -318,9 +318,9 @@ export default function DashboardSidebar({
             )}
             {sidebarOpen && (
               <Button variant="ghost" size="icon" className="shrink-0" asChild>
-                <Link href="/">
+                <a href="/salir" aria-label="Cerrar sesion">
                   <LogOut className="h-4 w-4" />
-                </Link>
+                </a>
               </Button>
             )}
           </div>
