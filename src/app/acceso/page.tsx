@@ -3,6 +3,9 @@ import { Suspense } from "react";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { LoginForm } from "./LoginForm";
 
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
+
 /**
  * Login page (server component).
  *
