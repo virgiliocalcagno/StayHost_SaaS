@@ -1,8 +1,7 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -16,6 +15,8 @@ import {
   Mail,
   CheckCircle2,
   AlertCircle,
+  LogOut,
+  LayoutDashboard,
 } from "lucide-react";
 import { supabase } from "@/lib/supabase/client";
 
@@ -33,7 +34,6 @@ import { supabase } from "@/lib/supabase/client";
  * No hacemos OAuth (Google/Airbnb) por ahora — los botones quedan ocultos.
  */
 export default function RegisterPage() {
-  const router = useRouter();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [fullName, setFullName] = useState("");
@@ -42,6 +42,23 @@ export default function RegisterPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [emailSent, setEmailSent] = useState(false);
+  // null = todavia no chequeamos. Si hay user no mostramos el form,
+  // mostramos pantalla "ya tenes sesion" para evitar que un master
+  // logueado "se registre" y termine confundido viendo sus mismos datos
+  // bajo otro full_name.
+  const [activeUserEmail, setActiveUserEmail] = useState<string | null | undefined>(undefined);
+
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      const { data } = await supabase.auth.getUser();
+      if (!alive) return;
+      setActiveUserEmail(data.user?.email ?? null);
+    })();
+    return () => {
+      alive = false;
+    };
+  }, []);
 
   const canSubmit =
     email.trim().length > 0 &&
@@ -94,6 +111,52 @@ export default function RegisterPage() {
       setLoading(false);
     }
   };
+
+  // Mientras no sabemos si hay sesion, no renderizamos nada — evita el flash
+  // del form a un usuario que ya esta logueado.
+  if (activeUserEmail === undefined) {
+    return (
+      <main className="min-h-screen flex items-center justify-center bg-white">
+        <div className="h-8 w-8 border-2 border-amber-200 border-t-amber-500 rounded-full animate-spin" />
+      </main>
+    );
+  }
+
+  if (activeUserEmail) {
+    return (
+      <main className="min-h-screen flex items-center justify-center bg-white p-8">
+        <div className="max-w-md w-full text-center space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-700">
+          <div className="inline-flex items-center justify-center w-20 h-20 rounded-[2rem] bg-amber-50 border border-amber-100">
+            <CheckCircle2 className="h-10 w-10 text-amber-500" />
+          </div>
+          <div className="space-y-3">
+            <h1 className="text-3xl font-extrabold text-slate-900 tracking-tight">
+              Ya tenés una cuenta activa
+            </h1>
+            <p className="text-slate-500 font-medium leading-relaxed">
+              Estás logueado como{" "}
+              <span className="font-bold text-slate-700">{activeUserEmail}</span>
+              . Para crear una cuenta nueva primero tenés que cerrar la actual.
+            </p>
+          </div>
+          <div className="flex flex-col gap-3 pt-2">
+            <Button asChild className="w-full h-12 bg-amber-500 hover:bg-amber-600 text-white font-bold">
+              <Link href="/dashboard" className="flex items-center justify-center gap-2">
+                <LayoutDashboard className="h-4 w-4" />
+                Ir al Dashboard
+              </Link>
+            </Button>
+            <Button asChild variant="outline" className="w-full h-12 font-bold">
+              <a href="/salir" className="flex items-center justify-center gap-2">
+                <LogOut className="h-4 w-4" />
+                Cerrar sesión y registrar otra
+              </a>
+            </Button>
+          </div>
+        </div>
+      </main>
+    );
+  }
 
   if (emailSent) {
     return (
