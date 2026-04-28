@@ -88,8 +88,23 @@ export async function POST(req: NextRequest) {
       .single();
 
     if (propErr) {
+      console.error("[/api/properties/sync] upsert failed", {
+        message: propErr.message,
+        code: (propErr as { code?: string }).code,
+        details: (propErr as { details?: string }).details,
+        hint: (propErr as { hint?: string }).hint,
+        propertyId: property.id,
+        accessMethod: property.accessMethod,
+        keyboxShareWithGuest: property.keyboxShareWithGuest,
+      });
       return NextResponse.json(
-        { step: "property_upsert", error: propErr.message },
+        {
+          step: "property_upsert",
+          error: propErr.message,
+          code: (propErr as { code?: string }).code,
+          details: (propErr as { details?: string }).details,
+          hint: (propErr as { hint?: string }).hint,
+        },
         { status: 500 }
       );
     }
