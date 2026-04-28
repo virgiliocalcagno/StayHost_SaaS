@@ -187,7 +187,7 @@ export default function DashboardHeader({ activePanel, sidebarOpen, setSidebarOp
               className="text-destructive"
               onSelect={(e) => {
                 e.preventDefault();
-                void logoutAndRedirect();
+                window.location.assign("/salir");
               }}
             >
               Cerrar Sesion

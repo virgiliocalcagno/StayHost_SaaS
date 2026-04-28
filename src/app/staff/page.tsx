@@ -361,7 +361,7 @@ export default function StaffPage() {
         );
       }
     } catch {}
-    await logoutAndRedirect();
+    window.location.assign("/salir");
   };
 
   const toggleChecklistItem = (taskId: string, itemId: string) => {

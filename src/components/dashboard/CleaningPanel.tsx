@@ -1219,7 +1219,7 @@ export default function CleaningPanel() {
           variant="outline" 
           size="sm" 
           className="fixed bottom-6 right-6 rounded-full shadow-2xl h-12 px-6 border-slate-200 bg-white"
-          onClick={() => { void logoutAndRedirect(); }}
+          onClick={() => { window.location.assign("/salir"); }}
         >
           <LogOut className="h-4 w-4 mr-2" /> Salir del Portal
         </Button>
