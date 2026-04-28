@@ -19,7 +19,7 @@ export async function GET() {
   const { data, error } = await supabase
     .from("access_pins")
     .select(`
-      id, property_id, booking_id,
+      id, property_id, booking_id, team_member_id,
       ttlock_lock_id, ttlock_pwd_id,
       guest_name, guest_phone, pin,
       source, status, delivery_status,

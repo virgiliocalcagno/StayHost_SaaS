@@ -75,6 +75,7 @@ type PinRow = {
   id: string;
   property_id: string;
   booking_id: string | null;
+  team_member_id: string | null;
   ttlock_lock_id: string | null;
   ttlock_pwd_id: string | null;
   guest_name: string;
@@ -135,6 +136,7 @@ function pinRowToAccessPin(p: PinRow): AccessPin {
     validTo: p.valid_to,
     status: p.status,
     ttlockPwdId: p.ttlock_pwd_id ?? undefined,
+    teamMemberId: p.team_member_id ?? undefined,
     createdAt: p.created_at,
   };
 }
@@ -155,6 +157,7 @@ export default function SmartDevicesPanel() {
   const [properties, setProperties] = useState<PropertyRow[]>([]);
   const [accounts, setAccounts] = useState<TTLockAccountRow[]>([]);
   const [pins, setPins] = useState<AccessPin[]>([]);
+  const [showStaffHistory, setShowStaffHistory] = useState(false);
   const [liveLocks, setLiveLocks] = useState<Record<string, LockLive>>({}); // key = lockId
 
   // Legacy credentials state (only for Import Wizard, kept in localStorage)
@@ -390,6 +393,13 @@ export default function SmartDevicesPanel() {
   // alerta separada en el panel "Alertas Activas".
   const lowBattery = devices.filter((d) => (d.battery ?? 100) <= BATTERY_WARNING_THRESHOLD).length;
   const activePins = pins.filter((p) => p.status === "active" && !isExpiredPin(p.validTo)).length;
+  // Por defecto ocultamos los PINs revocados de staff — son ruido del modelo
+  // "PIN se sube a la cerradura solo cuando hay tarea". Cada cambio de tarea
+  // genera un revocado más; el toggle deja al user verlos si quiere auditar.
+  const hiddenStaffRevoked = pins.filter((p) => p.teamMemberId && p.status === "revoked").length;
+  const visiblePins = showStaffHistory
+    ? pins
+    : pins.filter((p) => !(p.teamMemberId && p.status === "revoked"));
 
   // ── Remote unlock (server-side via account) ────────────────────────────────
   const handleRemoteUnlock = useCallback(
@@ -1168,6 +1178,24 @@ export default function SmartDevicesPanel() {
               <h3 className="font-bold text-lg">Llaves de Acceso (PINs)</h3>
               <p className="text-sm text-muted-foreground">
                 {activePins} activos · {pins.length} en total
+                {hiddenStaffRevoked > 0 && !showStaffHistory && (
+                  <button
+                    type="button"
+                    onClick={() => setShowStaffHistory(true)}
+                    className="ml-2 text-xs text-amber-700 hover:text-amber-800 underline"
+                  >
+                    +{hiddenStaffRevoked} histórico de staff
+                  </button>
+                )}
+                {showStaffHistory && hiddenStaffRevoked > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => setShowStaffHistory(false)}
+                    className="ml-2 text-xs text-slate-500 hover:text-slate-700 underline"
+                  >
+                    Ocultar histórico de staff
+                  </button>
+                )}
               </p>
             </div>
             <Button
@@ -1237,7 +1265,7 @@ export default function SmartDevicesPanel() {
 
           {/* PIN list */}
           <div className="space-y-3">
-            {pins.length === 0 && (
+            {visiblePins.length === 0 && (
               <Card className="border-dashed rounded-2xl">
                 <CardContent className="py-16 text-center text-muted-foreground space-y-3">
                   <Key className="h-12 w-12 mx-auto opacity-20" />
@@ -1246,7 +1274,7 @@ export default function SmartDevicesPanel() {
                 </CardContent>
               </Card>
             )}
-            {pins.map((pin) => {
+            {visiblePins.map((pin) => {
               const expired = isExpiredPin(pin.validTo);
               const inactive = pin.status === "revoked" || expired;
               const sourceColors: Record<string, string> = {

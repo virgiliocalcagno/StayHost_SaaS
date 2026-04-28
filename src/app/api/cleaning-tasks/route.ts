@@ -242,6 +242,17 @@ export async function POST(req: NextRequest) {
     } as never);
 
     if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+
+    // Si la nueva tarea ya quedó asignada, activar el PIN del staff.
+    if (assigneeId) {
+      try {
+        const { syncStaffPinForTask } = await import("@/lib/staff-access/sync-task");
+        await syncStaffPinForTask({ supabase, tenantId, taskId: id });
+      } catch (e) {
+        console.warn("[cleaning-tasks POST] syncStaffPinForTask failed:", e);
+      }
+    }
+
     return NextResponse.json({ ok: true, id });
   } catch (err) {
     return NextResponse.json(
@@ -307,6 +318,19 @@ export async function PATCH(req: NextRequest) {
       .eq("id", id);
     if (error) return NextResponse.json({ error: error.message }, { status: 500 });
     if (!count) return NextResponse.json({ error: "Not found" }, { status: 404 });
+
+    // Si la actualización tocó status o assignee, reconciliar el PIN de
+    // staff en la cerradura. Idempotente — si nada cambió relevante para
+    // el PIN, sale rápido.
+    if (touchesStatus || touchesAssignee) {
+      try {
+        const { syncStaffPinForTask } = await import("@/lib/staff-access/sync-task");
+        await syncStaffPinForTask({ supabase, tenantId, taskId: id });
+      } catch (e) {
+        console.warn("[cleaning-tasks PATCH] syncStaffPinForTask failed:", e);
+      }
+    }
+
     return NextResponse.json({ ok: true });
   } catch (err) {
     return NextResponse.json(
