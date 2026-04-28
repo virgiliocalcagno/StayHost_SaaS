@@ -29,7 +29,7 @@ export default function CTASection() {
                   asChild
                   className="gradient-gold text-primary-foreground hover:opacity-90 transition-all text-base px-8 h-12"
                 >
-                  <Link href="/dashboard">
+                  <Link href="/register">
                     Comienza tu prueba gratis de 14 dias
                     <ArrowRight className="ml-2 h-5 w-5" />
                   </Link>

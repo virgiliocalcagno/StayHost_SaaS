@@ -126,7 +126,7 @@ export default function PricingSection() {
                   variant={plan.popular ? "default" : "outline"}
                   asChild
                 >
-                  <Link href="/dashboard">{plan.cta}</Link>
+                  <Link href="/register">{plan.cta}</Link>
                 </Button>
               </CardContent>
             </Card>

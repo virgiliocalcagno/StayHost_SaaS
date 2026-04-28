@@ -155,7 +155,7 @@ export default function FeaturesSection() {
 
         <div className="mt-24 text-center">
            <Button size="lg" className="h-16 px-10 rounded-2xl bg-amber-500 hover:bg-amber-600 text-white font-black text-lg gap-3 shadow-xl shadow-amber-500/20 group border-none">
-              <Link href="/dashboard" className="flex items-center gap-3">
+              <Link href="/register" className="flex items-center gap-3">
                  PROBAR STAYHOST GRATIS
                  <ArrowRight className="h-5 w-5 group-hover:translate-x-1 transition-transform" />
               </Link>
