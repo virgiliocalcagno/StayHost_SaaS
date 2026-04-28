@@ -33,8 +33,9 @@ import {
   LogIn, Plus, Copy, Check, Eye, EyeOff, Wifi, Zap, ShieldCheck, ShieldX,
   RefreshCw, Trash2, ExternalLink, User, Calendar, Building2, Phone,
   CheckCircle2, Clock, XCircle, AlertTriangle, QrCode, Download,
-  Sparkles, Globe, Repeat, Search, MessageCircle,
+  Sparkles, Globe, Repeat, Search, MessageCircle, KeyRound,
 } from "lucide-react";
+import { buildAccessMessageForGuest, shareAccessMessage } from "@/lib/access/share-message";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -495,7 +496,23 @@ export default function CheckInsPanel() {
   const [records, setRecords] = useState([] as LocalCheckIn[]);
   const [wifiConfigs, setWifiConfigs] = useState([] as WifiConfig[]);
   const [elecConfigs, setElecConfigs] = useState([] as ElecConfig[]);
-  const [properties, setProperties] = useState([] as { id: string; name: string; address?: string; image?: string }[]);
+  const [properties, setProperties] = useState([] as {
+    id: string;
+    name: string;
+    address?: string;
+    addressUnit?: string;
+    neighborhood?: string;
+    city?: string;
+    image?: string;
+    accessMethod?: "ttlock" | "keybox" | "in_person" | "doorman";
+    keyboxCode?: string;
+    keyboxLocation?: string;
+    keyboxPhotoUrl?: string;
+    keyboxShareWithGuest?: boolean;
+    ttlockLockId?: string;
+    checkInTime?: string;
+    checkOutTime?: string;
+  }[]);
   const [copiedId, setCopiedId] = useState(null as string | null);
   const [viewQrRecord, setViewQrRecord] = useState(null as LocalCheckIn | null);
   const [syncing, setSyncing] = useState(false);
@@ -563,7 +580,23 @@ export default function CheckInsPanel() {
     } catch {}
     try {
       const p = localStorage.getItem("stayhost_properties");
-      if (p) setProperties(JSON.parse(p).map((x: {id:string;name:string;address?:string;image?:string}) => ({ id:x.id, name:x.name, address:x.address, image:x.image })));
+      if (p) setProperties(JSON.parse(p).map((x: Record<string, unknown>) => ({
+        id: x.id as string,
+        name: x.name as string,
+        address: x.address as string | undefined,
+        addressUnit: x.addressUnit as string | undefined,
+        neighborhood: x.neighborhood as string | undefined,
+        city: x.city as string | undefined,
+        image: x.image as string | undefined,
+        accessMethod: x.accessMethod as "ttlock" | "keybox" | "in_person" | "doorman" | undefined,
+        keyboxCode: x.keyboxCode as string | undefined,
+        keyboxLocation: x.keyboxLocation as string | undefined,
+        keyboxPhotoUrl: x.keyboxPhotoUrl as string | undefined,
+        keyboxShareWithGuest: x.keyboxShareWithGuest as boolean | undefined,
+        ttlockLockId: x.ttlockLockId as string | undefined,
+        checkInTime: x.checkInTime as string | undefined,
+        checkOutTime: x.checkOutTime as string | undefined,
+      })));
     } catch {}
   }, [refreshRecords]);
 
@@ -1067,6 +1100,38 @@ export default function CheckInsPanel() {
 
     // Paralelo: copiar al portapapeles por si WhatsApp Web falla.
     navigator.clipboard.writeText(text).catch(() => {});
+  }
+
+  // Compartir las instrucciones de acceso (caja de llaves / TTLock / recepción)
+  // al huésped — es complementario a `shareWhatsApp` (que envía el link de
+  // check-in). Acá ya damos por hecho que el check-in fue completado y que el
+  // huésped necesita saber CÓMO entra al apartamento.
+  function shareAccessWhatsApp(r: LocalCheckIn) {
+    const prop = properties.find((p) => p.id === r.propertyId);
+    const text = buildAccessMessageForGuest(
+      {
+        name: r.propertyName,
+        address: prop?.address ?? r.propertyAddress,
+        addressUnit: prop?.addressUnit,
+        neighborhood: prop?.neighborhood,
+        city: prop?.city,
+        accessMethod: prop?.accessMethod ?? "in_person",
+        keyboxCode: prop?.keyboxCode,
+        keyboxLocation: prop?.keyboxLocation,
+        keyboxPhotoUrl: prop?.keyboxPhotoUrl,
+        keyboxShareWithGuest: prop?.keyboxShareWithGuest,
+        ttlockLockId: prop?.ttlockLockId,
+        wifiName: r.wifiSsid,
+        wifiPassword: r.wifiPassword,
+      },
+      {
+        guestName: r.guestName || undefined,
+        pinCode: r.lastFourDigits || undefined,
+        checkInTime: prop?.checkInTime,
+        checkOutTime: prop?.checkOutTime,
+      },
+    );
+    void shareAccessMessage(text, r.guestWhatsapp);
   }
 
   // ─── WiFi ─────────────────────────────────────────────────────────────────
@@ -1627,6 +1692,21 @@ export default function CheckInsPanel() {
                       <Trash2 className="h-3.5 w-3.5" />
                     </Button>
                   </div>
+
+                  {/* Row 4: Compartir acceso (sólo después de validar) */}
+                  {r.accessGranted && (
+                    <div className="pt-2 border-t border-dashed">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => shareAccessWhatsApp(r)}
+                        className="w-full h-9 gap-2 text-xs border-amber-200 text-amber-800 hover:bg-amber-50"
+                      >
+                        <KeyRound className="h-3.5 w-3.5" />
+                        Enviar instrucciones de acceso al huésped
+                      </Button>
+                    </div>
+                  )}
 
                 </CardContent>
               </Card>

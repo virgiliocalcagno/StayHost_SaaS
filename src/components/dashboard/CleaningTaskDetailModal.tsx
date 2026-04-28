@@ -43,6 +43,7 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { getEffectiveStatus as deriveEffectiveStatus } from "@/lib/cleaning/status";
+import { buildAccessMessageForStaff, shareAccessMessage, type AccessMethod } from "@/lib/access/share-message";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 // Importable shape — matches the CleaningTask shape used in CleaningPanel.
@@ -96,6 +97,16 @@ export interface PropertyLite {
   name: string;
   bedConfiguration?: string;
   evidenceCriteria?: string[];
+  address?: string;
+  addressUnit?: string;
+  neighborhood?: string;
+  city?: string;
+  accessMethod?: AccessMethod;
+  keyboxCode?: string;
+  keyboxLocation?: string;
+  keyboxPhotoUrl?: string;
+  keyboxShareWithGuest?: boolean;
+  ttlockLockId?: string;
 }
 
 export interface CleaningTaskDetailModalProps {
@@ -298,6 +309,36 @@ export function CleaningTaskDetailModal({
     () => (task ? properties.find((p) => p.id === task.propertyId) : undefined),
     [task, properties],
   );
+
+  const assignedMember = useMemo(
+    () => (task?.assigneeId ? team.find((m) => m.id === task.assigneeId) : undefined),
+    [task, team],
+  );
+
+  const handleShareAccessWithStaff = () => {
+    if (!task || !property) return;
+    const text = buildAccessMessageForStaff(
+      {
+        name: property.name,
+        address: property.address ?? task.address,
+        addressUnit: property.addressUnit,
+        neighborhood: property.neighborhood,
+        city: property.city,
+        accessMethod: property.accessMethod,
+        keyboxCode: property.keyboxCode,
+        keyboxLocation: property.keyboxLocation,
+        keyboxPhotoUrl: property.keyboxPhotoUrl,
+        keyboxShareWithGuest: property.keyboxShareWithGuest,
+        ttlockLockId: property.ttlockLockId,
+      },
+      {
+        staffName: assignedMember?.name ?? task.assigneeName,
+        taskDate: task.dueDate,
+        taskTime: task.dueTime,
+      },
+    );
+    void shareAccessMessage(text, assignedMember?.phone);
+  };
 
   const checklistStats = useMemo(() => {
     if (!task?.checklistItems || task.checklistItems.length === 0) {
@@ -734,7 +775,20 @@ export function CleaningTaskDetailModal({
         </div>
 
         {/* ─── Footer actions ────────────────────────────────────────────── */}
-        <div className="sticky bottom-0 bg-white border-t px-6 py-4 flex flex-col sm:flex-row gap-3">
+        <div className="sticky bottom-0 bg-white border-t px-6 py-4 flex flex-col gap-3">
+          {task.status !== "completed" && (
+            <Button
+              variant="outline"
+              className="w-full border-emerald-200 text-emerald-700 hover:bg-emerald-50 justify-center"
+              onClick={handleShareAccessWithStaff}
+            >
+              <Send className="h-4 w-4 mr-2" />
+              {assignedMember?.name
+                ? `Enviar acceso a ${assignedMember.name} por WhatsApp`
+                : "Compartir acceso por WhatsApp"}
+            </Button>
+          )}
+        <div className="flex flex-col sm:flex-row gap-3">
           {task.isWaitingValidation && task.status !== "completed" ? (
             <>
               <Button
@@ -783,6 +837,7 @@ export function CleaningTaskDetailModal({
               </Button>
             </>
           )}
+          </div>
         </div>
       </SheetContent>
     </Sheet>

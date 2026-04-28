@@ -241,12 +241,21 @@ export default function CleaningPanel() {
     id: string;
     name: string;
     address?: string;
+    addressUnit?: string;
+    neighborhood?: string;
+    city?: string;
     image?: string;
     autoAssignCleaner?: boolean;
     cleanerPriorities?: string[];
     bedConfiguration?: string;
     standardInstructions?: string;
     evidenceCriteria?: string[];
+    accessMethod?: "ttlock" | "keybox" | "in_person" | "doorman";
+    keyboxCode?: string;
+    keyboxLocation?: string;
+    keyboxPhotoUrl?: string;
+    keyboxShareWithGuest?: boolean;
+    ttlockLockId?: string;
   }[]>([]);
 
   // Nueva Orden modal state
@@ -987,6 +996,16 @@ export default function CleaningPanel() {
       name: p.name,
       bedConfiguration: p.bedConfiguration,
       evidenceCriteria: p.evidenceCriteria,
+      address: p.address,
+      addressUnit: p.addressUnit,
+      neighborhood: p.neighborhood,
+      city: p.city,
+      accessMethod: p.accessMethod,
+      keyboxCode: p.keyboxCode,
+      keyboxLocation: p.keyboxLocation,
+      keyboxPhotoUrl: p.keyboxPhotoUrl,
+      keyboxShareWithGuest: p.keyboxShareWithGuest,
+      ttlockLockId: p.ttlockLockId,
     })),
     [properties],
   );
