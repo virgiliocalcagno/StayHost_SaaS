@@ -102,8 +102,10 @@ export default function RegisterPage() {
         return;
       }
 
-      // Confirm email OFF → entrar directo.
-      window.location.assign("/dashboard");
+      // Confirm email OFF → entrar directo. Mandamos al onboarding antes
+      // que al dashboard porque el tenant recién creado no tiene properties
+      // ni configuración, y el dashboard se vería vacío sin guía.
+      window.location.assign("/onboarding");
     } catch (err) {
       console.error("[register] unexpected error:", err);
       setError("No pudimos crear la cuenta. Intentá de nuevo.");

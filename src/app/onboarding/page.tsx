@@ -1,6 +1,7 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useTransition } from "react";
+import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -122,6 +123,23 @@ export default function OnboardingPage() {
   };
 
   const progress = (selectedFeatures.length / features.length) * 100;
+  const router = useRouter();
+  const [completing, startCompleting] = useTransition();
+
+  const finishOnboarding = () => {
+    startCompleting(async () => {
+      try {
+        await fetch("/api/onboarding/complete", {
+          method: "POST",
+          credentials: "same-origin",
+        });
+      } catch {
+        /* si falla el POST, igual entramos al dashboard — el redirect
+           guard volvera a /onboarding y reintenta */
+      }
+      router.replace("/dashboard");
+    });
+  };
 
   return (
     <div className="min-h-screen bg-background">
@@ -209,23 +227,22 @@ export default function OnboardingPage() {
         <Button
           size="lg"
           className="w-full gradient-gold text-primary-foreground hover:opacity-90 h-12 text-base"
-          asChild
+          onClick={finishOnboarding}
+          disabled={completing}
         >
-          <Link href="/dashboard">
-            Continuar
-            <ArrowRight className="ml-2 h-5 w-5" />
-          </Link>
+          {completing ? "Guardando..." : "Continuar"}
+          <ArrowRight className="ml-2 h-5 w-5" />
         </Button>
 
         {/* Footer Note */}
         <p className="text-center text-xs text-muted-foreground mt-6">
           Utilizamos una conexion segura para la transferencia de datos. La seguridad de tus
           datos es nuestra prioridad. Al continuar, aceptas nuestros{" "}
-          <Link href="#" className="text-primary hover:underline">
+          <Link href="/terms" target="_blank" className="text-primary hover:underline">
             Terminos y Condiciones
           </Link>{" "}
           y{" "}
-          <Link href="#" className="text-primary hover:underline">
+          <Link href="/privacy" target="_blank" className="text-primary hover:underline">
             Politica de Privacidad
           </Link>
           .

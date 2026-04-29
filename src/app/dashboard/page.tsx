@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, Suspense } from "react";
-import { useSearchParams } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import DashboardSidebar from "@/components/dashboard/DashboardSidebar";
 import DashboardHeader from "@/components/dashboard/DashboardHeader";
 import OverviewPanel from "@/components/dashboard/OverviewPanel";
@@ -64,6 +64,7 @@ export default function DashboardPage() {
 
 function DashboardContent() {
   const { isModuleEnabled, userRole } = useModules();
+  const router = useRouter();
   const searchParams = useSearchParams();
   const [activePanel, setActivePanel] = useState<PanelType>("overview");
   const [sidebarOpen, setSidebarOpen] = useState(true);
@@ -71,6 +72,26 @@ function DashboardContent() {
   // La detección del rol OWNER ahora vive en ModuleContext, leyendo el email
   // autenticado desde Supabase (cookie httpOnly) en vez de localStorage. Así
   // sobrevive a "borrar caché" y no necesita duplicarse aquí.
+
+  // Guardia post-login:
+  //   - trial expirado → /pricing-wall
+  //   - onboarding pendiente → /onboarding (excepto el Master, que no
+  //     necesita el wizard cada vez)
+  useEffect(() => {
+    fetch("/api/me", { cache: "no-store", credentials: "same-origin" })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data: { trialExpired?: boolean; onboarded?: boolean; isMaster?: boolean } | null) => {
+        if (!data) return;
+        if (data.trialExpired) {
+          router.replace("/pricing-wall");
+          return;
+        }
+        if (!data.onboarded && !data.isMaster) {
+          router.replace("/onboarding");
+        }
+      })
+      .catch(() => {});
+  }, [router]);
 
   useEffect(() => {
     const view = searchParams.get("view");

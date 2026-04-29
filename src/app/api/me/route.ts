@@ -25,13 +25,34 @@ export async function GET() {
   const email = (user?.email ?? "").trim().toLowerCase();
 
   let plan: string | null = null;
+  let planExpiresAt: string | null = null;
+  let onboarded = true;
+  let trialExpired = false;
+
   if (tenantId) {
     const { data } = await supabase
       .from("tenants")
-      .select("plan")
+      .select("plan, plan_expires_at, onboarding_completed_at")
       .eq("id", tenantId)
       .single();
-    plan = (data as { plan: string | null } | null)?.plan ?? null;
+    const row = data as {
+      plan: string | null;
+      plan_expires_at: string | null;
+      onboarding_completed_at: string | null;
+    } | null;
+    plan = row?.plan ?? null;
+    planExpiresAt = row?.plan_expires_at ?? null;
+    onboarded = !!row?.onboarding_completed_at;
+    // Trial expirado: tenants en plan='trial' cuyo plan_expires_at ya pasó.
+    // El Master nunca se considera expirado — siempre tiene acceso.
+    if (
+      plan === "trial" &&
+      planExpiresAt &&
+      new Date(planExpiresAt).getTime() < Date.now() &&
+      email !== MASTER_EMAIL
+    ) {
+      trialExpired = true;
+    }
   }
 
   return NextResponse.json({
@@ -39,5 +60,8 @@ export async function GET() {
     tenantId: tenantId ?? null,
     isMaster: email === MASTER_EMAIL,
     plan,
+    planExpiresAt,
+    onboarded,
+    trialExpired,
   });
 }
