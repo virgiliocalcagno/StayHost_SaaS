@@ -211,28 +211,19 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
       }
     }
 
-    // 4) Modulos: si el servidor nos dio el plan del tenant, lo aplicamos
-    //    AUTORITATIVAMENTE — esto pisa el localStorage stale del browser
-    //    (clave para evitar que un trial starter siga viendo modulos
-    //    growth/master heredados de una sesion previa). Si no hay plan del
-    //    servidor (sin sesion), caemos al localStorage del browser.
-    if (serverPlan) {
-      const planModules = SAAS_PLANS[serverPlan];
-      const next = {} as Record<ModuleId, boolean>;
-      Object.keys(DEFAULT_MODULES).forEach(k => { next[k as ModuleId] = false; });
-      planModules.forEach(id => { next[id] = true; });
-      setModules(next);
-      try {
-        localStorage.setItem("stayhost_modules_config", JSON.stringify(next));
-      } catch {}
-    } else {
-      try {
-        const saved = localStorage.getItem("stayhost_modules_config");
-        if (saved) {
-          setModules({ ...DEFAULT_MODULES, ...JSON.parse(saved) });
-        }
-      } catch {}
-    }
+    // 4) Modulos: el plan del tenant sirve para gating fino DENTRO de cada
+    //    panel (lock walls "Mejorar Plan" en acciones premium), no para
+    //    esconder modulos del sidebar. Trial ve todos los modulos para
+    //    evaluar. Cargamos config local del browser si la hay.
+    //    El `serverPlan` queda disponible via /api/me para que componentes
+    //    individuales decidan que mostrar.
+    void serverPlan;
+    try {
+      const saved = localStorage.getItem("stayhost_modules_config");
+      if (saved) {
+        setModules({ ...DEFAULT_MODULES, ...JSON.parse(saved) });
+      }
+    } catch {}
     try {
       const saved = localStorage.getItem("stayhost_plugin_registry");
       if (saved) setPlugins(JSON.parse(saved));
