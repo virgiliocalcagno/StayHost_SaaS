@@ -146,11 +146,9 @@ const toLocalDateStr = (d: Date) => {
   return `${yyyy}-${mm}-${dd}`;
 };
 
-const MOCK_TEAM: TeamMember[] = [
-  { id: "1", name: "Laura Sánchez", role: "Limpieza", avatar: "https://images.unsplash.com/photo-1580489944761-15a19d654956?w=100&h=100&fit=crop", tasksToday: 3, completedTasks: 145, phone: "+5212345678" },
-  { id: "2", name: "Miguel Torres", role: "Mantenimiento", avatar: "https://images.unsplash.com/photo-1500648767791-00dcc994a43e?w=100&h=100&fit=crop", tasksToday: 2, completedTasks: 89, phone: "+5212345679" },
-  { id: "3", name: "Carmen Ruiz", role: "Limpieza", avatar: "https://images.unsplash.com/photo-1544005313-94ddf0286df2?w=100&h=100&fit=crop", tasksToday: 4, completedTasks: 210, phone: "+5212345680" },
-];
+// Team viene de /api/team-members. Sin mock — los 3 nombres demo
+// (Laura/Miguel/Carmen) le quedaban a cualquier tenant nuevo aunque
+// no tuviera staff real cargado.
 
 
 export default function CleaningPanel() {
@@ -246,7 +244,7 @@ export default function CleaningPanel() {
 
   const [selectedStaff, setSelectedStaff] = useState<string>("all");
   const [activeDate, setActiveDate] = useState<string>(getDateStr(0));
-  const [team, setTeam] = useState<TeamMember[]>(MOCK_TEAM);
+  const [team, setTeam] = useState<TeamMember[]>([]);
   const [rawTeam, setRawTeam] = useState<RawTeamMember[]>([]);
 
   // Properties (for auto-assign config + bed/instructions)
@@ -313,11 +311,12 @@ export default function CleaningPanel() {
     }
   }, [searchParams]);
 
-  // Sync team & properties via apiServices
+  // Sync team & properties via apiServices. SIEMPRE seteamos lo que
+  // devuelve la API, incluso array vacio (sin esto un tenant sin staff
+  // veia el MOCK_TEAM hardcoded para siempre).
   useEffect(() => {
     getTeam()
       .then(rawData => {
-        if (!rawData.length) return;
         setRawTeam(rawData);
         setTeam(rawData.map((m: RawTeamMember) => ({
           id: m.id,

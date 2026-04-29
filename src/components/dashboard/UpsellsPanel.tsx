@@ -67,82 +67,16 @@ interface UpsellProduct {
   iconName: string;
 }
 
-const defaultUpsells: UpsellProduct[] = [
-  {
-    id: "1",
-    name: "Check-in anticipado",
-    description: "Llegada a partir de las 10:00 AM",
-    price: 35,
-    category: "service",
-    isGlobal: false,
-    linkedProperties: ["prop-1", "prop-2"],
-    iconName: "Clock",
-    sales: 45,
-    revenue: 1575,
-    active: true,
-  },
-  {
-    id: "2",
-    name: "Check-out tardio",
-    description: "Salida hasta las 4:00 PM",
-    price: 40,
-    category: "service",
-    isGlobal: false,
-    iconName: "Clock",
-    sales: 38,
-    revenue: 1520,
-    active: true,
-  },
-  {
-    id: "3",
-    name: "Traslado aeropuerto VIP",
-    description: "Servicio de transporte privado en SUV",
-    price: 85,
-    category: "transport",
-    isGlobal: true,
-    iconName: "Car",
-    sales: 22,
-    revenue: 1870,
-    active: true,
-  },
-  {
-    id: "4",
-    name: "Desayuno Local Flotante",
-    description: "Bandeja flotante para la piscina (Para 2)",
-    price: 65,
-    category: "food",
-    isGlobal: false,
-    linkedProperties: ["prop-1"],
-    iconName: "UtensilsCrossed",
-    sales: 31,
-    revenue: 2015,
-    active: true,
-  },
-  {
-    id: "5",
-    name: "Tour Ruinas Mayas y Cenote",
-    description: "Experiencia de medio día con guía local",
-    price: 120,
-    category: "experience",
-    isGlobal: true,
-    iconName: "Palmtree",
-    sales: 18,
-    revenue: 2160,
-    active: true,
-  },
-];
-
-const mockProperties = [
-  { id: "prop-1", name: "Villa Mar y Sol" },
-  { id: "prop-2", name: "Loft Centro Historico" },
-  { id: "prop-3", name: "Casa de la Playa" },
-];
+// Upsells: feature en construcción (Sprint 3.1 — tabla upsells todavía
+// no existe). Listas vacías hasta tener BD.
+const defaultUpsells: UpsellProduct[] = [];
+const mockProperties: { id: string; name: string }[] = [];
 
 const stats = [
-  { label: "Ingresos Tienda/Extras", value: "$9,140", change: "+42%", icon: DollarSign },
-  { label: "Ventas este mes", value: "154", change: "+12%", icon: ShoppingCart },
-  { label: "Tasa de conversion", value: "28%", change: "+3%", icon: TrendingUp },
-  { label: "Productos activos", value: "5", change: "0", icon: Package },
+  { label: "Ingresos Tienda/Extras", value: "$0", change: "—", icon: DollarSign },
+  { label: "Ventas este mes", value: "0", change: "—", icon: ShoppingCart },
+  { label: "Tasa de conversion", value: "—", change: "—", icon: TrendingUp },
+  { label: "Productos activos", value: "0", change: "—", icon: Package },
 ];
 
 const iconsMap: Record<string, React.ElementType> = {
@@ -156,20 +90,16 @@ const iconsMap: Record<string, React.ElementType> = {
 };
 
 export default function UpsellsPanel() {
-  const [upsells, setUpsells] = useState<UpsellProduct[]>(() => {
-    if (typeof window === "undefined") return [];
-    try {
-      const raw = localStorage.getItem("stayhost_upsells");
-      return raw ? JSON.parse(raw) : [];
-    } catch { return []; }
-  });
+  // State arranca vacio. Sin localStorage — leakeaba upsells entre
+  // tenants. La persistencia real espera Sprint 3.1 (tabla upsells).
+  const [upsells, setUpsells] = useState<UpsellProduct[]>([]);
   const [isSheetOpen, setIsSheetOpen] = useState(false);
   const [currentEditing, setCurrentEditing] = useState<UpsellProduct | null>(null);
 
-  // Persist upsells to localStorage so the public Hub can read them
-  useEffect(() => {
-    localStorage.setItem("stayhost_upsells", JSON.stringify(upsells));
-  }, [upsells]);
+  // Sin persistencia hasta Sprint 3.1. Los cambios del user en sesión
+  // se ven pero no sobreviven reload — preferible a leakear entre
+  // tenants via localStorage.
+  void defaultUpsells;
 
   // Form State
   const [formData, setFormData] = useState<Partial<UpsellProduct>>({
