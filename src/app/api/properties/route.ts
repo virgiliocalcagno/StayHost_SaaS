@@ -62,6 +62,10 @@ const ALLOWED_FIELDS = new Set([
   "keybox_location",
   "keybox_photo_url",
   "keybox_share_with_guest",
+  "wifi_name",
+  "wifi_password",
+  "electricity_enabled",
+  "electricity_rate",
 ]);
 
 const VALID_ACCESS_METHODS = new Set(["ttlock", "keybox", "in_person", "doorman"]);

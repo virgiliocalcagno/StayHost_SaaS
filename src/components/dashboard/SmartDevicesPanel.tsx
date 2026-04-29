@@ -160,23 +160,13 @@ export default function SmartDevicesPanel() {
   const [showStaffHistory, setShowStaffHistory] = useState(false);
   const [liveLocks, setLiveLocks] = useState<Record<string, LockLive>>({}); // key = lockId
 
-  // Legacy credentials state (only for Import Wizard, kept in localStorage)
-  const [integrations, setIntegrations] = useState<Integrations>(() => {
-    const empty: Integrations = {
-      tuya: { clientId: "", clientSecret: "", region: "eu", uid: "" },
-      ttlock: { clientId: "", clientSecret: "", username: "", password: "" },
-    };
-    if (typeof window === "undefined") return empty;
-    try {
-      const r = localStorage.getItem("stayhost_integrations");
-      return r ? JSON.parse(r) : empty;
-    } catch {
-      return empty;
-    }
+  // Credenciales del wizard de import — state efímero. Sin localStorage:
+  // leakeaba credenciales TTLock/Tuya entre tenants en el mismo browser.
+  // Si el user no termina el wizard, se pierde — mejor que filtrar secrets.
+  const [integrations, setIntegrations] = useState<Integrations>({
+    tuya: { clientId: "", clientSecret: "", region: "eu", uid: "" },
+    ttlock: { clientId: "", clientSecret: "", username: "", password: "" },
   });
-  useEffect(() => {
-    localStorage.setItem("stayhost_integrations", JSON.stringify(integrations));
-  }, [integrations]);
 
   // ── Transient UI state ─────────────────────────────────────────────────────
   const [loading, setLoading] = useState(false);
