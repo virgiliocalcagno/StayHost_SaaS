@@ -26,10 +26,8 @@ const footerLinks = {
     { label: "Prensa", href: "#" },
   ],
   legal: [
-    { label: "Terminos de Servicio", href: "#" },
-    { label: "Politica de Privacidad", href: "#" },
-    { label: "Cookies", href: "#" },
-    { label: "GDPR", href: "#" },
+    { label: "Terminos de Servicio", href: "/terms" },
+    { label: "Politica de Privacidad", href: "/privacy" },
   ],
 };
 

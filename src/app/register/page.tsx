@@ -307,11 +307,11 @@ export default function RegisterPage() {
                   className="text-xs text-slate-500 leading-relaxed font-medium cursor-pointer"
                 >
                   Acepto los{" "}
-                  <Link href="#" className="text-amber-500 underline">
+                  <Link href="/terms" target="_blank" className="text-amber-500 underline">
                     Términos y Condiciones
                   </Link>{" "}
                   y la{" "}
-                  <Link href="#" className="text-amber-500 underline">
+                  <Link href="/privacy" target="_blank" className="text-amber-500 underline">
                     Política de Privacidad
                   </Link>{" "}
                   *
