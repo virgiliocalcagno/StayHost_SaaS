@@ -106,3 +106,27 @@ export async function PATCH(req: NextRequest) {
   if (!count) return NextResponse.json({ error: "Not found" }, { status: 404 });
   return NextResponse.json({ ok: true });
 }
+
+// DELETE /api/properties?id=<propertyId>
+// Borra la propiedad si pertenece al tenant del usuario autenticado.
+// RLS impide borrar de otro tenant; chequeamos count para devolver 404 claro.
+export async function DELETE(req: NextRequest) {
+  const { tenantId, supabase } = await getAuthenticatedTenant();
+  if (!tenantId) {
+    return NextResponse.json({ error: "No tenant linked to this user" }, { status: 403 });
+  }
+
+  const id = req.nextUrl.searchParams.get("id");
+  if (!id) {
+    return NextResponse.json({ error: "id required" }, { status: 400 });
+  }
+
+  const { error, count } = await supabase
+    .from("properties")
+    .delete({ count: "exact" })
+    .eq("id", id);
+
+  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+  if (!count) return NextResponse.json({ error: "Not found" }, { status: 404 });
+  return NextResponse.json({ ok: true });
+}

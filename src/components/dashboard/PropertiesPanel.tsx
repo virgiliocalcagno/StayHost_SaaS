@@ -619,30 +619,22 @@ export default function PropertiesPanel() {
   const [statusFilter, setStatusFilter] = useState("all");
   const [showModal, setShowModal] = useState(false);
   const [editingProperty, setEditingProperty] = useState<Property | null>(null);
-  const [properties, setProperties] = useState<Property[]>(() => {
-    if (typeof window !== "undefined") {
-      const saved = localStorage.getItem("stayhost_properties");
-      if (saved) {
-        try { return JSON.parse(saved); } catch { /* fall through */ }
-      }
-    }
-    return [];
-  });
+  // Source of truth: Supabase. localStorage NO se usa para tenant data —
+  // arrastraba propiedades entre logins del mismo browser y nunca persistia
+  // en otros dispositivos. El estado arranca vacio y se hidrata via API.
+  const [properties, setProperties] = useState<Property[]>([]);
+  const [propertiesLoading, setPropertiesLoading] = useState(true);
 
-  // Persist to localStorage on change
-  useEffect(() => {
-    localStorage.setItem("stayhost_properties", JSON.stringify(properties));
-  }, [properties]);
-
-  // Always load from Supabase on mount — source of truth.
-  // Tenant is resolved server-side from the session cookie.
+  // Hidratar desde Supabase. Tenant lo resuelve el server desde la cookie.
+  // SIEMPRE seteamos lo que devuelve el API, incluso si es array vacio —
+  // sino quedabamos mostrando la cache stale del browser para users nuevos.
   useEffect(() => {
     fetch("/api/properties", { credentials: "same-origin" })
       .then(r => r.json())
       .then(data => {
-        if (!data.properties?.length) return;
+        const list = Array.isArray(data?.properties) ? data.properties : [];
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const fromDb: Property[] = data.properties.map((p: any) => ({
+        const fromDb: Property[] = list.map((p: any) => ({
           id: p.id,
           name: p.name,
           address: p.address ?? "",
@@ -703,7 +695,8 @@ export default function PropertiesPanel() {
         }));
         setProperties(fromDb);
       })
-      .catch(() => {});
+      .catch(() => {})
+      .finally(() => setPropertiesLoading(false));
   }, []);
   const [selectedProperty, setSelectedProperty] = useState<Property | null>(null);
 
@@ -805,7 +798,9 @@ export default function PropertiesPanel() {
   const stats = useMemo(() => {
     const total = properties.length;
     const active = properties.filter((p) => p.status === "active").length;
-    const avgOccupancy = Math.round(properties.reduce((a, p) => a + p.occupancy, 0) / total);
+    const avgOccupancy = total > 0
+      ? Math.round(properties.reduce((a, p) => a + p.occupancy, 0) / total)
+      : 0;
     const totalRevenue = properties.reduce((a, p) => a + p.monthlyRevenue, 0);
     return { total, active, avgOccupancy, totalRevenue };
   }, [properties]);
@@ -1160,8 +1155,26 @@ export default function PropertiesPanel() {
     }
   };
 
-  const handleDelete = (id: string) => {
-    setProperties((prev) => prev.filter((p) => p.id !== id));
+  const handleDelete = async (id: string) => {
+    // Optimistic UI: removemos del state primero, restauramos si falla.
+    const prev = properties;
+    setProperties((curr) => curr.filter((p) => p.id !== id));
+    try {
+      const res = await fetch(`/api/properties?id=${encodeURIComponent(id)}`, {
+        method: "DELETE",
+        credentials: "same-origin",
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => null);
+        toast.error(`No se pudo eliminar: ${body?.error ?? res.status}`);
+        setProperties(prev);
+      } else {
+        toast.success("Propiedad eliminada");
+      }
+    } catch {
+      toast.error("Error de conexión al eliminar");
+      setProperties(prev);
+    }
   };
 
   const getStatusBadge = (status: string) => {
@@ -1293,12 +1306,33 @@ export default function PropertiesPanel() {
       </Card>
 
       {/* ─── Content ─────────────────────────────────────────────────────── */}
-      {filtered.length === 0 ? (
+      {propertiesLoading ? (
+        <Card>
+          <CardContent className="p-12 text-center">
+            <div className="h-8 w-8 mx-auto mb-4 border-2 border-primary/20 border-t-primary rounded-full animate-spin" />
+            <p className="text-sm text-muted-foreground">Cargando propiedades...</p>
+          </CardContent>
+        </Card>
+      ) : properties.length === 0 ? (
+        <Card>
+          <CardContent className="p-12 text-center">
+            <Home className="h-16 w-16 mx-auto text-muted-foreground/30 mb-4" />
+            <h3 className="text-lg font-semibold mb-1">Aun no tenes propiedades</h3>
+            <p className="text-muted-foreground text-sm mb-6 max-w-md mx-auto">
+              Agrega tu primera propiedad para empezar a gestionar reservas, calendarios y limpiezas desde StayHost.
+            </p>
+            <Button className="gradient-gold text-primary-foreground gap-2" onClick={handleOpenAdd}>
+              <Plus className="h-4 w-4" />
+              Crear primera propiedad
+            </Button>
+          </CardContent>
+        </Card>
+      ) : filtered.length === 0 ? (
         <Card>
           <CardContent className="p-12 text-center">
             <Home className="h-16 w-16 mx-auto text-muted-foreground/30 mb-4" />
             <h3 className="text-lg font-semibold mb-1">No se encontraron propiedades</h3>
-            <p className="text-muted-foreground text-sm">Ajusta los filtros o agrega una nueva propiedad.</p>
+            <p className="text-muted-foreground text-sm">Ajusta los filtros para encontrar lo que buscas.</p>
           </CardContent>
         </Card>
       ) : viewMode === "grid" ? (
