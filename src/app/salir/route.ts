@@ -73,8 +73,52 @@ async function handle(req: NextRequest) {
     return res;
   }
 
-  const dest = new URL("/acceso", req.url);
-  const res = NextResponse.redirect(dest, 303);
+  // Servimos HTML con un <script> que purga localStorage antes de redirigir.
+  // No es paranoia: claves como `stayhost_session` y `stayhost_owner_email`
+  // sobreviven al logout server-side y filtran rol entre usuarios del mismo
+  // browser (Master se desloguea, otro user entra y hereda OWNER + ve SaaS
+  // Control). Tambien limpiamos `stayhost_modules_config` para que el plan
+  // del proximo user se aplique limpio desde /api/me.
+  const accesoUrl = new URL("/acceso", req.url).toString();
+  const html = `<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8" />
+<title>Cerrando sesion...</title>
+<meta name="robots" content="noindex" />
+<meta http-equiv="refresh" content="2;url=${accesoUrl}" />
+<style>
+body{margin:0;background:#F8F9FC;color:#475569;font-family:system-ui,-apple-system,sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;}
+p{font-size:14px;font-weight:500;}
+</style>
+</head>
+<body>
+<p>Cerrando sesion...</p>
+<script>
+(function () {
+  try {
+    var prefixes = ["stayhost_", "sb-", "supabase."];
+    var keys = Object.keys(localStorage);
+    for (var i = 0; i < keys.length; i++) {
+      for (var j = 0; j < prefixes.length; j++) {
+        if (keys[i].indexOf(prefixes[j]) === 0) {
+          localStorage.removeItem(keys[i]);
+          break;
+        }
+      }
+    }
+  } catch (e) {}
+  try { sessionStorage.clear(); } catch (e) {}
+  location.replace(${JSON.stringify(accesoUrl)});
+})();
+</script>
+</body>
+</html>`;
+
+  const res = new NextResponse(html, {
+    status: 200,
+    headers: { "Content-Type": "text/html; charset=utf-8" },
+  });
   buildClearedHeaders(res);
   return res;
 }

@@ -157,17 +157,26 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
   };
 
   const syncSession = async () => {
-    // 1) Rol real desde el servidor — leemos /api/me que a su vez lee la
-    //    cookie httpOnly. Esto es más fiable que supabase.auth.getUser() en el
-    //    browser, que a veces no ve la cookie (incógnito, caché borrada, etc.).
+    // 1) Rol y plan real desde el servidor — leemos /api/me que a su vez lee
+    //    la cookie httpOnly y consulta tenants.plan. Esto es más fiable que
+    //    supabase.auth.getUser() en el browser, que a veces no ve la cookie
+    //    (incógnito, caché borrada, etc.).
     let sawServerSession = false;
+    let serverPlan: "starter" | "growth" | "master" | null = null;
     try {
       const res = await fetch("/api/me", { cache: "no-store", credentials: "include" });
       if (res.ok) {
-        const data = (await res.json()) as { email: string | null; isMaster: boolean };
+        const data = (await res.json()) as {
+          email: string | null;
+          isMaster: boolean;
+          plan: string | null;
+        };
         if (data.email) {
           sawServerSession = true;
           applyRoleFromAuthEmail(data.email);
+        }
+        if (data.plan === "starter" || data.plan === "growth" || data.plan === "master") {
+          serverPlan = data.plan;
         }
       }
     } catch {
@@ -202,16 +211,28 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
       }
     }
 
-    // 2) Config de módulos y plugins — se mantienen en localStorage.
-    try {
-      const saved = localStorage.getItem("stayhost_modules_config");
-      if (saved) {
-        // Merge con DEFAULT_MODULES: módulos nuevos agregados en código
-        // heredan su default (normalmente true) sin requerir que el usuario
-        // limpie localStorage.
-        setModules({ ...DEFAULT_MODULES, ...JSON.parse(saved) });
-      }
-    } catch {}
+    // 4) Modulos: si el servidor nos dio el plan del tenant, lo aplicamos
+    //    AUTORITATIVAMENTE — esto pisa el localStorage stale del browser
+    //    (clave para evitar que un trial starter siga viendo modulos
+    //    growth/master heredados de una sesion previa). Si no hay plan del
+    //    servidor (sin sesion), caemos al localStorage del browser.
+    if (serverPlan) {
+      const planModules = SAAS_PLANS[serverPlan];
+      const next = {} as Record<ModuleId, boolean>;
+      Object.keys(DEFAULT_MODULES).forEach(k => { next[k as ModuleId] = false; });
+      planModules.forEach(id => { next[id] = true; });
+      setModules(next);
+      try {
+        localStorage.setItem("stayhost_modules_config", JSON.stringify(next));
+      } catch {}
+    } else {
+      try {
+        const saved = localStorage.getItem("stayhost_modules_config");
+        if (saved) {
+          setModules({ ...DEFAULT_MODULES, ...JSON.parse(saved) });
+        }
+      } catch {}
+    }
     try {
       const saved = localStorage.getItem("stayhost_plugin_registry");
       if (saved) setPlugins(JSON.parse(saved));

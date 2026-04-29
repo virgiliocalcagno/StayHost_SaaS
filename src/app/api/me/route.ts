@@ -7,7 +7,10 @@
  * en incógnito o tras borrar caché; este endpoint no tiene ese problema.
  *
  * Responde:
- *   { email: string | null, tenantId: string | null, isMaster: boolean }
+ *   { email, tenantId, isMaster, plan }
+ *
+ * `plan` viene de la columna tenants.plan ('starter' | 'growth' | 'master').
+ * El cliente lo usa para llamar applyPlan() y filtrar modulos por plan real.
  *
  * Nunca 401 — devuelve nulls cuando no hay sesión, para que el cliente pueda
  * decidir qué hacer sin tener que manejar errores.
@@ -18,11 +21,23 @@ import { getAuthenticatedTenant } from "@/lib/supabase/server";
 const MASTER_EMAIL = (process.env.NEXT_PUBLIC_MASTER_EMAIL || "virgiliocalcagno@gmail.com").trim().toLowerCase();
 
 export async function GET() {
-  const { user, tenantId } = await getAuthenticatedTenant();
+  const { user, tenantId, supabase } = await getAuthenticatedTenant();
   const email = (user?.email ?? "").trim().toLowerCase();
+
+  let plan: string | null = null;
+  if (tenantId) {
+    const { data } = await supabase
+      .from("tenants")
+      .select("plan")
+      .eq("id", tenantId)
+      .single();
+    plan = (data as { plan: string | null } | null)?.plan ?? null;
+  }
+
   return NextResponse.json({
     email: email || null,
     tenantId: tenantId ?? null,
     isMaster: email === MASTER_EMAIL,
+    plan,
   });
 }
