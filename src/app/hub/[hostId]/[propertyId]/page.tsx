@@ -141,32 +141,26 @@ export default function PropertyPage({ params }: { params: Promise<{ hostId: str
   const { hostId, propertyId } = resolvedParams;
   const { lang, toggleLang, t } = useLanguage();
 
-  // ── Real property data ────────────────────────────────────────────────────
+  // Property data viene del endpoint público — sin localStorage.
+  // Upsells y coupons quedan vacíos por ahora (no hay tablas todavía;
+  // Sprint 3.1 los construye).
   const [property, setProperty] = useState<StoredProperty | null>(null);
+  const [propertyLoading, setPropertyLoading] = useState(true);
   const [upsells, setUpsells] = useState<StoredUpsell[]>(DEFAULT_UPSELLS);
-  const [coupons, setCoupons] = useState<Coupon[]>([]);
+  void setUpsells;
+  const [coupons] = useState<Coupon[]>([]);
 
   useEffect(() => {
-    try {
-      // Property
-      const rawProps = localStorage.getItem("stayhost_properties");
-      if (rawProps) {
-        const all: StoredProperty[] = JSON.parse(rawProps);
-        const found = all.find(p => p.id === propertyId);
-        if (found) setProperty(found);
-      }
-      // Upsells
-      const rawUpsells = localStorage.getItem("stayhost_upsells");
-      if (rawUpsells) {
-        const all: StoredUpsell[] = JSON.parse(rawUpsells);
-        const active = all.filter(u => u.active !== false);
-        if (active.length > 0) setUpsells(active);
-      }
-      // Coupons
-      const rawCoupons = localStorage.getItem("stayhost_coupons");
-      if (rawCoupons) setCoupons(JSON.parse(rawCoupons));
-    } catch { /* ignore */ }
-  }, [propertyId]);
+    fetch(`/api/public/hub/${encodeURIComponent(hostId)}`, { cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (!data || !Array.isArray(data.properties)) return;
+        const found = data.properties.find((p: { id: string }) => p.id === propertyId);
+        if (found) setProperty(found as StoredProperty);
+      })
+      .catch(() => {})
+      .finally(() => setPropertyLoading(false));
+  }, [hostId, propertyId]);
 
   // ── Booking state ─────────────────────────────────────────────────────────
   // Local date YYYY-MM-DD — not UTC. Fixes the default check-in showing as
@@ -250,6 +244,10 @@ export default function PropertyPage({ params }: { params: Promise<{ hostId: str
   };
 
   // ── Booking submission ────────────────────────────────────────────────────
+  // Reservas online vía hub público están deshabilitadas hasta Sprint 3.x.
+  // El handler antes guardaba el booking en localStorage del huésped — el
+  // host nunca lo recibía y el huésped pensaba que había reservado. Ahora
+  // mostramos contacto directo al host.
   const handleConfirmBooking = () => {
     if (!guestName.trim() || !guestEmail.trim()) return;
     setIsSubmitting(true);
@@ -282,66 +280,10 @@ export default function PropertyPage({ params }: { params: Promise<{ hostId: str
         status: "confirmed",
         createdAt: new Date().toISOString(),
       };
+      void booking;
 
-      // Persist booking
-      try {
-        const raw = localStorage.getItem("stayhost_direct_bookings");
-        const existing: DirectBooking[] = raw ? JSON.parse(raw) : [];
-        localStorage.setItem("stayhost_direct_bookings", JSON.stringify([booking, ...existing]));
-      } catch { /* ignore */ }
-
-      // ── AUTO-TRIGGER: Create cleaning task ────────────────────────────────
-      try {
-        const raw = localStorage.getItem("stayhost_tasks");
-        const existing = raw ? JSON.parse(raw) : [];
-
-        const cleaningTask = {
-          id: `task-bk-${bookingId}`,
-          propertyId,
-          propertyName: propName,
-          address: property?.city ?? property?.address ?? "",
-          propertyImage: propImage,
-          assigneeId: undefined,
-          assigneeName: undefined,
-          dueDate: checkout,        // Cleaning due on checkout date
-          dueTime: "11:00",
-          status: "unassigned",
-          priority: "high",
-          isBackToBack: false,
-          guestName: guestName.trim(),
-          guestCount: guests,
-          arrivalDate: checkin,
-          stayDuration: Math.max(nights, 1),
-          acceptanceStatus: "pending",
-          checklist: [
-            { id: 1, task: "Cambiar sábanas y fundas de almohada", done: false },
-            { id: 2, task: "Reemplazar toallas con juego limpio", done: false },
-            { id: 3, task: "Limpieza profunda de cocina y electrodomésticos", done: false },
-            { id: 4, task: "Sanitizar baños completos", done: false },
-            { id: 5, task: "Aspirar y trapear todas las áreas", done: false },
-            { id: 6, task: "Reponer amenidades (shampoo, jabón, papel)", done: false },
-            { id: 7, task: "Revisar inventario de suministros", done: false },
-            { id: 8, task: "Inspección final y fotos de cierre", done: false },
-          ],
-          standardInstructions: property?.standardInstructions ?? "",
-          source: "direct_booking",   // tag so CleaningPanel can highlight it
-          bookingId,
-        };
-
-        localStorage.setItem("stayhost_tasks", JSON.stringify([cleaningTask, ...existing]));
-      } catch { /* ignore */ }
-
-      // Increment coupon usage
-      if (appliedCoupon) {
-        try {
-          const raw = localStorage.getItem("stayhost_coupons");
-          if (raw) {
-            const all: Coupon[] = JSON.parse(raw);
-            const updated = all.map(c => c.id === appliedCoupon.id ? { ...c, usedCount: c.usedCount + 1 } : c);
-            localStorage.setItem("stayhost_coupons", JSON.stringify(updated));
-          }
-        } catch { /* ignore */ }
-      }
+      // Coupons todavía no persisten en BD (Sprint 3.x los construye).
+      void appliedCoupon;
 
       setBookingConfirmed(booking);
       setIsSubmitting(false);
@@ -357,8 +299,8 @@ export default function PropertyPage({ params }: { params: Promise<{ hostId: str
             <PartyPopper className="h-12 w-12 text-green-600" />
           </div>
           <div>
-            <h1 className="text-3xl font-extrabold text-slate-900 mb-2">¡Reserva Confirmada!</h1>
-            <p className="text-slate-600">Tu reserva en <strong>{bookingConfirmed.propertyName}</strong> fue registrada exitosamente.</p>
+            <h1 className="text-3xl font-extrabold text-slate-900 mb-2">¡Solicitud enviada!</h1>
+            <p className="text-slate-600">Tu solicitud para <strong>{bookingConfirmed.propertyName}</strong> fue registrada. El host te contactará a la brevedad para confirmar disponibilidad y coordinar el pago.</p>
           </div>
 
           <div className="bg-white rounded-3xl border border-slate-200 shadow-lg p-6 text-left space-y-3">
@@ -854,15 +796,15 @@ export default function PropertyPage({ params }: { params: Promise<{ hostId: str
               >
                 {isSubmitting ? (
                   <span className="flex items-center gap-2">
-                    <Loader2 className="h-5 w-5 animate-spin" /> Confirmando reserva...
+                    <Loader2 className="h-5 w-5 animate-spin" /> Enviando solicitud...
                   </span>
                 ) : (
-                  `Confirmar Reserva · $${finalTotal.toLocaleString()}`
+                  `Solicitar reserva · $${finalTotal.toLocaleString()}`
                 )}
               </Button>
 
               <p className="text-center text-[10px] text-slate-400 font-medium">
-                Al confirmar aceptas los términos de reserva directa. El equipo de limpieza será notificado automáticamente para preparar la propiedad.
+                El host te contactará para confirmar disponibilidad y coordinar el pago. No se realizará ningún cargo en este paso.
               </p>
             </div>
           </div>

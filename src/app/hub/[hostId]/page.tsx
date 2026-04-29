@@ -45,18 +45,9 @@ interface StoredUpsell {
   isGlobal?: boolean;
 }
 
-// ─── Fallback mock data (shown when localStorage is empty) ──────────────────
-const FALLBACK_PROPERTIES: StoredProperty[] = [
-  { id: "prop-1", name: "Villa Mar y Sol", city: "Tulum, México", price: 320, rating: 4.9, image: "https://images.unsplash.com/photo-1510798831971-661eb04b3739?w=800&q=80" },
-  { id: "prop-2", name: "Loft Centro Histórico", city: "Mérida, México", price: 110, rating: 4.8, image: "https://images.unsplash.com/photo-1502672260266-1c1de2d9668b?w=800&q=80" },
-  { id: "prop-3", name: "Casa de la Playa Privada", city: "Riviera Maya, México", price: 550, rating: 5.0, image: "https://images.unsplash.com/photo-1499793983690-e29da59ef1c2?w=800&q=80" },
-];
-
-const FALLBACK_UPSELLS: StoredUpsell[] = [
-  { id: "e1", name: "Traslado Aeropuerto VIP", price: 85, category: "transport", iconName: "Car" },
-  { id: "e2", name: "Desayuno Local Flotante", price: 65, category: "food", iconName: "UtensilsCrossed" },
-  { id: "e3", name: "Tour Ruinas Mayas y Cenote", price: 120, category: "experience", iconName: "Palmtree" },
-];
+// Hub público: data viene de /api/public/hub/[hostId]. Sin FALLBACK
+// (mostraba Villa Mar y Sol $320 al huésped que abriera la URL de
+// cualquier host nuevo — embarazoso y leak de demo).
 
 const iconMap: Record<string, React.ElementType> = {
   Car, UtensilsCrossed, Palmtree, Sparkles, Home,
@@ -68,44 +59,62 @@ export default function HostHubPage({ params }: { params: Promise<{ hostId: stri
   const hostId = resolvedParams.hostId;
   const { lang, toggleLang, t } = useLanguage();
 
-  // ── Real data from localStorage ──────────────────────────────────────────
-  const [properties, setProperties] = useState<StoredProperty[]>(FALLBACK_PROPERTIES);
-  const [experiences, setExperiences] = useState<StoredUpsell[]>(FALLBACK_UPSELLS);
-  const [hubName, setHubName] = useState("My StayHost");
+  // Data del hub viene del endpoint público (sin auth). hostId hoy es
+  // tenantId; cuando agreguemos tenants.slug, este endpoint resolverá slug
+  // → tenant antes de devolver datos.
+  const [properties, setProperties] = useState<StoredProperty[]>([]);
+  const [experiences, setExperiences] = useState<StoredUpsell[]>([]);
+  const [hubName, setHubName] = useState("Reservas Directas");
+  const [loading, setLoading] = useState(true);
+  const [notFound, setNotFound] = useState(false);
   const [checkin, setCheckin] = useState("");
   const [checkout, setCheckout] = useState("");
   const [guestCount, setGuestCount] = useState("2");
 
   useEffect(() => {
-    try {
-      // Properties
-      const rawProps = localStorage.getItem("stayhost_properties");
-      if (rawProps) {
-        const parsed: StoredProperty[] = JSON.parse(rawProps);
-        const active = parsed.filter(p => p.status !== "inactive");
-        if (active.length > 0) setProperties(active);
-      }
-      // Upsells / Experiences (global ones)
-      const rawUpsells = localStorage.getItem("stayhost_upsells");
-      if (rawUpsells) {
-        const parsed: StoredUpsell[] = JSON.parse(rawUpsells);
-        const globalActive = parsed.filter(u => u.active !== false && u.isGlobal);
-        if (globalActive.length > 0) setExperiences(globalActive);
-      }
-      // Hub name from hub config
-      const rawConfig = localStorage.getItem("stayhost_hub_config");
-      if (rawConfig) {
-        const cfg = JSON.parse(rawConfig);
-        if (cfg.name) setHubName(cfg.name);
-      }
-    } catch { /* ignore */ }
-  }, []);
+    fetch(`/api/public/hub/${encodeURIComponent(hostId)}`, { cache: "no-store" })
+      .then((r) => {
+        if (r.status === 404) {
+          setNotFound(true);
+          return null;
+        }
+        return r.ok ? r.json() : null;
+      })
+      .then((data) => {
+        if (!data) return;
+        if (data?.hub?.name) setHubName(data.hub.name);
+        if (Array.isArray(data?.properties)) setProperties(data.properties);
+        if (Array.isArray(data?.experiences)) setExperiences(data.experiences);
+      })
+      .catch(() => {})
+      .finally(() => setLoading(false));
+  }, [hostId]);
 
   const hostData = {
     name: hubName,
     logo: "https://images.unsplash.com/photo-1541462608143-67571c6738dd?w=150&h=150&fit=crop",
     heroImage: "https://images.unsplash.com/photo-1499793983690-e29da59ef1c2?q=80&w=2070&auto=format&fit=crop",
   };
+
+  if (notFound) {
+    return (
+      <main className="min-h-screen bg-[#FDFBF7] flex items-center justify-center px-6">
+        <div className="text-center max-w-md">
+          <Home className="h-16 w-16 mx-auto mb-4 text-slate-300" />
+          <h1 className="text-2xl font-bold text-slate-900 mb-2">Hub no encontrado</h1>
+          <p className="text-slate-600">El enlace que abriste no corresponde a un host activo. Verificá la URL con quien te la compartió.</p>
+        </div>
+      </main>
+    );
+  }
+
+  if (loading) {
+    return (
+      <main className="min-h-screen bg-[#FDFBF7] flex items-center justify-center">
+        <div className="text-slate-500 font-medium">Cargando...</div>
+      </main>
+    );
+  }
 
   return (
     <main className="min-h-screen bg-[#FDFBF7] text-slate-800 font-sans selection:bg-amber-200">
