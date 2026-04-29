@@ -51,7 +51,7 @@ export async function GET() {
   const { data: tenants, error } = await admin
     .from("tenants")
     .select(
-      "id, email, name, company, plan, plan_expires_at, status, last_login_at, created_at, created_by_admin"
+      "id, email, name, company, plan, plan_expires_at, status, last_login_at, created_at, created_by_admin, module_overrides"
     )
     .order("created_at", { ascending: false });
 
@@ -82,6 +82,7 @@ export async function GET() {
     last_login_at: string | null;
     created_at: string;
     created_by_admin: boolean;
+    module_overrides: Record<string, boolean> | null;
   }> | null) ?? [];
 
   return NextResponse.json({
@@ -96,6 +97,7 @@ export async function GET() {
       lastLoginAt: t.last_login_at,
       createdAt: t.created_at,
       createdByAdmin: t.created_by_admin,
+      moduleOverrides: t.module_overrides ?? {},
       properties: propCount.get(t.id) ?? 0,
     })),
   });
@@ -270,6 +272,28 @@ export async function PATCH(req: NextRequest) {
     patch.plan_expires_at = new Date(
       Date.now() + body.planMonths * 30 * 24 * 60 * 60 * 1000
     ).toISOString();
+  }
+  // planExpiresAt: fecha ISO directa o null para limpiar la expiración
+  // (planes pagos sin fecha de corte). Master puede pasarla a mano cuando
+  // quiera extender un trial puntual sin asumir multiplos de 30 dias.
+  if ("planExpiresAt" in body) {
+    if (body.planExpiresAt === null) {
+      patch.plan_expires_at = null;
+    } else if (typeof body.planExpiresAt === "string" && body.planExpiresAt.length > 0) {
+      const d = new Date(body.planExpiresAt);
+      if (!Number.isNaN(d.getTime())) {
+        patch.plan_expires_at = d.toISOString();
+      }
+    }
+  }
+  // moduleOverrides: { [moduleId: string]: boolean } — sobreescribe el plan
+  // base. Validamos que sea un objeto plano de booleans.
+  if (body.moduleOverrides && typeof body.moduleOverrides === "object" && !Array.isArray(body.moduleOverrides)) {
+    const overrides: Record<string, boolean> = {};
+    for (const [k, v] of Object.entries(body.moduleOverrides as Record<string, unknown>)) {
+      if (typeof v === "boolean") overrides[k] = v;
+    }
+    patch.module_overrides = overrides;
   }
   if (typeof body.company === "string") patch.company = body.company.trim() || null;
   if (typeof body.name === "string") patch.name = body.name.trim();

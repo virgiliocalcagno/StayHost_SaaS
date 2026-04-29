@@ -163,6 +163,7 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
     //    (incógnito, caché borrada, etc.).
     let sawServerSession = false;
     let serverPlan: "starter" | "growth" | "master" | null = null;
+    let serverOverrides: Record<string, boolean> = {};
     try {
       const res = await fetch("/api/me", { cache: "no-store", credentials: "include" });
       if (res.ok) {
@@ -170,6 +171,7 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
           email: string | null;
           isMaster: boolean;
           plan: string | null;
+          moduleOverrides?: Record<string, boolean>;
         };
         if (data.email) {
           sawServerSession = true;
@@ -177,6 +179,9 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
         }
         if (data.plan === "starter" || data.plan === "growth" || data.plan === "master") {
           serverPlan = data.plan;
+        }
+        if (data.moduleOverrides && typeof data.moduleOverrides === "object") {
+          serverOverrides = data.moduleOverrides;
         }
       }
     } catch {
@@ -211,18 +216,23 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
       }
     }
 
-    // 4) Modulos: el plan del tenant sirve para gating fino DENTRO de cada
-    //    panel (lock walls "Mejorar Plan" en acciones premium), no para
-    //    esconder modulos del sidebar. Trial ve todos los modulos para
-    //    evaluar. Cargamos config local del browser si la hay.
-    //    El `serverPlan` queda disponible via /api/me para que componentes
-    //    individuales decidan que mostrar.
+    // 4) Modulos: el plan sirve para gating fino dentro de cada panel
+    //    (lock walls "Mejorar Plan"). Trial ve todos los modulos. Aplicamos
+    //    despues los `module_overrides` del tenant — el Master puede
+    //    encender/apagar modulos individuales por tenant desde el AdminPanel
+    //    (plan a medida sin tocar el plan base).
     void serverPlan;
     try {
       const saved = localStorage.getItem("stayhost_modules_config");
-      if (saved) {
-        setModules({ ...DEFAULT_MODULES, ...JSON.parse(saved) });
+      const base = saved ? { ...DEFAULT_MODULES, ...JSON.parse(saved) } : DEFAULT_MODULES;
+      // Aplicar overrides — true habilita, false deshabilita, ausente respeta el base.
+      const next: Record<ModuleId, boolean> = { ...base };
+      for (const [id, val] of Object.entries(serverOverrides)) {
+        if (id in next && typeof val === "boolean") {
+          (next as Record<string, boolean>)[id] = val;
+        }
       }
+      setModules(next);
     } catch {}
     try {
       const saved = localStorage.getItem("stayhost_plugin_registry");

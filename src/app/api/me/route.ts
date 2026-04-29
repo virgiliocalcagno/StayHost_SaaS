@@ -28,21 +28,24 @@ export async function GET() {
   let planExpiresAt: string | null = null;
   let onboarded = true;
   let trialExpired = false;
+  let moduleOverrides: Record<string, boolean> = {};
 
   if (tenantId) {
     const { data } = await supabase
       .from("tenants")
-      .select("plan, plan_expires_at, onboarding_completed_at")
+      .select("plan, plan_expires_at, onboarding_completed_at, module_overrides")
       .eq("id", tenantId)
       .single();
     const row = data as {
       plan: string | null;
       plan_expires_at: string | null;
       onboarding_completed_at: string | null;
+      module_overrides: Record<string, boolean> | null;
     } | null;
     plan = row?.plan ?? null;
     planExpiresAt = row?.plan_expires_at ?? null;
     onboarded = !!row?.onboarding_completed_at;
+    moduleOverrides = row?.module_overrides ?? {};
     // Trial expirado: tenants en plan='trial' cuyo plan_expires_at ya pasó.
     // El Master nunca se considera expirado — siempre tiene acceso.
     if (
@@ -63,5 +66,6 @@ export async function GET() {
     planExpiresAt,
     onboarded,
     trialExpired,
+    moduleOverrides,
   });
 }
