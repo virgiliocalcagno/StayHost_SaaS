@@ -43,6 +43,7 @@ import {
   Loader2,
   Save,
   KeyRound,
+  Lock,
 } from "lucide-react";
 import Link from "next/link";
 
@@ -73,6 +74,96 @@ export default function SettingsPanel() {
   const [deleteConfirm, setDeleteConfirm] = useState("");
   const [deleting, setDeleting] = useState(false);
   const [deleteErr, setDeleteErr] = useState<string | null>(null);
+
+  // Pagos (PayPal por ahora). Carga separada para no obligar a otro fetch
+  // si el host no abre la pestaña.
+  const [paypalConfig, setPaypalConfig] = useState<{
+    clientId: string;
+    clientSecret: string; // siempre vacío; el real está enmascarado en BD
+    clientSecretMasked: string | null; // muestra los últimos 4 si existe
+    mode: "sandbox" | "live";
+    enabled: boolean;
+    hasSecret: boolean;
+  }>({
+    clientId: "",
+    clientSecret: "",
+    clientSecretMasked: null,
+    mode: "sandbox",
+    enabled: false,
+    hasSecret: false,
+  });
+  const [paypalLoading, setPaypalLoading] = useState(true);
+  const [paypalSave, setPaypalSave] = useState<SaveState>({ kind: "idle" });
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch("/api/settings/payments", { cache: "no-store", credentials: "include" });
+        if (!res.ok) return;
+        const json = (await res.json()) as {
+          configs: Array<{
+            provider: string;
+            clientId: string | null;
+            clientSecretMasked: string | null;
+            mode: string;
+            enabled: boolean;
+          }>;
+        };
+        const pp = json.configs.find((c) => c.provider === "paypal");
+        if (!cancelled && pp) {
+          setPaypalConfig({
+            clientId: pp.clientId ?? "",
+            clientSecret: "",
+            clientSecretMasked: pp.clientSecretMasked,
+            mode: (pp.mode === "live" ? "live" : "sandbox") as "sandbox" | "live",
+            enabled: pp.enabled,
+            hasSecret: !!pp.clientSecretMasked,
+          });
+        }
+      } finally {
+        if (!cancelled) setPaypalLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  const savePaypal = async () => {
+    setPaypalSave({ kind: "saving" });
+    try {
+      const res = await fetch("/api/settings/payments", {
+        method: "PUT",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          provider: "paypal",
+          clientId: paypalConfig.clientId,
+          // Si el campo está vacío y ya hay un secret en BD, el backend mantiene
+          // el anterior. Si el host quiere reemplazarlo, pega uno nuevo.
+          clientSecret: paypalConfig.clientSecret,
+          mode: paypalConfig.mode,
+          enabled: paypalConfig.enabled,
+        }),
+      });
+      if (!res.ok) {
+        const j = (await res.json().catch(() => ({}))) as { error?: string };
+        throw new Error(j.error ?? `HTTP ${res.status}`);
+      }
+      // Limpiamos el campo de secret y marcamos hasSecret si lo cargaron.
+      setPaypalConfig((prev) => ({
+        ...prev,
+        clientSecret: "",
+        hasSecret: prev.hasSecret || !!prev.clientSecret,
+        clientSecretMasked: prev.clientSecret
+          ? `••••••••${prev.clientSecret.slice(-4)}`
+          : prev.clientSecretMasked,
+      }));
+      setPaypalSave({ kind: "ok" });
+      setTimeout(() => setPaypalSave({ kind: "idle" }), 2500);
+    } catch (e) {
+      setPaypalSave({ kind: "err", msg: (e as Error).message });
+    }
+  };
 
   useEffect(() => {
     let cancelled = false;
@@ -529,27 +620,118 @@ export default function SettingsPanel() {
           <Card>
             <CardHeader>
               <CardTitle className="flex items-center gap-2">
-                Procesador de pagos
-                <Badge variant="secondary">Próximamente</Badge>
+                <CreditCard className="h-5 w-5 text-primary" /> PayPal
+                {paypalConfig.enabled && (
+                  <Badge className="bg-emerald-100 text-emerald-700 border-emerald-200 ml-2">
+                    Activo
+                  </Badge>
+                )}
               </CardTitle>
               <CardDescription>
-                Vas a poder cobrar reservas directas con tarjeta a través de Stripe Connect, sin
-                pasar por tu cuenta de Airbnb/VRBO.
+                El dinero va directo a tu PayPal. StayHost no procesa ni retiene pagos —
+                solo orquesta la solicitud y registra el cobro.
               </CardDescription>
             </CardHeader>
-            <CardContent className="space-y-3 text-sm text-muted-foreground">
-              <p>
-                Estamos terminando la integración. Cuando esté lista, podés conectar una o más
-                cuentas de Stripe y cobrar en USD, DOP, EUR y otras monedas.
-              </p>
-              <p>
-                Mientras tanto, las reservas directas que reciban tus huéspedes pasan por tu canal
-                actual (transferencia, link de WhatsApp, etc.).
-              </p>
-              <p className="text-xs">
-                Si querés ser de los primeros en activarlo, escribinos por WhatsApp.
-              </p>
+            <CardContent className="space-y-4">
+              {paypalLoading ? (
+                <div className="flex items-center justify-center py-6 text-muted-foreground">
+                  <Loader2 className="h-4 w-4 animate-spin mr-2" /> Cargando configuración...
+                </div>
+              ) : (
+                <>
+                  <div className="bg-blue-50 border border-blue-200 rounded-xl p-4 text-xs text-blue-900 space-y-2">
+                    <p className="font-bold">Cómo obtener tus credenciales</p>
+                    <ol className="list-decimal pl-4 space-y-1">
+                      <li>Andá a <a href="https://developer.paypal.com/dashboard/applications" target="_blank" rel="noopener noreferrer" className="underline font-semibold">developer.paypal.com</a> y logueate con tu cuenta PayPal Business.</li>
+                      <li>Crea una app (o abrí una existente). Empezá con <strong>Sandbox</strong> para probar; cuando esté todo OK pasás a <strong>Live</strong>.</li>
+                      <li>Copiá <strong>Client ID</strong> y <strong>Secret</strong> y pegalos abajo.</li>
+                    </ol>
+                  </div>
+
+                  <div className="grid md:grid-cols-2 gap-4">
+                    <div className="space-y-2">
+                      <Label>Client ID</Label>
+                      <Input
+                        value={paypalConfig.clientId}
+                        onChange={(e) => setPaypalConfig((p) => ({ ...p, clientId: e.target.value }))}
+                        placeholder="AeC...x9"
+                        className="font-mono text-xs"
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label>Client Secret</Label>
+                      <Input
+                        type="password"
+                        value={paypalConfig.clientSecret}
+                        onChange={(e) => setPaypalConfig((p) => ({ ...p, clientSecret: e.target.value }))}
+                        placeholder={paypalConfig.hasSecret ? `Guardado: ${paypalConfig.clientSecretMasked}` : "EBd...xQ"}
+                        className="font-mono text-xs"
+                      />
+                      {paypalConfig.hasSecret && (
+                        <p className="text-[10px] text-muted-foreground flex items-center gap-1">
+                          <Lock className="h-3 w-3" /> Dejalo vacío para mantener el actual
+                        </p>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="grid md:grid-cols-2 gap-4">
+                    <div className="space-y-2">
+                      <Label>Modo</Label>
+                      <select
+                        value={paypalConfig.mode}
+                        onChange={(e) => setPaypalConfig((p) => ({ ...p, mode: e.target.value as "sandbox" | "live" }))}
+                        className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                      >
+                        <option value="sandbox">Sandbox (pruebas)</option>
+                        <option value="live">Live (cobros reales)</option>
+                      </select>
+                    </div>
+                    <div className="space-y-2">
+                      <Label>Estado</Label>
+                      <div className="flex items-center gap-3 h-10">
+                        <input
+                          type="checkbox"
+                          id="paypalEnabled"
+                          checked={paypalConfig.enabled}
+                          onChange={(e) => setPaypalConfig((p) => ({ ...p, enabled: e.target.checked }))}
+                          className="h-4 w-4"
+                        />
+                        <label htmlFor="paypalEnabled" className="text-sm font-medium select-none cursor-pointer">
+                          Habilitar PayPal en mi Hub
+                        </label>
+                      </div>
+                      <p className="text-[10px] text-muted-foreground">
+                        Si está deshabilitado, el botón de pago no aparece en el Hub público.
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-3 pt-2">
+                    <Button onClick={savePaypal} disabled={paypalSave.kind === "saving"} className="gap-2">
+                      {paypalSave.kind === "saving" ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
+                      Guardar
+                    </Button>
+                    {paypalSave.kind === "ok" && <span className="text-sm text-emerald-600">Guardado</span>}
+                    {paypalSave.kind === "err" && <span className="text-sm text-destructive">{paypalSave.msg}</span>}
+                  </div>
+                </>
+              )}
             </CardContent>
+          </Card>
+
+          <Card className="border-dashed">
+            <CardHeader>
+              <CardTitle className="text-base flex items-center gap-2">
+                <CreditCard className="h-4 w-4 text-muted-foreground" />
+                Otros métodos
+                <Badge variant="secondary">Próximamente</Badge>
+              </CardTitle>
+              <CardDescription className="text-xs">
+                Stripe Connect, MercadoPago y BHD León (transferencia manual) llegan en próximas versiones.
+                Mientras tanto, podés coordinar el cobro por WhatsApp después de aprobar la solicitud.
+              </CardDescription>
+            </CardHeader>
           </Card>
         </TabsContent>
 

@@ -118,6 +118,20 @@ export async function GET(
     }));
   }
 
+  // ¿El host tiene PayPal habilitado? Solo flag — credenciales nunca se
+  // exponen al frontend. El cliente ID del PayPal SDK se pide después
+  // recién en /hub/[hostId]/pay/[token] cuando el huésped va a pagar.
+  const { data: paypalConfig } = await supabaseAdmin
+    .from("tenant_payment_configs")
+    .select("enabled, client_id")
+    .eq("tenant_id", hostId)
+    .eq("provider", "paypal")
+    .maybeSingle();
+  const paypalEnabled =
+    !!paypalConfig &&
+    !!(paypalConfig as { enabled?: boolean; client_id?: string }).enabled &&
+    !!(paypalConfig as { enabled?: boolean; client_id?: string }).client_id;
+
   return NextResponse.json({
     hub: {
       name: tenantRow.company || tenantRow.name || "Reservas Directas",
@@ -125,6 +139,9 @@ export async function GET(
       logo: tenantRow.logo_url ?? null,
       contactEmail: tenantRow.contact_email ?? tenantRow.email,
       whatsapp: tenantRow.owner_whatsapp ?? null,
+      paymentMethods: {
+        paypal: paypalEnabled,
+      },
     },
     properties,
     unavailable,
