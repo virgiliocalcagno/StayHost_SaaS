@@ -16,6 +16,8 @@ import {
   Globe,
   Home,
   Sparkles,
+  Mail,
+  MessageCircle,
 } from "lucide-react";
 import { useLanguage } from "../LanguageContext";
 
@@ -65,6 +67,10 @@ export default function HostHubPage({ params }: { params: Promise<{ hostId: stri
   const [properties, setProperties] = useState<StoredProperty[]>([]);
   const [experiences, setExperiences] = useState<StoredUpsell[]>([]);
   const [hubName, setHubName] = useState("Reservas Directas");
+  const [welcomeMessage, setWelcomeMessage] = useState<string | null>(null);
+  const [hubLogo, setHubLogo] = useState<string | null>(null);
+  const [contactEmail, setContactEmail] = useState<string | null>(null);
+  const [whatsapp, setWhatsapp] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [notFound, setNotFound] = useState(false);
   const [checkin, setCheckin] = useState("");
@@ -83,6 +89,10 @@ export default function HostHubPage({ params }: { params: Promise<{ hostId: stri
       .then((data) => {
         if (!data) return;
         if (data?.hub?.name) setHubName(data.hub.name);
+        if (data?.hub?.welcomeMessage) setWelcomeMessage(data.hub.welcomeMessage);
+        if (data?.hub?.logo) setHubLogo(data.hub.logo);
+        if (data?.hub?.contactEmail) setContactEmail(data.hub.contactEmail);
+        if (data?.hub?.whatsapp) setWhatsapp(data.hub.whatsapp);
         if (Array.isArray(data?.properties)) setProperties(data.properties);
         if (Array.isArray(data?.experiences)) setExperiences(data.experiences);
       })
@@ -90,11 +100,16 @@ export default function HostHubPage({ params }: { params: Promise<{ hostId: stri
       .finally(() => setLoading(false));
   }, [hostId]);
 
+  // Logo: si el host configuró uno, usamos eso. Sino, un fallback genérico
+  // (Unsplash photo de villa) — neutro, no es de un negocio real.
   const hostData = {
     name: hubName,
-    logo: "https://images.unsplash.com/photo-1541462608143-67571c6738dd?w=150&h=150&fit=crop",
+    logo: hubLogo || "https://images.unsplash.com/photo-1541462608143-67571c6738dd?w=150&h=150&fit=crop",
     heroImage: "https://images.unsplash.com/photo-1499793983690-e29da59ef1c2?q=80&w=2070&auto=format&fit=crop",
   };
+
+  // WhatsApp link: número en E.164 → wa.me sin el "+".
+  const whatsappLink = whatsapp ? `https://wa.me/${whatsapp.replace(/\D/g, "")}` : null;
 
   if (notFound) {
     return (
@@ -205,6 +220,15 @@ export default function HostHubPage({ params }: { params: Promise<{ hostId: stri
         </div>
       </section>
 
+      {/* MENSAJE DE BIENVENIDA — solo si el host configuró uno */}
+      {welcomeMessage && (
+        <section className="py-12 px-6 max-w-3xl mx-auto text-center">
+          <p className="text-lg md:text-xl text-slate-700 leading-relaxed font-medium italic">
+            “{welcomeMessage}”
+          </p>
+        </section>
+      )}
+
       {/* SECCIÓN ALOJAMIENTOS */}
       <section id="alojamientos" className="py-20 px-6 max-w-7xl mx-auto">
         <div className="flex justify-between items-end mb-10">
@@ -313,6 +337,29 @@ export default function HostHubPage({ params }: { params: Promise<{ hostId: stri
             ? "Mejora tu estadía con nuestras actividades locales recomendadas y curadas por nosotros."
             : "Enhance your stay with our local activities recommended and curated by us."}
         </p>
+
+        {/* Contacto del host: solo si está configurado */}
+        {(contactEmail || whatsappLink) && (
+          <div className="flex flex-col sm:flex-row gap-3 justify-center mb-8">
+            {whatsappLink && (
+              <Button asChild className="gap-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-full px-6 py-5 h-auto shadow-md">
+                <a href={whatsappLink} target="_blank" rel="noopener noreferrer">
+                  <MessageCircle className="w-4 h-4" />
+                  WhatsApp
+                </a>
+              </Button>
+            )}
+            {contactEmail && (
+              <Button asChild variant="outline" className="gap-2 rounded-full px-6 py-5 h-auto">
+                <a href={`mailto:${contactEmail}`}>
+                  <Mail className="w-4 h-4" />
+                  {contactEmail}
+                </a>
+              </Button>
+            )}
+          </div>
+        )}
+
         <Button className="gradient-gold text-white rounded-full px-10 py-6 h-auto font-bold text-lg shadow-xl border-none hover:scale-105 transition-transform">
           {lang === "es" ? "Reservar Ahora" : "Book Now"}
         </Button>

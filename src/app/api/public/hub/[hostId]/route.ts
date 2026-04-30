@@ -27,7 +27,7 @@ export async function GET(
   // Validar tenant existe.
   const { data: tenant, error: tenantErr } = await supabaseAdmin
     .from("tenants")
-    .select("id, name, company")
+    .select("id, name, company, contact_email, owner_whatsapp, hub_welcome_message, logo_url, email")
     .eq("id", hostId)
     .maybeSingle();
 
@@ -35,7 +35,16 @@ export async function GET(
     return NextResponse.json({ error: "Hub not found" }, { status: 404 });
   }
 
-  const tenantRow = tenant as { id: string; name: string | null; company: string | null };
+  const tenantRow = tenant as {
+    id: string;
+    name: string | null;
+    company: string | null;
+    contact_email: string | null;
+    owner_whatsapp: string | null;
+    hub_welcome_message: string | null;
+    logo_url: string | null;
+    email: string;
+  };
 
   // Properties activas del tenant. Filtramos prop_status != 'inactive' y
   // direct_enabled != false para que el host pueda excluir propiedades del
@@ -88,6 +97,10 @@ export async function GET(
   return NextResponse.json({
     hub: {
       name: tenantRow.company || tenantRow.name || "Reservas Directas",
+      welcomeMessage: tenantRow.hub_welcome_message ?? null,
+      logo: tenantRow.logo_url ?? null,
+      contactEmail: tenantRow.contact_email ?? tenantRow.email,
+      whatsapp: tenantRow.owner_whatsapp ?? null,
     },
     properties,
     // Upsells/experiencias: pendiente Sprint 3.1 (tabla upsells todavía
