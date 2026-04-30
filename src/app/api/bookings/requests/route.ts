@@ -54,15 +54,34 @@ export async function GET() {
     return NextResponse.json({ requests: [] });
   }
 
-  // Resolver nombres de propiedades en un solo query.
+  // Resolver nombres + precio + cleaning fee de propiedades en un solo
+  // query. Esto permite al panel precalcular el total sugerido
+  // (noches × precio + fee de limpieza) sin que el host tenga que
+  // tipear el precio a mano.
   const propIds = Array.from(new Set(rows.map((r) => r.property_id)));
   const { data: propData } = await supabase
     .from("properties")
-    .select("id, name")
+    .select("id, name, price, currency, cleaning_fee_one_day, cleaning_fee_more_days")
     .in("id", propIds);
-  const propMap = new Map<string, string>();
-  for (const p of (propData ?? []) as Array<{ id: string; name: string }>) {
-    propMap.set(p.id, p.name);
+  const propMap = new Map<
+    string,
+    { name: string; price: number; currency: string; feeOneDay: number; feeMoreDays: number }
+  >();
+  for (const p of (propData ?? []) as Array<{
+    id: string;
+    name: string;
+    price: number | null;
+    currency: string | null;
+    cleaning_fee_one_day: number | null;
+    cleaning_fee_more_days: number | null;
+  }>) {
+    propMap.set(p.id, {
+      name: p.name,
+      price: Number(p.price ?? 0),
+      currency: p.currency ?? "USD",
+      feeOneDay: Number(p.cleaning_fee_one_day ?? 0),
+      feeMoreDays: Number(p.cleaning_fee_more_days ?? 0),
+    });
   }
 
   // Signed URLs para las fotos. Usamos admin porque el bucket checkin-ids
@@ -77,10 +96,27 @@ export async function GET() {
           .createSignedUrl(r.guest_doc_photo_path, 60 * 60);
         docPhotoUrl = signed?.signedUrl ?? null;
       }
+      const prop = propMap.get(r.property_id);
+      // Sugerencia de precio: noches × precio/noche + fee de limpieza.
+      // El fee depende de la cantidad de noches (igual que el Hub público).
+      const nights = Math.max(
+        1,
+        Math.round(
+          (new Date(r.check_out).getTime() - new Date(r.check_in).getTime()) / 86400000
+        )
+      );
+      const fee = nights === 1 ? (prop?.feeOneDay ?? 0) : (prop?.feeMoreDays ?? 0);
+      const suggestedPrice = prop ? prop.price * nights + fee : 0;
+
       return {
         id: r.id,
         propertyId: r.property_id,
-        propertyName: propMap.get(r.property_id) ?? "(propiedad desconocida)",
+        propertyName: prop?.name ?? "(propiedad desconocida)",
+        propertyPrice: prop?.price ?? 0,
+        propertyCurrency: prop?.currency ?? "USD",
+        cleaningFee: fee,
+        suggestedPrice,
+        nights,
         checkIn: r.check_in,
         checkOut: r.check_out,
         guestName: r.guest_name,

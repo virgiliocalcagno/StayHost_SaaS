@@ -45,6 +45,11 @@ interface BookingRequest {
   id: string;
   propertyId: string;
   propertyName: string;
+  propertyPrice: number;
+  propertyCurrency: string;
+  cleaningFee: number;
+  suggestedPrice: number;
+  nights: number;
   checkIn: string;
   checkOut: string;
   guestName: string | null;
@@ -96,7 +101,20 @@ export default function DirectBookingsPanel() {
       const res = await fetch("/api/bookings/requests", { credentials: "same-origin", cache: "no-store" });
       if (!res.ok) return;
       const data = (await res.json()) as { requests?: BookingRequest[] };
-      setRequests(Array.isArray(data.requests) ? data.requests : []);
+      const list = Array.isArray(data.requests) ? data.requests : [];
+      setRequests(list);
+      // Precargamos el precio sugerido (noches × precio/noche + fee de
+      // limpieza) en cada solicitud, SIN sobreescribir si el host ya
+      // tipeó algo manual.
+      setApprovePrice((prev) => {
+        const next = { ...prev };
+        for (const req of list) {
+          if (next[req.id] === undefined && req.suggestedPrice > 0) {
+            next[req.id] = String(req.suggestedPrice);
+          }
+        }
+        return next;
+      });
     } finally {
       setRequestsLoading(false);
     }
@@ -390,9 +408,9 @@ export default function DirectBookingsPanel() {
 
                     {/* Acciones: precio + aprobar/rechazar */}
                     <div className="flex flex-col gap-2 md:items-end md:min-w-[180px]">
-                      <div className="space-y-1 w-full md:w-40">
+                      <div className="space-y-1 w-full md:w-44">
                         <label className="text-xs font-bold text-muted-foreground uppercase tracking-wider">
-                          Precio total
+                          Precio total ({req.propertyCurrency})
                         </label>
                         <Input
                           type="number"
@@ -402,9 +420,19 @@ export default function DirectBookingsPanel() {
                           onChange={(e) =>
                             setApprovePrice((prev) => ({ ...prev, [req.id]: e.target.value }))
                           }
-                          placeholder="USD"
+                          placeholder={req.propertyCurrency}
                           className="text-right"
                         />
+                        {/* Breakdown del precio sugerido — el host ve de dónde
+                            sale el número precargado y puede ajustarlo si el
+                            huésped negoció. */}
+                        {req.suggestedPrice > 0 && (
+                          <p className="text-[10px] text-muted-foreground leading-tight">
+                            Sugerido: {formatCurrency(req.suggestedPrice)} ={" "}
+                            {formatCurrency(req.propertyPrice)} × {req.nights} {req.nights === 1 ? "noche" : "noches"}
+                            {req.cleaningFee > 0 ? ` + ${formatCurrency(req.cleaningFee)} limpieza` : ""}
+                          </p>
+                        )}
                       </div>
                       <Button
                         size="sm"
