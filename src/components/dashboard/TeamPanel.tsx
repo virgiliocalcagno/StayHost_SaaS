@@ -1120,10 +1120,25 @@ export default function TeamPanel() {
               {/* STEP 2: ROLES Y PERMISOS */}
               {inviteStep === "roles" && (
                 <div className="space-y-8 animate-in fade-in slide-in-from-right-4">
+                  {/* Disclaimer: hoy las permissions se guardan pero no se aplican
+                      todavia. Importante avisarlo para que el usuario no asuma
+                      que un "Limpieza" no puede ver financieros. */}
+                  <div className="rounded-lg border border-amber-200 bg-amber-50 dark:bg-amber-950/30 dark:border-amber-900 p-3 text-xs text-amber-800 dark:text-amber-200">
+                    <strong>En desarrollo:</strong> los permisos se guardan correctamente,
+                    pero la aplicación granular en el panel está en próxima fase.
+                    Por ahora todo miembro invitado verá tu panel completo. Invitalos
+                    sólo a personas de confianza.
+                  </div>
                   <div className="space-y-4">
                     <Label className="text-sm font-medium text-muted-foreground uppercase tracking-wider">1. Seleccionar Perfil Principal</Label>
                     <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-                      {Object.entries(roleConfig).map(([key, config]) => (
+                      {Object.entries(roleConfig)
+                        // El rol "owner" es para SaaS Master / dueño del tenant
+                        // (Virgilio o Master delegado), no para invitar staff.
+                        // Filtrarlo del wizard cierra el agujero conceptual donde
+                        // un cliente podia crear un staff con label "Dios".
+                        .filter(([key]) => key !== "owner")
+                        .map(([key, config]) => (
                         <button
                           key={key}
                           type="button"

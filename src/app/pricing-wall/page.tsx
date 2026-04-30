@@ -13,7 +13,10 @@ type Me = {
   planExpiresAt: string | null;
 };
 
-const WHATSAPP_OWNER = "5491100000000"; // Reemplazar con WhatsApp real de Virgilio
+// WhatsApp del owner del SaaS — desde env. Sin él, mostramos solo email
+// como fallback. Setear NEXT_PUBLIC_OWNER_WHATSAPP en Vercel con el
+// numero completo en formato internacional sin + (ej: 5491111111111).
+const WHATSAPP_OWNER = (process.env.NEXT_PUBLIC_OWNER_WHATSAPP ?? "").replace(/\D/g, "");
 
 export default function PricingWallPage() {
   const router = useRouter();
@@ -91,15 +94,17 @@ export default function PricingWallPage() {
         </div>
 
         <div className="space-y-3">
-          <Button asChild className="w-full gradient-gold text-white font-bold text-base py-6 rounded-xl shadow-lg gap-2">
-            <a href={whatsappUrl} target="_blank" rel="noopener noreferrer">
-              <MessageCircle className="h-5 w-5" />
-              Contactar por WhatsApp
-            </a>
-          </Button>
+          {WHATSAPP_OWNER && (
+            <Button asChild className="w-full gradient-gold text-white font-bold text-base py-6 rounded-xl shadow-lg gap-2">
+              <a href={whatsappUrl} target="_blank" rel="noopener noreferrer">
+                <MessageCircle className="h-5 w-5" />
+                Contactar por WhatsApp
+              </a>
+            </Button>
+          )}
 
           <div className="flex gap-3">
-            <Button asChild variant="outline" className="flex-1 gap-2">
+            <Button asChild variant="outline" className={`gap-2 ${WHATSAPP_OWNER ? "flex-1" : "w-full"}`}>
               <a href={`mailto:virgiliocalcagno@gmail.com?subject=Activar plan StayHost - ${me.email}`}>
                 Escribir por email
               </a>
