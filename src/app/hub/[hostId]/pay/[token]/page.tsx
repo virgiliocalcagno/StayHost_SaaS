@@ -152,7 +152,11 @@ export default function PayPage({ params }: { params: Promise<{ hostId: string; 
       "client-id": info.paypal.clientId,
       currency: info.booking.currency,
       intent: "capture",
-      "disable-funding": "credit,card",
+      // disable PayPal Credit (USA-only, irrelevante en LATAM) y paylater
+      // (financiación post-compra). NO deshabilitar 'card' — ése es el
+      // botón "Debit or Credit Card" / Guest Checkout que queremos mostrar.
+      "disable-funding": "credit,paylater",
+      "enable-funding": "card",
     });
     script.src = `https://www.paypal.com/sdk/js?${params.toString()}`;
     script.async = true;
