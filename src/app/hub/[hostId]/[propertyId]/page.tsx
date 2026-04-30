@@ -189,9 +189,53 @@ export default function PropertyPage({ params }: { params: Promise<{ hostId: str
   const [guestName, setGuestName] = useState("");
   const [guestEmail, setGuestEmail] = useState("");
   const [guestPhone, setGuestPhone] = useState("");
+  // Identidad del huesped — obligatorio para LATAM (registro turistico,
+  // anti-fraude). Sin docNumber + nacionalidad + foto del documento, no
+  // se puede solicitar reserva.
+  const [guestDoc, setGuestDoc] = useState("");
+  const [guestNationality, setGuestNationality] = useState("");
+  const [guestDocPhotoPath, setGuestDocPhotoPath] = useState<string | null>(null);
+  const [scanning, setScanning] = useState(false);
+  const [scanError, setScanError] = useState<string | null>(null);
+  const [submitError, setSubmitError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [bookingConfirmed, setBookingConfirmed] = useState<DirectBooking | null>(null);
-  const [isCardValid, setIsCardValid] = useState(false);
+
+  // Escanear documento del huesped: igual que en NewBookingModal del host.
+  // Reusa Gemini OCR pero via endpoint publico que valida hostId + sube la
+  // foto al bucket bajo {tenantId}/hub-requests/{uuid}.
+  const handleScanDoc = async (file: File) => {
+    setScanning(true);
+    setScanError(null);
+    try {
+      const form = new FormData();
+      form.append("image", file);
+      const res = await fetch(`/api/public/hub/${encodeURIComponent(hostId)}/scan-document`, {
+        method: "POST",
+        body: form,
+      });
+      if (!res.ok) {
+        const j = (await res.json().catch(() => ({}))) as { error?: string };
+        throw new Error(j.error ?? `HTTP ${res.status}`);
+      }
+      const { doc } = (await res.json()) as {
+        doc: {
+          guestName?: string;
+          docNumber?: string;
+          nationality?: string;
+          photoPath?: string;
+        };
+      };
+      if (doc.guestName && !guestName) setGuestName(doc.guestName);
+      if (doc.docNumber && !guestDoc) setGuestDoc(doc.docNumber);
+      if (doc.nationality && !guestNationality) setGuestNationality(doc.nationality);
+      if (doc.photoPath) setGuestDocPhotoPath(doc.photoPath);
+    } catch (err) {
+      setScanError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setScanning(false);
+    }
+  };
 
   // ── Price calculations ────────────────────────────────────────────────────
   const nights = diffNights(checkin, checkout);
@@ -244,21 +288,43 @@ export default function PropertyPage({ params }: { params: Promise<{ hostId: str
   };
 
   // ── Booking submission ────────────────────────────────────────────────────
-  // Reservas online vía hub público están deshabilitadas hasta Sprint 3.x.
-  // El handler antes guardaba el booking en localStorage del huésped — el
-  // host nunca lo recibía y el huésped pensaba que había reservado. Ahora
-  // mostramos contacto directo al host.
-  const handleConfirmBooking = () => {
-    if (!guestName.trim() || !guestEmail.trim()) return;
+  // POST a /api/public/hub/[hostId]/booking. Crea una solicitud
+  // (status='pending_review') que el host aprueba/rechaza desde su panel.
+  // No se cobra en este paso — el host coordina pago al confirmar.
+  const handleConfirmBooking = async () => {
+    setSubmitError(null);
+    if (!guestName.trim() || !guestPhone.trim() || !guestDoc.trim() || !guestNationality.trim()) {
+      setSubmitError("Completa nombre, teléfono, documento y nacionalidad para enviar la solicitud.");
+      return;
+    }
     setIsSubmitting(true);
-
-    setTimeout(() => {
-      const bookingId = `bk-${Date.now()}`;
+    try {
+      const res = await fetch(`/api/public/hub/${encodeURIComponent(hostId)}/booking`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          propertyId,
+          checkIn: checkin,
+          checkOut: checkout,
+          guestName: guestName.trim(),
+          guestPhone: guestPhone.trim(),
+          guestDoc: guestDoc.trim(),
+          guestNationality: guestNationality.trim().toUpperCase(),
+          guestDocPhotoPath,
+          numGuests: guests,
+          note: guestEmail
+            ? `Email del huésped: ${guestEmail.trim()}`
+            : null,
+        }),
+      });
+      if (!res.ok) {
+        const j = (await res.json().catch(() => ({}))) as { error?: string };
+        throw new Error(j.error ?? `HTTP ${res.status}`);
+      }
       const propName = property?.name ?? "Propiedad";
       const propImage = property?.image;
-
-      const booking: DirectBooking = {
-        id: bookingId,
+      setBookingConfirmed({
+        id: `req-${Date.now()}`,
         propertyId,
         propertyName: propName,
         propertyImage: propImage,
@@ -279,15 +345,13 @@ export default function PropertyPage({ params }: { params: Promise<{ hostId: str
         upsellIds: selectedUpsellIds,
         status: "confirmed",
         createdAt: new Date().toISOString(),
-      };
-      void booking;
-
-      // Coupons todavía no persisten en BD (Sprint 3.x los construye).
+      });
       void appliedCoupon;
-
-      setBookingConfirmed(booking);
+    } catch (err) {
+      setSubmitError(err instanceof Error ? err.message : String(err));
+    } finally {
       setIsSubmitting(false);
-    }, 1400);
+    }
   };
 
   // ── Render: Booking Confirmed Screen ─────────────────────────────────────
@@ -738,7 +802,7 @@ export default function PropertyPage({ params }: { params: Promise<{ hostId: str
 
                 <div className="space-y-1.5">
                   <Label htmlFor="guestPhone" className="text-xs font-bold uppercase tracking-wider text-slate-500">
-                    WhatsApp / Teléfono
+                    WhatsApp / Teléfono *
                   </Label>
                   <div className="relative">
                     <Phone className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-400" />
@@ -750,6 +814,86 @@ export default function PropertyPage({ params }: { params: Promise<{ hostId: str
                       onChange={e => setGuestPhone(e.target.value)}
                       className="pl-10 rounded-xl"
                     />
+                  </div>
+                </div>
+
+                {/* Bloque Identidad — escanear ID y campos */}
+                <div className="bg-blue-50 border border-blue-200 rounded-2xl p-4 space-y-3">
+                  <div className="flex items-start gap-3">
+                    <ShieldCheck className="h-5 w-5 text-blue-600 flex-shrink-0 mt-0.5" />
+                    <div className="text-xs text-blue-900">
+                      <p className="font-bold mb-1">Identidad del huésped</p>
+                      <p className="text-blue-700">
+                        Para confirmar la reserva, necesitamos identificar al huésped principal.
+                        Escaneá tu documento o cargá los datos manualmente. Tu información solo la
+                        ve el host y se usa para el registro turístico.
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-3">
+                    <input
+                      type="file"
+                      accept="image/*"
+                      capture="environment"
+                      id="hubDocScan"
+                      className="hidden"
+                      onChange={(e) => {
+                        const f = e.target.files?.[0];
+                        if (f) handleScanDoc(f);
+                        e.currentTarget.value = "";
+                      }}
+                    />
+                    <Button
+                      type="button"
+                      onClick={() => document.getElementById("hubDocScan")?.click()}
+                      disabled={scanning}
+                      className="bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-bold uppercase tracking-wider gap-2"
+                    >
+                      {scanning ? (
+                        <><Loader2 className="h-4 w-4 animate-spin" /> Escaneando...</>
+                      ) : guestDocPhotoPath ? (
+                        <><CheckCircle2 className="h-4 w-4" /> Documento escaneado</>
+                      ) : (
+                        <><Sparkles className="h-4 w-4" /> Escanear ID o pasaporte</>
+                      )}
+                    </Button>
+                    {guestDocPhotoPath && (
+                      <span className="text-xs text-emerald-700 font-semibold">Foto guardada</span>
+                    )}
+                  </div>
+                  {scanError && (
+                    <p className="text-xs text-red-600 flex items-center gap-1">
+                      <AlertCircle className="h-3 w-3" /> {scanError}
+                    </p>
+                  )}
+
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="space-y-1.5">
+                      <Label htmlFor="guestDoc" className="text-xs font-bold uppercase tracking-wider text-slate-500">
+                        Documento *
+                      </Label>
+                      <Input
+                        id="guestDoc"
+                        placeholder="ID / Pasaporte"
+                        value={guestDoc}
+                        onChange={(e) => setGuestDoc(e.target.value)}
+                        className="rounded-xl"
+                      />
+                    </div>
+                    <div className="space-y-1.5">
+                      <Label htmlFor="guestNationality" className="text-xs font-bold uppercase tracking-wider text-slate-500">
+                        Nacionalidad *
+                      </Label>
+                      <Input
+                        id="guestNationality"
+                        placeholder="DOM, ESP, USA..."
+                        value={guestNationality}
+                        onChange={(e) => setGuestNationality(e.target.value)}
+                        className="rounded-xl uppercase"
+                        maxLength={3}
+                      />
+                    </div>
                   </div>
                 </div>
               </div>
@@ -782,29 +926,38 @@ export default function PropertyPage({ params }: { params: Promise<{ hostId: str
                 </div>
               </div>
 
-              {/* Real Stripe Payment Gateway */}
-              <PublicStripeForm 
-                total={finalTotal} 
-                onComplete={(valid) => setIsCardValid(valid)} 
-              />
+              {/* Submit error */}
+              {submitError && (
+                <div className="bg-red-50 border border-red-200 rounded-xl p-3 text-xs text-red-700 flex items-start gap-2">
+                  <AlertCircle className="h-4 w-4 flex-shrink-0 mt-0.5" />
+                  <span>{submitError}</span>
+                </div>
+              )}
 
               {/* Confirm Button */}
                <Button
                 className="w-full gradient-gold text-white font-bold text-base py-6 rounded-2xl shadow-xl border-none hover:scale-[1.02] transition-transform disabled:opacity-50 disabled:grayscale disabled:scale-100"
                 onClick={handleConfirmBooking}
-                disabled={isSubmitting || !guestName.trim() || !guestEmail.trim() || !isCardValid}
+                disabled={
+                  isSubmitting ||
+                  !guestName.trim() ||
+                  !guestPhone.trim() ||
+                  !guestDoc.trim() ||
+                  !guestNationality.trim()
+                }
               >
                 {isSubmitting ? (
                   <span className="flex items-center gap-2">
                     <Loader2 className="h-5 w-5 animate-spin" /> Enviando solicitud...
                   </span>
                 ) : (
-                  `Solicitar reserva · $${finalTotal.toLocaleString()}`
+                  "Enviar solicitud al host"
                 )}
               </Button>
 
-              <p className="text-center text-[10px] text-slate-400 font-medium">
-                El host te contactará para confirmar disponibilidad y coordinar el pago. No se realizará ningún cargo en este paso.
+              <p className="text-center text-[10px] text-slate-400 font-medium leading-relaxed">
+                Esto es una <strong>solicitud</strong>, no una reserva confirmada. El host la revisará
+                y te contactará para coordinar el pago. No se realizará ningún cargo ahora.
               </p>
             </div>
           </div>
