@@ -39,8 +39,12 @@ export async function GET(req: NextRequest) {
   };
 
   const [{ data: prop }, { data: tenant }, { data: cfg }] = await Promise.all([
-    supabaseAdmin.from("properties").select("name, address, city").eq("id", booking.property_id).maybeSingle(),
-    supabaseAdmin.from("tenants").select("id, company, name").eq("id", booking.tenant_id).maybeSingle(),
+    supabaseAdmin.from("properties").select("name, address, city, neighborhood").eq("id", booking.property_id).maybeSingle(),
+    supabaseAdmin
+      .from("tenants")
+      .select("id, company, name, contact_email, owner_whatsapp, hub_welcome_message, email")
+      .eq("id", booking.tenant_id)
+      .maybeSingle(),
     supabaseAdmin
       .from("tenant_payment_configs")
       .select("client_id, mode, enabled")
@@ -49,8 +53,14 @@ export async function GET(req: NextRequest) {
       .maybeSingle(),
   ]);
 
-  const property = prop as { name: string; address: string | null; city: string | null } | null;
-  const tenantRow = tenant as { id: string; company: string | null; name: string | null } | null;
+  const property = prop as {
+    name: string; address: string | null; city: string | null; neighborhood: string | null;
+  } | null;
+  const tenantRow = tenant as {
+    id: string; company: string | null; name: string | null;
+    contact_email: string | null; owner_whatsapp: string | null;
+    hub_welcome_message: string | null; email: string;
+  } | null;
   const config = cfg as { client_id: string | null; mode: string; enabled: boolean } | null;
 
   const paypalReady = !!(config?.enabled && config?.client_id);
@@ -75,12 +85,18 @@ export async function GET(req: NextRequest) {
           name: property.name,
           address: property.address,
           city: property.city,
+          neighborhood: property.neighborhood,
         }
       : null,
     host: tenantRow
       ? {
           id: tenantRow.id,
           name: tenantRow.company || tenantRow.name || "Host",
+          // Email del negocio (preferimos contact_email si lo configuró,
+          // sino el de login). Lo va a ver el huésped post-pago.
+          email: tenantRow.contact_email ?? tenantRow.email,
+          whatsapp: tenantRow.owner_whatsapp ?? null,
+          welcomeMessage: tenantRow.hub_welcome_message ?? null,
         }
       : null,
     paypal: paypalReady
