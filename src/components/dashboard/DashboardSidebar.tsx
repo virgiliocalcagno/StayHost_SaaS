@@ -76,6 +76,19 @@ interface SidebarProps {
   setSidebarOpen: (open: boolean) => void;
 }
 
+// Modulos en construccion: BD/endpoint todavia no existe (Sprint 3.x los
+// va construyendo). Esconderlos del sidebar evita que el cliente haga
+// click → vea empty state confuso → piense que el SaaS esta roto. Cuando
+// se construya cada uno se saca de este Set.
+const MODULES_IN_CONSTRUCTION = new Set([
+  "messages",     // Sprint 3.5 — IA pendiente
+  "pricing",      // Sprint 3.2 — tabla pricing_rules pendiente
+  "upsells",      // Sprint 3.1 — tabla upsells pendiente
+  "agreements",   // Sprint 3.4 — tabla agreements pendiente
+  "reports",      // Sprint 3.3 — endpoint de agregaciones pendiente
+  "documents",    // Supabase Storage flow pendiente
+]);
+
 const mainMenuItems = [
   { id: "overview", label: "Vista General", icon: LayoutDashboard },
   { id: "properties", label: "Propiedades", icon: Building2 },
@@ -162,13 +175,22 @@ export default function DashboardSidebar({
     ? "SaaS Master"
     : (effectiveRole || "Staff");
 
-  const filteredMainItems = mainMenuItems.filter(item =>
-    item.id === "overview" || isModuleEnabled(item.id as ModuleId)
-  );
+  // Master ve todos los modulos (incluyendo en construccion) para evaluar.
+  // Los demas tenants solo ven los modulos completados.
+  const showInConstruction = isMaster;
 
-  const filteredModuleItems = modulesMenuItems.filter(item => 
-    isModuleEnabled(item.id as ModuleId)
-  );
+  const filteredMainItems = mainMenuItems.filter(item => {
+    if (item.id === "overview") return true;
+    if (!isModuleEnabled(item.id as ModuleId)) return false;
+    if (MODULES_IN_CONSTRUCTION.has(item.id) && !showInConstruction) return false;
+    return true;
+  });
+
+  const filteredModuleItems = modulesMenuItems.filter(item => {
+    if (!isModuleEnabled(item.id as ModuleId)) return false;
+    if (MODULES_IN_CONSTRUCTION.has(item.id) && !showInConstruction) return false;
+    return true;
+  });
   const renderMenuItem = (item: { id: string; label: string; icon: React.ElementType }) => {
     const isActive = activePanel === item.id;
     const menuButton = (
@@ -318,9 +340,9 @@ export default function DashboardSidebar({
             )}
             {sidebarOpen && (
               <Button variant="ghost" size="icon" className="shrink-0" asChild>
-                <Link href="/">
+                <a href="/salir" aria-label="Cerrar sesion">
                   <LogOut className="h-4 w-4" />
-                </Link>
+                </a>
               </Button>
             )}
           </div>

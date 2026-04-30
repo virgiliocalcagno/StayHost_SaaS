@@ -568,36 +568,52 @@ export default function CheckInsPanel() {
   // ─── Load ────────────────────────────────────────────────────────────────────
   useEffect(() => {
     void refreshRecords();
-    // WiFi, electricity and properties are still per-browser config; only the
-    // check-in records themselves moved to the backend.
-    try {
-      const w = localStorage.getItem("stayhost_wifi_configs");
-      if (w) setWifiConfigs(JSON.parse(w));
-    } catch {}
-    try {
-      const e = localStorage.getItem("stayhost_elec_config");
-      if (e) setElecConfigs(JSON.parse(e));
-    } catch {}
-    try {
-      const p = localStorage.getItem("stayhost_properties");
-      if (p) setProperties(JSON.parse(p).map((x: Record<string, unknown>) => ({
-        id: x.id as string,
-        name: x.name as string,
-        address: x.address as string | undefined,
-        addressUnit: x.addressUnit as string | undefined,
-        neighborhood: x.neighborhood as string | undefined,
-        city: x.city as string | undefined,
-        image: x.image as string | undefined,
-        accessMethod: x.accessMethod as "ttlock" | "keybox" | "in_person" | "doorman" | undefined,
-        keyboxCode: x.keyboxCode as string | undefined,
-        keyboxLocation: x.keyboxLocation as string | undefined,
-        keyboxPhotoUrl: x.keyboxPhotoUrl as string | undefined,
-        keyboxShareWithGuest: x.keyboxShareWithGuest as boolean | undefined,
-        ttlockLockId: x.ttlockLockId as string | undefined,
-        checkInTime: x.checkInTime as string | undefined,
-        checkOutTime: x.checkOutTime as string | undefined,
-      })));
-    } catch {}
+    // Properties + WiFi + electricity vienen de /api/properties (columnas
+    // wifi_name/wifi_password/electricity_enabled/electricity_rate). Sin
+    // localStorage — leakeaba entre tenants en el mismo browser.
+    fetch("/api/properties", { credentials: "same-origin", cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        const list = Array.isArray(data?.properties) ? data.properties : [];
+        const props = list.map((p: Record<string, unknown>) => ({
+          id: p.id as string,
+          name: p.name as string,
+          address: (p.address as string | null) ?? undefined,
+          addressUnit: (p.address_unit as string | null) ?? undefined,
+          neighborhood: (p.neighborhood as string | null) ?? undefined,
+          city: (p.city as string | null) ?? undefined,
+          image: (p.cover_image as string | null) ?? undefined,
+          accessMethod: (p.access_method as "ttlock" | "keybox" | "in_person" | "doorman" | null) ?? undefined,
+          keyboxCode: (p.keybox_code as string | null) ?? undefined,
+          keyboxLocation: (p.keybox_location as string | null) ?? undefined,
+          keyboxPhotoUrl: (p.keybox_photo_url as string | null) ?? undefined,
+          keyboxShareWithGuest: (p.keybox_share_with_guest as boolean | null) ?? undefined,
+          ttlockLockId: p.ttlock_lock_id != null ? String(p.ttlock_lock_id) : undefined,
+          checkInTime: (p.check_in_time as string | null) ?? undefined,
+          checkOutTime: (p.check_out_time as string | null) ?? undefined,
+        }));
+        setProperties(props);
+        // Derivar wifiConfigs y elecConfigs desde las columnas de properties.
+        const wifi: WifiConfig[] = list
+          .filter((p: Record<string, unknown>) => p.wifi_name)
+          .map((p: Record<string, unknown>) => ({
+            propertyId: p.id as string,
+            propertyName: p.name as string,
+            ssid: (p.wifi_name as string) ?? "",
+            password: (p.wifi_password as string) ?? "",
+          }));
+        setWifiConfigs(wifi);
+        const elec: ElecConfig[] = list
+          .filter((p: Record<string, unknown>) => p.electricity_enabled)
+          .map((p: Record<string, unknown>) => ({
+            propertyId: p.id as string,
+            enabled: Boolean(p.electricity_enabled),
+            rate: Number(p.electricity_rate ?? 5),
+            paypal: true,
+          }));
+        setElecConfigs(elec);
+      })
+      .catch(() => {});
   }, [refreshRecords]);
 
   // ─── Build a candidate record for the backend upsert ─────────────────────
@@ -682,102 +698,13 @@ export default function CheckInsPanel() {
         return ec ?? { enabled: true, rate: 5, paypal: true };
       };
 
-      let freshElecConfigs: ElecConfig[] = [];
-      try {
-        const raw = localStorage.getItem("stayhost_elec_config");
-        if (raw) freshElecConfigs = JSON.parse(raw);
-      } catch {}
-
-      // ── Source 1: direct bookings ──────────────────────────────────────────
-      let directCount = 0;
-      try {
-        const raw = localStorage.getItem("stayhost_direct_bookings");
-        const bookings: DirectBooking[] = raw ? JSON.parse(raw) : [];
-        const wifi = JSON.parse(localStorage.getItem("stayhost_wifi_configs") ?? "[]") as WifiConfig[];
-
-        for (const b of bookings) {
-          if (b.status !== "confirmed") continue;
-          if (usedRefs.has(b.id)) continue;
-
-          const phone = b.guestPhone ?? "";
-          const last4 = phone.replace(/\D/g, "").slice(-4);
-          if (last4.length !== 4) continue;
-
-          const nights = diffNights(b.checkin, b.checkout);
-          if (nights <= 0) continue;
-
-          const nameParts = b.guestName.trim().split(" ");
-          const lastName = nameParts.length > 1 ? nameParts[nameParts.length - 1] : b.guestName;
-          const firstName = nameParts.length > 1 ? nameParts.slice(0, -1).join(" ") : "";
-
-          const w = wifi.find(x => x.propertyId === b.propertyId);
-          const ec = getElecConfig(b.propertyId ?? "", freshElecConfigs);
-          const elec = ec.enabled ? calcElectricity(nights, ec.rate, ec.paypal) : 0;
-          const prop = properties.find(p => p.id === b.propertyId);
-
-          candidates.push(buildCandidate({
-            source: "auto_direct", channel: "direct",
-            guestName: firstName || b.guestName, guestLastName: lastName,
-            lastFourDigits: last4,
-            checkin: b.checkin, checkout: b.checkout, nights,
-            propertyId: b.propertyId ?? "", propertyName: b.propertyName ?? "",
-            propertyAddress: prop?.address, propertyImage: prop?.image,
-            wifiSsid: w?.ssid, wifiPassword: w?.password,
-            electricityEnabled: ec.enabled, electricityTotal: elec,
-            bookingRef: b.id,
-          }));
-          usedRefs.add(b.id);
-          directCount++;
-        }
-      } catch {}
-
-      // ── Source 2: iCal cached bookings ─────────────────────────────────────
-      let icalCount = 0;
-      try {
-        const raw = localStorage.getItem("stayhost_ical_configs");
-        const configs: ICalConfig[] = raw ? JSON.parse(raw) : [];
-        const wifi = JSON.parse(localStorage.getItem("stayhost_wifi_configs") ?? "[]") as WifiConfig[];
-
-        for (const config of configs) {
-          if (!config.bookings?.length) continue;
-          const w = wifi.find(x => x.propertyId === config.propertyId);
-          const propInfo = properties.find(p => p.id === config.propertyId);
-          const ec = getElecConfig(config.propertyId, freshElecConfigs);
-
-          for (const b of config.bookings) {
-            const isMissingPhone = !b.phoneLast4 || b.phoneLast4.length !== 4;
-            const refKey = `ical-${b.uid}`;
-            if (usedRefs.has(refKey)) continue;
-
-            const nights = b.nights > 0 ? b.nights : diffNights(b.checkin, b.checkout);
-            if (nights <= 0) continue;
-
-            const nameParts = b.guestName.trim().split(" ");
-            const lastName = nameParts.length > 1 ? nameParts[nameParts.length - 1] : (isMissingPhone ? "" : b.guestName);
-            const firstName = nameParts.length > 1 ? nameParts.slice(0, -1).join(" ") : (isMissingPhone ? b.guestName : "");
-            const isMissingName = !firstName || !lastName;
-            const missingData = isMissingPhone || isMissingName;
-
-            const elec = ec.enabled ? calcElectricity(nights, ec.rate, ec.paypal) : 0;
-
-            candidates.push(buildCandidate({
-              source: "auto_ical", channel: b.channel,
-              guestName: missingData ? "Pendiente" : (firstName || b.guestName),
-              guestLastName: missingData ? "de Datos" : (lastName ?? ""),
-              lastFourDigits: isMissingPhone ? "0000" : (b.phoneLast4 ?? "0000"),
-              checkin: b.checkin, checkout: b.checkout, nights,
-              propertyId: config.propertyId, propertyName: propInfo?.name ?? config.propertyId,
-              propertyAddress: propInfo?.address, propertyImage: propInfo?.image,
-              missingData: missingData,
-              wifiSsid: w?.ssid, wifiPassword: w?.password,
-              electricityEnabled: ec.enabled, electricityTotal: elec,
-              bookingRef: refKey,
-            }));
-            usedRefs.add(refKey);
-            icalCount++;
-          }
-        }
-      } catch {}
+      // Sources 1 (stayhost_direct_bookings) y 2 (stayhost_ical_configs)
+      // eliminadas: leakeaban entre tenants y duplicaban Source 3
+      // (/api/bookings). La fuente de verdad es la BD.
+      const freshElecConfigs: ElecConfig[] = elecConfigs;
+      void getElecConfig;
+      const directCount = 0;
+      const icalCount = 0;
 
       // ── Source 3: bookings en BD (via /api/bookings) ──────────────────────
       // La fuente de verdad está en Postgres, no en localStorage. Esta fuente
@@ -798,7 +725,9 @@ export default function CheckInsPanel() {
               }>;
             }>;
           };
-          const wifi = JSON.parse(localStorage.getItem("stayhost_wifi_configs") ?? "[]") as WifiConfig[];
+          // wifiConfigs ya viene del state (derivado de /api/properties al
+          // mount). No re-leer localStorage — leakeaba entre tenants.
+          const wifi = wifiConfigs;
 
           // Populamos el mapa bookingId → channel_code para el boton
           // WhatsApp. Sin esto, shareWhatsApp usa el UUID del booking como
@@ -1136,11 +1065,23 @@ export default function CheckInsPanel() {
 
   // ─── WiFi ─────────────────────────────────────────────────────────────────
 
-  function saveWifi() {
+  async function saveWifi() {
     if (!wifiForm.propertyId || !wifiForm.ssid) return;
     const next = [...wifiConfigs.filter(w => w.propertyId !== wifiForm.propertyId), { ...wifiForm }];
     setWifiConfigs(next);
-    localStorage.setItem("stayhost_wifi_configs", JSON.stringify(next));
+    // Persistencia: columnas wifi_name / wifi_password en properties (BD).
+    try {
+      await fetch("/api/properties", {
+        method: "PATCH",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          propertyId: wifiForm.propertyId,
+          wifi_name: wifiForm.ssid,
+          wifi_password: wifiForm.password,
+        }),
+      });
+    } catch {}
     setWifiForm({ propertyId: "", propertyName: "", ssid: "", password: "" });
   }
 
@@ -1911,10 +1852,21 @@ export default function CheckInsPanel() {
                       </Button>
                       <Button
                         variant="ghost" size="sm" className="h-7 px-2 text-muted-foreground hover:text-destructive"
-                        onClick={() => {
+                        onClick={async () => {
                           const n = wifiConfigs.filter(x => x.propertyId !== w.propertyId);
                           setWifiConfigs(n);
-                          localStorage.setItem("stayhost_wifi_configs", JSON.stringify(n));
+                          try {
+                            await fetch("/api/properties", {
+                              method: "PATCH",
+                              credentials: "same-origin",
+                              headers: { "Content-Type": "application/json" },
+                              body: JSON.stringify({
+                                propertyId: w.propertyId,
+                                wifi_name: null,
+                                wifi_password: null,
+                              }),
+                            });
+                          } catch {}
                         }}
                         aria-label="Eliminar WiFi">
                         <Trash2 className="h-3.5 w-3.5" />
@@ -1997,10 +1949,21 @@ export default function CheckInsPanel() {
                         <Button
                           variant="ghost" size="sm" className="h-7 px-2 text-muted-foreground hover:text-destructive"
                           aria-label="Eliminar config eléctrica"
-                          onClick={() => {
+                          onClick={async () => {
                             const next = elecConfigs.filter(c => c.propertyId !== ec.propertyId);
                             setElecConfigs(next);
-                            localStorage.setItem("stayhost_elec_config", JSON.stringify(next));
+                            try {
+                              await fetch("/api/properties", {
+                                method: "PATCH",
+                                credentials: "same-origin",
+                                headers: { "Content-Type": "application/json" },
+                                body: JSON.stringify({
+                                  propertyId: ec.propertyId,
+                                  electricity_enabled: false,
+                                  electricity_rate: null,
+                                }),
+                              });
+                            } catch {}
                           }}>
                           <Trash2 className="h-3.5 w-3.5" />
                         </Button>
@@ -2012,10 +1975,21 @@ export default function CheckInsPanel() {
                 <ElecConfigForm
                   properties={properties}
                   existing={elecConfigs}
-                  onSave={(cfg) => {
+                  onSave={async (cfg) => {
                     const next = [...elecConfigs.filter(c => c.propertyId !== cfg.propertyId), cfg];
                     setElecConfigs(next);
-                    localStorage.setItem("stayhost_elec_config", JSON.stringify(next));
+                    try {
+                      await fetch("/api/properties", {
+                        method: "PATCH",
+                        credentials: "same-origin",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({
+                          propertyId: cfg.propertyId,
+                          electricity_enabled: cfg.enabled,
+                          electricity_rate: cfg.rate,
+                        }),
+                      });
+                    } catch {}
                   }}
                 />
 

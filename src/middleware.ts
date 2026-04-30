@@ -109,7 +109,17 @@ export async function middleware(req: NextRequest) {
     const loginUrl = req.nextUrl.clone();
     loginUrl.pathname = "/acceso";
     loginUrl.searchParams.set("next", pathname);
-    return NextResponse.redirect(loginUrl);
+    const redir = NextResponse.redirect(loginUrl);
+    redir.headers.set("Cache-Control", "no-store, max-age=0");
+    return redir;
+  }
+
+  // En rutas protegidas servidas con sesion valida, marcamos no-store para
+  // que el browser no guarde la pagina en cache. Sin esto, despues de un
+  // logout el navegador puede mostrar el dashboard cacheado por un instante
+  // antes de que el redirect tome efecto.
+  if (isProtectedPath(pathname)) {
+    res.headers.set("Cache-Control", "no-store, max-age=0");
   }
 
   return res;

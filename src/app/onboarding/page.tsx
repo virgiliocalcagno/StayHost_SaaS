@@ -1,6 +1,7 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect, useTransition } from "react";
+import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -122,6 +123,43 @@ export default function OnboardingPage() {
   };
 
   const progress = (selectedFeatures.length / features.length) * 100;
+  const router = useRouter();
+  const [completing, startCompleting] = useTransition();
+  const [userEmail, setUserEmail] = useState<string | null>(null);
+  const [planExpiresAt, setPlanExpiresAt] = useState<string | null>(null);
+
+  useEffect(() => {
+    fetch("/api/me", { cache: "no-store", credentials: "same-origin" })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data: { email?: string | null; planExpiresAt?: string | null } | null) => {
+        if (!data) return;
+        if (data.email) setUserEmail(data.email);
+        if (data.planExpiresAt) setPlanExpiresAt(data.planExpiresAt);
+      })
+      .catch(() => {});
+  }, []);
+
+  const trialDaysLeft = (() => {
+    if (!planExpiresAt) return null;
+    const ms = new Date(planExpiresAt).getTime() - Date.now();
+    if (ms <= 0) return 0;
+    return Math.ceil(ms / (24 * 60 * 60 * 1000));
+  })();
+
+  const finishOnboarding = () => {
+    startCompleting(async () => {
+      try {
+        await fetch("/api/onboarding/complete", {
+          method: "POST",
+          credentials: "same-origin",
+        });
+      } catch {
+        /* si falla el POST, igual entramos al dashboard — el redirect
+           guard volvera a /onboarding y reintenta */
+      }
+      router.replace("/dashboard");
+    });
+  };
 
   return (
     <div className="min-h-screen bg-background">
@@ -137,8 +175,16 @@ export default function OnboardingPage() {
             </span>
           </Link>
           <div className="text-right">
-            <p className="text-sm text-muted-foreground">usuario@ejemplo.com</p>
-            <p className="text-xs text-primary">Prueba gratuita de 14 dias</p>
+            <p className="text-sm text-muted-foreground">{userEmail ?? "..."}</p>
+            <p className="text-xs text-primary">
+              {trialDaysLeft === null
+                ? "Cuenta activa"
+                : trialDaysLeft <= 0
+                  ? "Trial vencido"
+                  : trialDaysLeft === 1
+                    ? "Te queda 1 día de prueba"
+                    : `Te quedan ${trialDaysLeft} días de prueba`}
+            </p>
           </div>
         </div>
       </header>
@@ -209,23 +255,22 @@ export default function OnboardingPage() {
         <Button
           size="lg"
           className="w-full gradient-gold text-primary-foreground hover:opacity-90 h-12 text-base"
-          asChild
+          onClick={finishOnboarding}
+          disabled={completing}
         >
-          <Link href="/dashboard">
-            Continuar
-            <ArrowRight className="ml-2 h-5 w-5" />
-          </Link>
+          {completing ? "Guardando..." : "Continuar"}
+          <ArrowRight className="ml-2 h-5 w-5" />
         </Button>
 
         {/* Footer Note */}
         <p className="text-center text-xs text-muted-foreground mt-6">
           Utilizamos una conexion segura para la transferencia de datos. La seguridad de tus
           datos es nuestra prioridad. Al continuar, aceptas nuestros{" "}
-          <Link href="#" className="text-primary hover:underline">
+          <Link href="/terms" target="_blank" className="text-primary hover:underline">
             Terminos y Condiciones
           </Link>{" "}
           y{" "}
-          <Link href="#" className="text-primary hover:underline">
+          <Link href="/privacy" target="_blank" className="text-primary hover:underline">
             Politica de Privacidad
           </Link>
           .

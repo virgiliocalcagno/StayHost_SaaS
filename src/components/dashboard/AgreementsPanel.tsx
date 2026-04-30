@@ -19,73 +19,18 @@ import {
   AlertCircle,
 } from "lucide-react";
 
-const templates = [
-  {
-    id: 1,
-    name: "Acuerdo estandar de alquiler",
-    description: "Terminos generales para estancias cortas",
-    usedBy: 4,
-    lastUpdated: "Mar 15, 2026",
-    required: true,
-  },
-  {
-    id: 2,
-    name: "Politica de mascotas",
-    description: "Reglas y deposito para huespedes con mascotas",
-    usedBy: 2,
-    lastUpdated: "Mar 10, 2026",
-    required: false,
-  },
-  {
-    id: 3,
-    name: "Reglas de la propiedad",
-    description: "Normas especificas de cada propiedad",
-    usedBy: 4,
-    lastUpdated: "Mar 20, 2026",
-    required: true,
-  },
-];
-
-const recentAgreements = [
-  {
-    guest: "Maria Lopez",
-    property: "Villa Mar Azul",
-    agreement: "Acuerdo estandar",
-    sentDate: "Mar 25, 2026",
-    status: "signed",
-    signedDate: "Mar 26, 2026",
-  },
-  {
-    guest: "Carlos Mendez",
-    property: "Apartamento Centro",
-    agreement: "Acuerdo estandar",
-    sentDate: "Mar 27, 2026",
-    status: "pending",
-    signedDate: null,
-  },
-  {
-    guest: "Ana Rodriguez",
-    property: "Casa de Playa",
-    agreement: "Reglas + Mascotas",
-    sentDate: "Mar 22, 2026",
-    status: "signed",
-    signedDate: "Mar 23, 2026",
-  },
-  {
-    guest: "Pedro Sanchez",
-    property: "Loft Moderno",
-    agreement: "Acuerdo estandar",
-    sentDate: "Mar 20, 2026",
-    status: "expired",
-    signedDate: null,
-  },
-];
+// Acuerdos: feature en construcción (Sprint 3.4 — tabla agreements no
+// existe todavía). Mostramos arrays vacíos hasta tener BD real.
+type Template = { id: number; name: string; description: string; usedBy: number; lastUpdated: string; required: boolean };
+type Agreement = { guest: string; property: string; agreement: string; sentDate: string; status: string; signedDate: string | null };
+const templates: Template[] = [];
+const recentAgreements: Agreement[] = [];
 
 const stats = [
-  { label: "Acuerdos firmados", value: "156", icon: CheckCircle2, color: "text-chart-2" },
-  { label: "Pendientes", value: "3", icon: Clock, color: "text-primary" },
-  { label: "Expirados", value: "2", icon: XCircle, color: "text-chart-4" },
-  { label: "Tasa de firma", value: "94%", icon: Users, color: "text-chart-3" },
+  { label: "Acuerdos firmados", value: "0", icon: CheckCircle2, color: "text-chart-2" },
+  { label: "Pendientes", value: "0", icon: Clock, color: "text-primary" },
+  { label: "Expirados", value: "0", icon: XCircle, color: "text-chart-4" },
+  { label: "Tasa de firma", value: "—", icon: Users, color: "text-chart-3" },
 ];
 
 export default function AgreementsPanel() {

@@ -59,6 +59,8 @@ export interface AccessPin {
   validTo: string;
   status: "active" | "expired" | "revoked";
   ttlockPwdId?: string;
+  /** Si está set, este PIN es de un miembro del equipo (limpiador), no de un huésped. */
+  teamMemberId?: string;
   createdAt: string;
 }
 

@@ -27,14 +27,9 @@ type Document = {
   type: "pdf" | "image" | "spreadsheet" | "doc";
 };
 
-// Placeholder documents — in a future phase these come from Supabase Storage
-const SAMPLE_DOCS: Document[] = [
-  { id: "1", name: "Contrato de Arrendamiento - Template", category: "contratos", size: "245 KB", updatedAt: "2026-04-15", type: "pdf" },
-  { id: "2", name: "Guía del Huésped - Casa Playa", category: "guias", size: "1.2 MB", updatedAt: "2026-04-10", type: "pdf" },
-  { id: "3", name: "Reglas de la Casa - Template", category: "guias", size: "89 KB", updatedAt: "2026-04-08", type: "doc" },
-  { id: "4", name: "Licencia de Alquiler Vacacional", category: "legal", size: "512 KB", updatedAt: "2026-03-20", type: "pdf" },
-  { id: "5", name: "Inventario de Propiedades", category: "otros", size: "340 KB", updatedAt: "2026-03-15", type: "spreadsheet" },
-];
+// Documents: feature en construcción (Supabase Storage pendiente).
+// Vacío hasta tener flujo real de upload/listado por tenant.
+const SAMPLE_DOCS: Document[] = [];
 
 const categoryLabels: Record<DocCategory, string> = {
   contratos: "Contratos",

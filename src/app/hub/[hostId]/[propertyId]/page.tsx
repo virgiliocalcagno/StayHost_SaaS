@@ -141,32 +141,50 @@ export default function PropertyPage({ params }: { params: Promise<{ hostId: str
   const { hostId, propertyId } = resolvedParams;
   const { lang, toggleLang, t } = useLanguage();
 
-  // ── Real property data ────────────────────────────────────────────────────
+  // Property data viene del endpoint público — sin localStorage.
+  // Upsells y coupons quedan vacíos por ahora (no hay tablas todavía;
+  // Sprint 3.1 los construye).
   const [property, setProperty] = useState<StoredProperty | null>(null);
+  const [propertyLoading, setPropertyLoading] = useState(true);
   const [upsells, setUpsells] = useState<StoredUpsell[]>(DEFAULT_UPSELLS);
-  const [coupons, setCoupons] = useState<Coupon[]>([]);
+  void setUpsells;
+  const [coupons] = useState<Coupon[]>([]);
+  // Fechas no disponibles para esta propiedad (confirmed/blocked) — vienen
+  // del endpoint público y se usan para deshabilitar fechas en el picker
+  // y validar antes de submit.
+  const [unavailableRanges, setUnavailableRanges] = useState<
+    Array<{ checkIn: string; checkOut: string; status: string }>
+  >([]);
+  // Métodos de pago disponibles del host. paypalEnabled controla si se
+  // muestra el botón "Pagar y confirmar". processingFeePercent es la
+  // comisión que el host pasa al huésped al pagar online.
+  const [paypalEnabled, setPaypalEnabled] = useState(false);
+  const [processingFeePercent, setProcessingFeePercent] = useState(0);
 
   useEffect(() => {
-    try {
-      // Property
-      const rawProps = localStorage.getItem("stayhost_properties");
-      if (rawProps) {
-        const all: StoredProperty[] = JSON.parse(rawProps);
-        const found = all.find(p => p.id === propertyId);
-        if (found) setProperty(found);
-      }
-      // Upsells
-      const rawUpsells = localStorage.getItem("stayhost_upsells");
-      if (rawUpsells) {
-        const all: StoredUpsell[] = JSON.parse(rawUpsells);
-        const active = all.filter(u => u.active !== false);
-        if (active.length > 0) setUpsells(active);
-      }
-      // Coupons
-      const rawCoupons = localStorage.getItem("stayhost_coupons");
-      if (rawCoupons) setCoupons(JSON.parse(rawCoupons));
-    } catch { /* ignore */ }
-  }, [propertyId]);
+    fetch(`/api/public/hub/${encodeURIComponent(hostId)}`, { cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (!data || !Array.isArray(data.properties)) return;
+        const found = data.properties.find((p: { id: string }) => p.id === propertyId);
+        if (found) setProperty(found as StoredProperty);
+        if (data.hub) {
+          setPaypalEnabled(!!data.hub.paymentMethods?.paypal);
+          setProcessingFeePercent(Number(data.hub.processingFeePercent ?? 0));
+        }
+        // Cargar ranges no disponibles SOLO de esta propiedad.
+        if (Array.isArray(data.unavailable)) {
+          const filtered = (data.unavailable as Array<{
+            propertyId: string; checkIn: string; checkOut: string; status: string;
+          }>)
+            .filter((u) => u.propertyId === propertyId)
+            .map((u) => ({ checkIn: u.checkIn, checkOut: u.checkOut, status: u.status }));
+          setUnavailableRanges(filtered);
+        }
+      })
+      .catch(() => {})
+      .finally(() => setPropertyLoading(false));
+  }, [hostId, propertyId]);
 
   // ── Booking state ─────────────────────────────────────────────────────────
   // Local date YYYY-MM-DD — not UTC. Fixes the default check-in showing as
@@ -195,9 +213,173 @@ export default function PropertyPage({ params }: { params: Promise<{ hostId: str
   const [guestName, setGuestName] = useState("");
   const [guestEmail, setGuestEmail] = useState("");
   const [guestPhone, setGuestPhone] = useState("");
+  // Identidad del huesped — obligatorio para LATAM (registro turistico,
+  // anti-fraude). Sin docNumber + nacionalidad + foto del documento, no
+  // se puede solicitar reserva.
+  const [guestDoc, setGuestDoc] = useState("");
+  const [guestNationality, setGuestNationality] = useState("");
+  const [guestDocPhotoPath, setGuestDocPhotoPath] = useState<string | null>(null);
+  // Preview local del documento escaneado (object URL del File) — para que
+  // el huésped vea miniatura sin tener que volver a fetch al Storage.
+  const [docPreviewUrl, setDocPreviewUrl] = useState<string | null>(null);
+  // Diálogo de confirmación al re-escanear: solo se muestra si ya hay datos
+  // OCR detectados (si están vacíos, no hay nada que perder y vamos directo).
+  const [confirmReplace, setConfirmReplace] = useState(false);
+  const [scanning, setScanning] = useState(false);
+  const [scanError, setScanError] = useState<string | null>(null);
+  const [submitError, setSubmitError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [bookingConfirmed, setBookingConfirmed] = useState<DirectBooking | null>(null);
-  const [isCardValid, setIsCardValid] = useState(false);
+  // ID corto de la solicitud para que el huesped tenga referencia.
+  const [requestRefId, setRequestRefId] = useState<string | null>(null);
+  // Método de pago elegido por el huésped. Default 'paypal' si el host lo
+  // tiene habilitado (cierra reserva al instante = mejor para todos);
+  // 'manual' si no hay PayPal o si el huésped lo elige (efectivo, transfer).
+  const [paymentMethod, setPaymentMethod] = useState<"paypal" | "manual">("manual");
+  // Sincronizamos default con paypalEnabled cuando se carga el hub.
+  useEffect(() => {
+    if (paypalEnabled) setPaymentMethod("paypal");
+  }, [paypalEnabled]);
+
+  // Chequeo de disponibilidad: el rango [checkin, checkout) se solapa con
+  // alguna reserva confirmed/blocked? Mismo criterio del backend.
+  const isRangeAvailable = useMemo(() => {
+    if (!checkin || !checkout) return false;
+    if (checkin >= checkout) return false;
+    return !unavailableRanges.some((u) => u.checkIn < checkout && u.checkOut > checkin);
+  }, [checkin, checkout, unavailableRanges]);
+
+  // Escanear documento del huesped: igual que en NewBookingModal del host.
+  // Reusa Gemini OCR pero via endpoint publico que valida hostId + sube la
+  // foto al bucket bajo {tenantId}/hub-requests/{uuid}.
+  const handleScanDoc = async (file: File) => {
+    setScanning(true);
+    setScanError(null);
+    // Preview local inmediato — feedback visual mientras el OCR procesa.
+    // Liberamos el object URL anterior si existe (memory leak minimo pero
+    // limpio).
+    if (docPreviewUrl) URL.revokeObjectURL(docPreviewUrl);
+    setDocPreviewUrl(URL.createObjectURL(file));
+    try {
+      const form = new FormData();
+      form.append("image", file);
+      const res = await fetch(`/api/public/hub/${encodeURIComponent(hostId)}/scan-document`, {
+        method: "POST",
+        body: form,
+      });
+      if (!res.ok) {
+        const j = (await res.json().catch(() => ({}))) as { error?: string };
+        throw new Error(j.error ?? `HTTP ${res.status}`);
+      }
+      const { doc } = (await res.json()) as {
+        doc: {
+          guestName?: string;
+          docNumber?: string;
+          nationality?: string;
+          photoPath?: string;
+        };
+      };
+      // Re-escanear SIEMPRE reemplaza los 3 campos OCR. Si el OCR no
+      // detecta un campo, queda como string vacío y el huésped lo edita
+      // a mano. Comportamiento estándar (Airbnb, Booking).
+      setGuestName(doc.guestName ?? "");
+      setGuestDoc(doc.docNumber ?? "");
+      setGuestNationality(doc.nationality ?? "");
+      if (doc.photoPath) setGuestDocPhotoPath(doc.photoPath);
+    } catch (err) {
+      setScanError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setScanning(false);
+    }
+  };
+
+  // Limpia explicitamente los datos de identidad del huesped. Lo usa el
+  // boton "Cambiar documento" cuando el huesped escaneo el doc equivocado.
+  // No borra la foto del bucket (atacante podria DoS si pudiera) — queda
+  // huerfana y un cron la limpia despues.
+  const clearGuestIdentity = () => {
+    setGuestName("");
+    setGuestDoc("");
+    setGuestNationality("");
+    setGuestDocPhotoPath(null);
+    if (docPreviewUrl) URL.revokeObjectURL(docPreviewUrl);
+    setDocPreviewUrl(null);
+    setScanError(null);
+  };
+
+  // El huesped tocó "Reemplazar". Si ya hay al menos un campo OCR detectado,
+  // pedimos confirmación (es accion destructiva — perder datos validados).
+  // Si todos los campos están vacíos (OCR fallido o doc nunca escaneado),
+  // vamos directo al file picker.
+  const handleReplaceClick = () => {
+    const hasData =
+      guestName.trim().length > 0 ||
+      guestDoc.trim().length > 0 ||
+      guestNationality.trim().length > 0;
+    if (hasData) {
+      setConfirmReplace(true);
+    } else {
+      document.getElementById("hubDocScan")?.click();
+    }
+  };
+
+  const confirmReplaceAndPick = () => {
+    setConfirmReplace(false);
+    // Pequeño delay para que el dialog haga su animación de cierre antes
+    // de abrir el file picker (evita parpadeo en mobile).
+    setTimeout(() => document.getElementById("hubDocScan")?.click(), 50);
+  };
+
+  // Reset completo del form. Lo llamamos cuando: (1) cambia la propiedad
+  // (navegacion entre listings), (2) la solicitud se envio con exito (para
+  // que si el huesped vuelve al Hub no vea datos stale).
+  const resetBookingForm = () => {
+    setShowCheckout(false);
+    setGuestName("");
+    setGuestEmail("");
+    setGuestPhone("");
+    setGuestDoc("");
+    setGuestNationality("");
+    setGuestDocPhotoPath(null);
+    if (docPreviewUrl) URL.revokeObjectURL(docPreviewUrl);
+    setDocPreviewUrl(null);
+    setScanError(null);
+    setSubmitError(null);
+    setConfirmReplace(false);
+    setSelectedUpsellIds([]);
+    setAppliedCoupon(null);
+    setCouponInput("");
+    setCouponError("");
+    setCouponSuccess("");
+  };
+
+  // Limpia el form al cambiar de propiedad (huesped navega entre listings).
+  // Inline porque resetBookingForm se redefine en cada render — depender
+  // de él dispararia el effect siempre. Los setters de useState son
+  // estables, asi que no hace falta declararlos como deps.
+  useEffect(() => {
+    setShowCheckout(false);
+    setGuestName("");
+    setGuestEmail("");
+    setGuestPhone("");
+    setGuestDoc("");
+    setGuestNationality("");
+    setGuestDocPhotoPath(null);
+    setDocPreviewUrl((prev) => {
+      if (prev) URL.revokeObjectURL(prev);
+      return null;
+    });
+    setScanError(null);
+    setSubmitError(null);
+    setConfirmReplace(false);
+    setSelectedUpsellIds([]);
+    setAppliedCoupon(null);
+    setCouponInput("");
+    setCouponError("");
+    setCouponSuccess("");
+    setBookingConfirmed(null);
+    setRequestRefId(null);
+  }, [propertyId]);
 
   // ── Price calculations ────────────────────────────────────────────────────
   const nights = diffNights(checkin, checkout);
@@ -221,7 +403,13 @@ export default function PropertyPage({ params }: { params: Promise<{ hostId: str
 
   const subtotal = stayTotal + cleaningFee + upsellsTotal - discount;
   const taxes = Math.round(subtotal * 0.16);
-  const finalTotal = subtotal + taxes;
+  const baseTotal = subtotal + taxes;
+  // Comisión de procesamiento PayPal: solo se aplica si el huésped elige
+  // pagar online. Si elige manual, el fee es 0 (el host coordina por fuera).
+  const processingFee = paymentMethod === "paypal"
+    ? Math.round((baseTotal * processingFeePercent) / 100)
+    : 0;
+  const finalTotal = baseTotal + processingFee;
 
   // ── Coupon logic ──────────────────────────────────────────────────────────
   const handleApplyCoupon = () => {
@@ -250,17 +438,60 @@ export default function PropertyPage({ params }: { params: Promise<{ hostId: str
   };
 
   // ── Booking submission ────────────────────────────────────────────────────
-  const handleConfirmBooking = () => {
-    if (!guestName.trim() || !guestEmail.trim()) return;
+  // POST a /api/public/hub/[hostId]/booking con paymentMethod elegido:
+  //   - 'paypal' → backend devuelve payUrl, redirigimos al huésped
+  //   - 'manual' → solicitud pending_review, el host coordina cobro por fuera
+  const handleConfirmBooking = async () => {
+    setSubmitError(null);
+    if (!guestName.trim() || !guestPhone.trim() || !guestDoc.trim() || !guestNationality.trim()) {
+      setSubmitError("Completa nombre, teléfono, documento y nacionalidad para enviar la solicitud.");
+      return;
+    }
+    if (!isRangeAvailable) {
+      setSubmitError("Las fechas seleccionadas no están disponibles. Elegí otras fechas.");
+      return;
+    }
     setIsSubmitting(true);
-
-    setTimeout(() => {
-      const bookingId = `bk-${Date.now()}`;
+    try {
+      const res = await fetch(`/api/public/hub/${encodeURIComponent(hostId)}/booking`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          propertyId,
+          checkIn: checkin,
+          checkOut: checkout,
+          guestName: guestName.trim(),
+          guestEmail: guestEmail.trim() || null,
+          guestPhone: guestPhone.trim(),
+          guestDoc: guestDoc.trim(),
+          guestNationality: guestNationality.trim().toUpperCase(),
+          guestDocPhotoPath,
+          numGuests: guests,
+          paymentMethod,
+          note: null,
+        }),
+      });
+      if (!res.ok) {
+        const j = (await res.json().catch(() => ({}))) as { error?: string };
+        throw new Error(j.error ?? `HTTP ${res.status}`);
+      }
+      const json = (await res.json()) as {
+        requestId?: string;
+        paymentMethod?: string;
+        payUrl?: string;
+      };
+      // Si el huésped eligió pagar online, redirigimos a la pasarela. NO
+      // mostramos pantalla "solicitud enviada" — la confirmación la da
+      // PayPal después del pago, y la página /pay/[token] muestra el resultado.
+      if (json.paymentMethod === "paypal" && json.payUrl) {
+        window.location.assign(json.payUrl);
+        return;
+      }
+      setRequestRefId(json.requestId ?? null);
       const propName = property?.name ?? "Propiedad";
       const propImage = property?.image;
-
-      const booking: DirectBooking = {
-        id: bookingId,
+      const confirmation = {
+        id: json.requestId ?? `req-${Date.now()}`,
         propertyId,
         propertyName: propName,
         propertyImage: propImage,
@@ -279,73 +510,21 @@ export default function PropertyPage({ params }: { params: Promise<{ hostId: str
         total: finalTotal,
         couponCode: appliedCoupon?.code,
         upsellIds: selectedUpsellIds,
-        status: "confirmed",
+        status: "confirmed" as const,
         createdAt: new Date().toISOString(),
       };
-
-      // Persist booking
-      try {
-        const raw = localStorage.getItem("stayhost_direct_bookings");
-        const existing: DirectBooking[] = raw ? JSON.parse(raw) : [];
-        localStorage.setItem("stayhost_direct_bookings", JSON.stringify([booking, ...existing]));
-      } catch { /* ignore */ }
-
-      // ── AUTO-TRIGGER: Create cleaning task ────────────────────────────────
-      try {
-        const raw = localStorage.getItem("stayhost_tasks");
-        const existing = raw ? JSON.parse(raw) : [];
-
-        const cleaningTask = {
-          id: `task-bk-${bookingId}`,
-          propertyId,
-          propertyName: propName,
-          address: property?.city ?? property?.address ?? "",
-          propertyImage: propImage,
-          assigneeId: undefined,
-          assigneeName: undefined,
-          dueDate: checkout,        // Cleaning due on checkout date
-          dueTime: "11:00",
-          status: "unassigned",
-          priority: "high",
-          isBackToBack: false,
-          guestName: guestName.trim(),
-          guestCount: guests,
-          arrivalDate: checkin,
-          stayDuration: Math.max(nights, 1),
-          acceptanceStatus: "pending",
-          checklist: [
-            { id: 1, task: "Cambiar sábanas y fundas de almohada", done: false },
-            { id: 2, task: "Reemplazar toallas con juego limpio", done: false },
-            { id: 3, task: "Limpieza profunda de cocina y electrodomésticos", done: false },
-            { id: 4, task: "Sanitizar baños completos", done: false },
-            { id: 5, task: "Aspirar y trapear todas las áreas", done: false },
-            { id: 6, task: "Reponer amenidades (shampoo, jabón, papel)", done: false },
-            { id: 7, task: "Revisar inventario de suministros", done: false },
-            { id: 8, task: "Inspección final y fotos de cierre", done: false },
-          ],
-          standardInstructions: property?.standardInstructions ?? "",
-          source: "direct_booking",   // tag so CleaningPanel can highlight it
-          bookingId,
-        };
-
-        localStorage.setItem("stayhost_tasks", JSON.stringify([cleaningTask, ...existing]));
-      } catch { /* ignore */ }
-
-      // Increment coupon usage
-      if (appliedCoupon) {
-        try {
-          const raw = localStorage.getItem("stayhost_coupons");
-          if (raw) {
-            const all: Coupon[] = JSON.parse(raw);
-            const updated = all.map(c => c.id === appliedCoupon.id ? { ...c, usedCount: c.usedCount + 1 } : c);
-            localStorage.setItem("stayhost_coupons", JSON.stringify(updated));
-          }
-        } catch { /* ignore */ }
-      }
-
-      setBookingConfirmed(booking);
+      // Reseteamos el form ANTES de mostrar la confirmación. La pantalla
+      // de "Solicitud enviada" se renderiza con los datos del objeto
+      // `confirmation`, no con los useState — así el form queda vacío
+      // si el huésped vuelve atrás (ej. para hacer otra reserva).
+      resetBookingForm();
+      setBookingConfirmed(confirmation);
+      void appliedCoupon;
+    } catch (err) {
+      setSubmitError(err instanceof Error ? err.message : String(err));
+    } finally {
       setIsSubmitting(false);
-    }, 1400);
+    }
   };
 
   // ── Render: Booking Confirmed Screen ─────────────────────────────────────
@@ -357,8 +536,26 @@ export default function PropertyPage({ params }: { params: Promise<{ hostId: str
             <PartyPopper className="h-12 w-12 text-green-600" />
           </div>
           <div>
-            <h1 className="text-3xl font-extrabold text-slate-900 mb-2">¡Reserva Confirmada!</h1>
-            <p className="text-slate-600">Tu reserva en <strong>{bookingConfirmed.propertyName}</strong> fue registrada exitosamente.</p>
+            <h1 className="text-3xl font-extrabold text-slate-900 mb-2">¡Solicitud enviada!</h1>
+            <p className="text-slate-600">
+              Tu solicitud para <strong>{bookingConfirmed.propertyName}</strong> está esperando aprobación.
+              El host la revisa y te contacta para confirmar disponibilidad y coordinar el pago.
+            </p>
+            {requestRefId && (
+              <p className="text-xs text-slate-500 mt-3 font-mono bg-slate-100 inline-block px-3 py-1 rounded-full">
+                N° de referencia: {requestRefId.slice(0, 8).toUpperCase()}
+              </p>
+            )}
+          </div>
+
+          <div className="bg-amber-100 rounded-2xl p-4 border-2 border-amber-300 text-sm text-amber-900 flex items-start gap-3 text-left">
+            <AlertCircle className="h-5 w-5 shrink-0 mt-0.5" />
+            <div>
+              <p className="font-bold mb-1">Tu reserva NO está confirmada todavía</p>
+              <p className="text-xs">
+                Esto es una solicitud. El host puede aprobarla o rechazarla. <strong>No se realizó ningún cargo.</strong> Cuando el host apruebe, te enviará el método de pago.
+              </p>
+            </div>
           </div>
 
           <div className="bg-white rounded-3xl border border-slate-200 shadow-lg p-6 text-left space-y-3">
@@ -378,21 +575,13 @@ export default function PropertyPage({ params }: { params: Promise<{ hostId: str
               <span className="text-muted-foreground">Noches</span>
               <span className="font-bold">{bookingConfirmed.nights}</span>
             </div>
-            {bookingConfirmed.couponCode && (
-              <div className="flex justify-between text-sm">
-                <span className="text-muted-foreground flex items-center gap-1"><Tag className="h-3.5 w-3.5" /> Cupón</span>
-                <span className="font-bold text-green-600">{bookingConfirmed.couponCode} (−${bookingConfirmed.discount})</span>
-              </div>
-            )}
-            <div className="border-t pt-3 flex justify-between font-extrabold text-lg">
-              <span>Total Pagado</span>
-              <span className="text-amber-600">${bookingConfirmed.total.toLocaleString()}</span>
+            <div className="border-t pt-3 flex justify-between font-extrabold text-base">
+              <span className="text-slate-700">Total estimado</span>
+              <span className="text-slate-900">${bookingConfirmed.total.toLocaleString()}</span>
             </div>
-          </div>
-
-          <div className="bg-amber-50 rounded-2xl p-4 border border-amber-100 text-sm text-amber-800 flex items-start gap-3">
-            <Sparkles className="h-4 w-4 shrink-0 mt-0.5" />
-            <p>El equipo de limpieza ya fue notificado para preparar la propiedad el día de tu check-out (<strong>{formatDate(bookingConfirmed.checkout)}</strong>).</p>
+            <p className="text-[10px] text-slate-400 italic">
+              Estimado preliminar. El total final lo confirma el host al aprobar.
+            </p>
           </div>
 
           <div className="flex gap-3">
@@ -619,10 +808,40 @@ export default function PropertyPage({ params }: { params: Promise<{ hostId: str
 
                 {/* Nights badge */}
                 {nights > 0 && (
-                  <div className="flex items-center justify-center gap-1.5 mb-4 text-xs font-bold text-amber-700 bg-amber-50 border border-amber-100 rounded-xl py-2">
+                  <div className="flex items-center justify-center gap-1.5 mb-2 text-xs font-bold text-amber-700 bg-amber-50 border border-amber-100 rounded-xl py-2">
                     <Calendar className="h-3.5 w-3.5" />
                     {nights} {nights === 1 ? "noche" : "noches"} · {formatDate(checkin)} → {formatDate(checkout)}
                   </div>
+                )}
+
+                {/* Aviso de no disponibilidad — visible si el rango choca con
+                    una reserva confirmada o un bloqueo. */}
+                {nights > 0 && !isRangeAvailable && (
+                  <div className="flex items-start gap-2 mb-4 p-3 text-xs font-semibold text-red-700 bg-red-50 border border-red-200 rounded-xl">
+                    <AlertCircle className="h-4 w-4 flex-shrink-0 mt-0.5" />
+                    <span>Estas fechas ya están ocupadas. Probá con otras fechas.</span>
+                  </div>
+                )}
+
+                {/* Lista de proximos rangos no disponibles — ayuda al huesped
+                    a elegir fechas libres sin tener que probar a ciegas. */}
+                {unavailableRanges.length > 0 && (
+                  <details className="mb-4 text-xs">
+                    <summary className="cursor-pointer text-slate-600 font-semibold hover:text-amber-600">
+                      Ver fechas no disponibles ({unavailableRanges.length})
+                    </summary>
+                    <ul className="mt-2 space-y-1 pl-2">
+                      {unavailableRanges
+                        .slice()
+                        .sort((a, b) => a.checkIn.localeCompare(b.checkIn))
+                        .slice(0, 8)
+                        .map((u, i) => (
+                          <li key={i} className="text-slate-500">
+                            {formatDate(u.checkIn)} → {formatDate(u.checkOut)}
+                          </li>
+                        ))}
+                    </ul>
+                  </details>
                 )}
 
                 {/* Coupon Field */}
@@ -667,9 +886,13 @@ export default function PropertyPage({ params }: { params: Promise<{ hostId: str
                 <Button
                   className="w-full gradient-gold text-white font-bold text-lg py-7 rounded-xl hover:scale-[1.02] transition-transform shadow-lg shadow-amber-500/30 mb-4 border-none"
                   onClick={() => setShowCheckout(true)}
-                  disabled={nights < 1}
+                  disabled={nights < 1 || !isRangeAvailable}
                 >
-                  {nights < 1 ? "Selecciona las fechas" : t("bookNow")}
+                  {nights < 1
+                    ? "Selecciona las fechas"
+                    : !isRangeAvailable
+                      ? "Fechas no disponibles"
+                      : t("bookNow")}
                 </Button>
                 <p className="text-center text-xs text-slate-500 font-medium mb-6">{t("noChargeYet")}</p>
 
@@ -796,7 +1019,7 @@ export default function PropertyPage({ params }: { params: Promise<{ hostId: str
 
                 <div className="space-y-1.5">
                   <Label htmlFor="guestPhone" className="text-xs font-bold uppercase tracking-wider text-slate-500">
-                    WhatsApp / Teléfono
+                    WhatsApp / Teléfono *
                   </Label>
                   <div className="relative">
                     <Phone className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-400" />
@@ -808,6 +1031,133 @@ export default function PropertyPage({ params }: { params: Promise<{ hostId: str
                       onChange={e => setGuestPhone(e.target.value)}
                       className="pl-10 rounded-xl"
                     />
+                  </div>
+                </div>
+
+                {/* Bloque Identidad — escanear ID y campos */}
+                <div className="bg-blue-50 border border-blue-200 rounded-2xl p-4 space-y-3">
+                  <div className="flex items-start gap-3">
+                    <ShieldCheck className="h-5 w-5 text-blue-600 flex-shrink-0 mt-0.5" />
+                    <div className="text-xs text-blue-900">
+                      <p className="font-bold mb-1">Identidad del huésped</p>
+                      <p className="text-blue-700">
+                        Para confirmar la reserva, necesitamos identificar al huésped principal.
+                        Escaneá tu documento o cargá los datos manualmente. Tu información solo la
+                        ve el host y se usa para el registro turístico.
+                      </p>
+                    </div>
+                  </div>
+
+                  <input
+                    type="file"
+                    accept="image/*"
+                    capture="environment"
+                    id="hubDocScan"
+                    className="hidden"
+                    onChange={(e) => {
+                      const f = e.target.files?.[0];
+                      if (f) handleScanDoc(f);
+                      e.currentTarget.value = "";
+                    }}
+                  />
+
+                  {/* Estado: sin documento — botón grande de escaneo */}
+                  {!guestDocPhotoPath && !scanning && (
+                    <Button
+                      type="button"
+                      onClick={() => document.getElementById("hubDocScan")?.click()}
+                      className="w-full bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-sm font-bold uppercase tracking-wider gap-2 py-6"
+                    >
+                      <Sparkles className="h-4 w-4" /> Escanear ID o pasaporte
+                    </Button>
+                  )}
+
+                  {/* Estado: escaneando — placeholder con spinner */}
+                  {scanning && (
+                    <div className="flex items-center justify-center gap-2 bg-white rounded-xl border border-blue-100 p-6 text-blue-600 text-sm font-medium">
+                      <Loader2 className="h-4 w-4 animate-spin" /> Procesando documento...
+                    </div>
+                  )}
+
+                  {/* Estado: documento escaneado — card con preview + datos
+                      detectados + botón "Reemplazar" */}
+                  {guestDocPhotoPath && !scanning && (
+                    <div className="bg-white rounded-xl border border-emerald-200 overflow-hidden shadow-sm">
+                      <div className="flex gap-3 p-3">
+                        {/* Preview de la foto. Si docPreviewUrl está
+                            (caso normal), mostramos la miniatura local. Si
+                            no (volvió de un refresh sin cargar la foto),
+                            mostramos un ícono. */}
+                        <div className="w-20 h-20 rounded-lg bg-slate-100 flex-shrink-0 overflow-hidden border">
+                          {docPreviewUrl ? (
+                            <img src={docPreviewUrl} alt="Documento escaneado" className="w-full h-full object-cover" />
+                          ) : (
+                            <div className="w-full h-full flex items-center justify-center text-slate-400">
+                              <CheckCircle2 className="h-8 w-8" />
+                            </div>
+                          )}
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-1.5 text-emerald-700 text-[10px] font-bold uppercase tracking-wider">
+                            <CheckCircle2 className="h-3 w-3" /> Documento detectado
+                          </div>
+                          <p className="font-bold text-sm text-slate-900 truncate mt-0.5">
+                            {guestName || <span className="text-slate-400 italic">Nombre no detectado</span>}
+                          </p>
+                          <p className="text-xs text-slate-600 truncate">
+                            {guestDoc ? `Doc: ${guestDoc}` : <span className="text-slate-400 italic">Documento no detectado</span>}
+                          </p>
+                          <p className="text-xs text-slate-600">
+                            {guestNationality ? `Nacionalidad: ${guestNationality}` : <span className="text-slate-400 italic">Nacionalidad no detectada</span>}
+                          </p>
+                        </div>
+                      </div>
+                      <div className="border-t bg-slate-50 px-3 py-2 flex gap-2 justify-end">
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          onClick={handleReplaceClick}
+                          className="text-xs text-blue-700 hover:text-blue-800 hover:bg-blue-100 h-8"
+                        >
+                          <Sparkles className="h-3 w-3 mr-1.5" /> Reemplazar
+                        </Button>
+                      </div>
+                    </div>
+                  )}
+
+                  {scanError && (
+                    <p className="text-xs text-red-600 flex items-center gap-1">
+                      <AlertCircle className="h-3 w-3" /> {scanError}
+                    </p>
+                  )}
+
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="space-y-1.5">
+                      <Label htmlFor="guestDoc" className="text-xs font-bold uppercase tracking-wider text-slate-500">
+                        Documento *
+                      </Label>
+                      <Input
+                        id="guestDoc"
+                        placeholder="ID / Pasaporte"
+                        value={guestDoc}
+                        onChange={(e) => setGuestDoc(e.target.value)}
+                        className="rounded-xl"
+                      />
+                    </div>
+                    <div className="space-y-1.5">
+                      <Label htmlFor="guestNationality" className="text-xs font-bold uppercase tracking-wider text-slate-500">
+                        Nacionalidad *
+                      </Label>
+                      <Input
+                        id="guestNationality"
+                        placeholder="DOM, ESP, USA..."
+                        value={guestNationality}
+                        onChange={(e) => setGuestNationality(e.target.value)}
+                        className="rounded-xl uppercase"
+                        maxLength={3}
+                      />
+                    </div>
                   </div>
                 </div>
               </div>
@@ -828,6 +1178,40 @@ export default function PropertyPage({ params }: { params: Promise<{ hostId: str
                 </div>
               )}
 
+              {/* Método de pago — solo si el host habilitó PayPal. Si no,
+                  default 'manual' y no se muestra selector. */}
+              {paypalEnabled && (
+                <div className="space-y-2">
+                  <p className="text-xs font-black uppercase tracking-wider text-slate-500">¿Cómo querés pagar?</p>
+                  <div className="grid grid-cols-2 gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setPaymentMethod("paypal")}
+                      className={`p-3 rounded-xl border-2 text-left transition ${
+                        paymentMethod === "paypal"
+                          ? "border-amber-500 bg-amber-50 ring-2 ring-amber-200"
+                          : "border-slate-200 bg-white hover:border-slate-300"
+                      }`}
+                    >
+                      <p className="font-bold text-sm text-slate-900">Pagar online</p>
+                      <p className="text-[10px] text-slate-500 leading-tight">PayPal o tarjeta · confirma al instante</p>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setPaymentMethod("manual")}
+                      className={`p-3 rounded-xl border-2 text-left transition ${
+                        paymentMethod === "manual"
+                          ? "border-amber-500 bg-amber-50 ring-2 ring-amber-200"
+                          : "border-slate-200 bg-white hover:border-slate-300"
+                      }`}
+                    >
+                      <p className="font-bold text-sm text-slate-900">Pago manual</p>
+                      <p className="text-[10px] text-slate-500 leading-tight">Efectivo o transferencia · coordina el host</p>
+                    </button>
+                  </div>
+                </div>
+              )}
+
               {/* Final price */}
               <div className="bg-slate-50 rounded-2xl p-4 border border-slate-200 space-y-2 text-sm">
                 <div className="flex justify-between text-slate-600"><span>${basePrice} × {Math.max(nights, 1)} noches</span><span>${stayTotal}</span></div>
@@ -835,35 +1219,106 @@ export default function PropertyPage({ params }: { params: Promise<{ hostId: str
                 {discount > 0 && <div className="flex justify-between text-green-600"><span>Descuento ({appliedCoupon?.code})</span><span>−${discount}</span></div>}
                 <div className="flex justify-between text-slate-600"><span>Limpieza</span><span>${cleaningFee}</span></div>
                 <div className="flex justify-between text-slate-600"><span>Impuestos (16%)</span><span>${taxes}</span></div>
+                {processingFee > 0 && (
+                  <div className="flex justify-between text-slate-600">
+                    <span>Comisión de procesamiento ({processingFeePercent}%)</span>
+                    <span>${processingFee}</span>
+                  </div>
+                )}
                 <div className="flex justify-between font-extrabold text-base text-slate-900 border-t pt-2 mt-2">
                   <span>Total</span><span>${finalTotal.toLocaleString()}</span>
                 </div>
               </div>
 
-              {/* Real Stripe Payment Gateway */}
-              <PublicStripeForm 
-                total={finalTotal} 
-                onComplete={(valid) => setIsCardValid(valid)} 
-              />
+              {/* Submit error */}
+              {submitError && (
+                <div className="bg-red-50 border border-red-200 rounded-xl p-3 text-xs text-red-700 flex items-start gap-2">
+                  <AlertCircle className="h-4 w-4 flex-shrink-0 mt-0.5" />
+                  <span>{submitError}</span>
+                </div>
+              )}
 
-              {/* Confirm Button */}
+              {/* Confirm Button — texto y semántica cambian según método de pago */}
                <Button
                 className="w-full gradient-gold text-white font-bold text-base py-6 rounded-2xl shadow-xl border-none hover:scale-[1.02] transition-transform disabled:opacity-50 disabled:grayscale disabled:scale-100"
                 onClick={handleConfirmBooking}
-                disabled={isSubmitting || !guestName.trim() || !guestEmail.trim() || !isCardValid}
+                disabled={
+                  isSubmitting ||
+                  !guestName.trim() ||
+                  !guestPhone.trim() ||
+                  !guestDoc.trim() ||
+                  !guestNationality.trim()
+                }
               >
                 {isSubmitting ? (
                   <span className="flex items-center gap-2">
-                    <Loader2 className="h-5 w-5 animate-spin" /> Confirmando reserva...
+                    <Loader2 className="h-5 w-5 animate-spin" />
+                    {paymentMethod === "paypal" ? "Llevándote al pago..." : "Enviando solicitud..."}
                   </span>
+                ) : paymentMethod === "paypal" ? (
+                  `Pagar y confirmar reserva · $${finalTotal.toLocaleString()}`
                 ) : (
-                  `Confirmar Reserva · $${finalTotal.toLocaleString()}`
+                  "Enviar solicitud al host"
                 )}
               </Button>
 
-              <p className="text-center text-[10px] text-slate-400 font-medium">
-                Al confirmar aceptas los términos de reserva directa. El equipo de limpieza será notificado automáticamente para preparar la propiedad.
-              </p>
+              {paymentMethod === "paypal" ? (
+                <p className="text-center text-[10px] text-slate-400 font-medium leading-relaxed">
+                  Te llevamos a la pasarela de pago segura. Cuando se confirme el pago, tu reserva queda
+                  automáticamente confirmada y recibís el código de check-in.
+                </p>
+              ) : (
+                <p className="text-center text-[10px] text-slate-400 font-medium leading-relaxed">
+                  Esto es una <strong>solicitud</strong>, no una reserva confirmada. El host la revisará
+                  y te contactará para coordinar el pago. No se realizará ningún cargo ahora.
+                </p>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── DIALOG: CONFIRMAR REEMPLAZO DE DOCUMENTO ─────────────────────────
+          Solo aparece si el huésped ya tiene datos OCR detectados y toca
+          "Reemplazar". Z-index 110 para tapar el modal de checkout (z-100). */}
+      {confirmReplace && (
+        <div
+          className="fixed inset-0 z-[110] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 animate-in fade-in"
+          onClick={() => setConfirmReplace(false)}
+        >
+          <div
+            className="bg-white rounded-2xl shadow-2xl max-w-sm w-full p-6 animate-in zoom-in-95"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-start gap-3 mb-4">
+              <div className="bg-amber-100 p-2.5 rounded-xl flex-shrink-0">
+                <AlertCircle className="h-5 w-5 text-amber-600" />
+              </div>
+              <div>
+                <h3 className="font-bold text-slate-900 mb-1">¿Reemplazar documento?</h3>
+                <p className="text-sm text-slate-600 leading-relaxed">
+                  Vas a borrar los datos actuales {guestName ? <>de <strong>{guestName}</strong></> : null} y
+                  escanear un documento nuevo. Esta acción no se puede deshacer.
+                </p>
+              </div>
+            </div>
+            <div className="flex gap-2 justify-end">
+              <Button
+                type="button"
+                variant="ghost"
+                onClick={() => setConfirmReplace(false)}
+                className="text-slate-600"
+              >
+                Cancelar
+              </Button>
+              <Button
+                type="button"
+                onClick={confirmReplaceAndPick}
+                className="bg-blue-600 hover:bg-blue-700 text-white gap-2"
+              >
+                <Sparkles className="h-4 w-4" />
+                Sí, reemplazar
+              </Button>
             </div>
           </div>
         </div>

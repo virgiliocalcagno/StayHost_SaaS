@@ -153,23 +153,13 @@ export default function TeamPanel() {
   const [isClient, setIsClient] = useState(false);
   
   const [team, setTeam] = useState<TeamMember[]>([]);
+  const [teamLoading, setTeamLoading] = useState(true);
 
-  // Fuente de verdad: Supabase via /api/team-members.
-  // localStorage queda sólo como caché de lectura rápida para que el panel
-  // no se vea vacío mientras llega la respuesta del backend.
+  // Fuente de verdad: Supabase via /api/team-members. Sin localStorage —
+  // leakeaba team entre tenants en el mismo browser.
   useEffect(() => {
     setIsClient(true);
 
-    // 1) Pintar caché local si hay, así el UI no parpadea.
-    try {
-      const saved = localStorage.getItem("stayhost_team");
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed)) setTeam(parsed);
-      }
-    } catch {}
-
-    // 2) Cargar del backend y reemplazar.
     (async () => {
       try {
         const res = await fetch("/api/team-members", {
@@ -246,27 +236,22 @@ export default function TeamPanel() {
           }
         } catch { /* noop */ }
       } catch { /* noop */ }
+      finally {
+        setTeamLoading(false);
+      }
     })();
   }, []);
 
-  // Mantener un caché local para el próximo arranque rápido.
+  // Cargar propiedades reales para el selector del Paso 3 — desde API,
+  // no desde localStorage (leakeaba properties del tenant anterior).
   useEffect(() => {
-    if (isClient) {
-      try { localStorage.setItem("stayhost_team", JSON.stringify(team)); } catch {}
-    }
-  }, [team, isClient]);
-
-  // Cargar propiedades reales para el selector del Paso 3
-  useEffect(() => {
-    if (typeof window !== "undefined") {
-      const raw = localStorage.getItem("stayhost_properties");
-      if (raw) {
-        try {
-          const parsed = JSON.parse(raw);
-          setSavedProperties(parsed.map((p: { id: string; name: string }) => ({ id: p.id, name: p.name })));
-        } catch {}
-      }
-    }
+    fetch("/api/properties", { credentials: "same-origin", cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        const list = Array.isArray(data?.properties) ? data.properties : [];
+        setSavedProperties(list.map((p: { id: string; name: string }) => ({ id: p.id, name: p.name })));
+      })
+      .catch(() => {});
   }, []);
 
   const [expandedMember, setExpandedMember] = useState<string | null>(null);
@@ -659,13 +644,32 @@ export default function TeamPanel() {
       </Card>
 
       {/* ─── Content ─────────────────────────────────────────────────────── */}
-      {filteredMembers.length === 0 ? (
+      {teamLoading ? (
+        <Card>
+          <CardContent className="p-12 text-center text-muted-foreground">
+            Cargando equipo…
+          </CardContent>
+        </Card>
+      ) : team.length === 0 ? (
+        <Card>
+          <CardContent className="p-12 text-center">
+            <Users className="h-16 w-16 mx-auto text-muted-foreground/30 mb-4" />
+            <h3 className="text-lg font-semibold mb-1">Aún no tenés miembros en el equipo</h3>
+            <p className="text-muted-foreground text-sm mb-6">
+              Invitá a tu primer miembro: cleaners, mantenimiento, co-host. Vas a poder asignarles propiedades y permisos específicos.
+            </p>
+            <Button onClick={handleOpenAdd} className="gradient-gold text-primary-foreground gap-2 mx-auto">
+              <UserPlus className="h-4 w-4" /> Invitar primer miembro
+            </Button>
+          </CardContent>
+        </Card>
+      ) : filteredMembers.length === 0 ? (
         <Card>
           <CardContent className="p-12 text-center">
             <Users className="h-16 w-16 mx-auto text-muted-foreground/30 mb-4" />
             <h3 className="text-lg font-semibold mb-1">No se encontraron miembros</h3>
             <p className="text-muted-foreground text-sm mb-6">
-              Ajusta los filtros o invita a alguien nuevo al equipo.
+              Ajustá los filtros o invitá a alguien nuevo al equipo.
             </p>
             <Button onClick={handleOpenAdd} className="gradient-gold text-primary-foreground gap-2 mx-auto">
               <UserPlus className="h-4 w-4" /> Invitar Nuevo Miembro
@@ -1116,10 +1120,25 @@ export default function TeamPanel() {
               {/* STEP 2: ROLES Y PERMISOS */}
               {inviteStep === "roles" && (
                 <div className="space-y-8 animate-in fade-in slide-in-from-right-4">
+                  {/* Disclaimer: hoy las permissions se guardan pero no se aplican
+                      todavia. Importante avisarlo para que el usuario no asuma
+                      que un "Limpieza" no puede ver financieros. */}
+                  <div className="rounded-lg border border-amber-200 bg-amber-50 dark:bg-amber-950/30 dark:border-amber-900 p-3 text-xs text-amber-800 dark:text-amber-200">
+                    <strong>En desarrollo:</strong> los permisos se guardan correctamente,
+                    pero la aplicación granular en el panel está en próxima fase.
+                    Por ahora todo miembro invitado verá tu panel completo. Invitalos
+                    sólo a personas de confianza.
+                  </div>
                   <div className="space-y-4">
                     <Label className="text-sm font-medium text-muted-foreground uppercase tracking-wider">1. Seleccionar Perfil Principal</Label>
                     <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-                      {Object.entries(roleConfig).map(([key, config]) => (
+                      {Object.entries(roleConfig)
+                        // El rol "owner" es para SaaS Master / dueño del tenant
+                        // (Virgilio o Master delegado), no para invitar staff.
+                        // Filtrarlo del wizard cierra el agujero conceptual donde
+                        // un cliente podia crear un staff con label "Dios".
+                        .filter(([key]) => key !== "owner")
+                        .map(([key, config]) => (
                         <button
                           key={key}
                           type="button"

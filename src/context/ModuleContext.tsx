@@ -157,17 +157,31 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
   };
 
   const syncSession = async () => {
-    // 1) Rol real desde el servidor — leemos /api/me que a su vez lee la
-    //    cookie httpOnly. Esto es más fiable que supabase.auth.getUser() en el
-    //    browser, que a veces no ve la cookie (incógnito, caché borrada, etc.).
+    // 1) Rol y plan real desde el servidor — leemos /api/me que a su vez lee
+    //    la cookie httpOnly y consulta tenants.plan. Esto es más fiable que
+    //    supabase.auth.getUser() en el browser, que a veces no ve la cookie
+    //    (incógnito, caché borrada, etc.).
     let sawServerSession = false;
+    let serverPlan: "starter" | "growth" | "master" | null = null;
+    let serverOverrides: Record<string, boolean> = {};
     try {
       const res = await fetch("/api/me", { cache: "no-store", credentials: "include" });
       if (res.ok) {
-        const data = (await res.json()) as { email: string | null; isMaster: boolean };
+        const data = (await res.json()) as {
+          email: string | null;
+          isMaster: boolean;
+          plan: string | null;
+          moduleOverrides?: Record<string, boolean>;
+        };
         if (data.email) {
           sawServerSession = true;
           applyRoleFromAuthEmail(data.email);
+        }
+        if (data.plan === "starter" || data.plan === "growth" || data.plan === "master") {
+          serverPlan = data.plan;
+        }
+        if (data.moduleOverrides && typeof data.moduleOverrides === "object") {
+          serverOverrides = data.moduleOverrides;
         }
       }
     } catch {
@@ -202,15 +216,23 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
       }
     }
 
-    // 2) Config de módulos y plugins — se mantienen en localStorage.
+    // 4) Modulos: el plan sirve para gating fino dentro de cada panel
+    //    (lock walls "Mejorar Plan"). Trial ve todos los modulos. Aplicamos
+    //    despues los `module_overrides` del tenant — el Master puede
+    //    encender/apagar modulos individuales por tenant desde el AdminPanel
+    //    (plan a medida sin tocar el plan base).
+    void serverPlan;
     try {
       const saved = localStorage.getItem("stayhost_modules_config");
-      if (saved) {
-        // Merge con DEFAULT_MODULES: módulos nuevos agregados en código
-        // heredan su default (normalmente true) sin requerir que el usuario
-        // limpie localStorage.
-        setModules({ ...DEFAULT_MODULES, ...JSON.parse(saved) });
+      const base = saved ? { ...DEFAULT_MODULES, ...JSON.parse(saved) } : DEFAULT_MODULES;
+      // Aplicar overrides — true habilita, false deshabilita, ausente respeta el base.
+      const next: Record<ModuleId, boolean> = { ...base };
+      for (const [id, val] of Object.entries(serverOverrides)) {
+        if (id in next && typeof val === "boolean") {
+          (next as Record<string, boolean>)[id] = val;
+        }
       }
+      setModules(next);
     } catch {}
     try {
       const saved = localStorage.getItem("stayhost_plugin_registry");

@@ -16,7 +16,7 @@ import {
   LifeBuoy, Clock, MessageSquare, ChevronDown, CheckCircle2, XCircle,
   AlertTriangle, BarChart2, DollarSign, Package, Puzzle, Eye,
   ToggleLeft, ToggleRight, Plus, Trash2, Crown, Rocket, Star,
-  RefreshCw, ArrowUpRight, Layers, Cpu, Send,
+  RefreshCw, ArrowUpRight, Layers, Cpu, Send, Settings,
 } from "lucide-react";
 import {
   useModules, SAAS_PLANS, PLAN_PRICES, BUILTIN_PLUGINS, type PluginManifest,
@@ -33,6 +33,7 @@ interface Tenant {
   plan: Plan; mrr: number; properties: number;
   status: TenantStatus; lastLogin: string;
   planExpiresAt?: string | null;
+  moduleOverrides: Record<string, boolean>;
 }
 
 // Respuesta cruda del endpoint /api/admin/tenants.
@@ -47,6 +48,7 @@ interface TenantRow {
   lastLoginAt: string | null;
   createdAt: string;
   properties: number;
+  moduleOverrides: Record<string, boolean>;
 }
 
 // MRR por plan — simplificado hasta que tengamos pricing real en DB.
@@ -82,6 +84,7 @@ function toUiTenant(r: TenantRow): Tenant {
     status: r.status,
     lastLogin,
     planExpiresAt: r.planExpiresAt,
+    moduleOverrides: r.moduleOverrides ?? {},
   };
 }
 
@@ -264,6 +267,16 @@ export default function AdminPanel() {
   const [newClientOpen, setNewClientOpen] = useState(false);
   const [newClientSaving, setNewClientSaving] = useState(false);
   const [newClientError, setNewClientError] = useState<string | null>(null);
+
+  // Edicion completa de tenant (plan a medida + fecha + overrides).
+  const [editingTenant, setEditingTenant] = useState<Tenant | null>(null);
+  const [editForm, setEditForm] = useState<{
+    plan: PlanLower;
+    planExpiresAt: string;
+    overrides: Record<string, boolean | undefined>;
+  } | null>(null);
+  const [editSaving, setEditSaving] = useState(false);
+  const [editError, setEditError] = useState<string | null>(null);
   const [newClientForm, setNewClientForm] = useState({
     email: "", name: "", company: "",
     plan: "trial" as PlanLower,
@@ -342,6 +355,67 @@ export default function AdminPanel() {
       alert(`No se pudo cambiar el plan: ${e instanceof Error ? e.message : e}`);
     }
   }, [loadTenants]);
+
+  const handleOpenEdit = useCallback((t: Tenant) => {
+    setEditError(null);
+    setEditingTenant(t);
+    // Inicializar form con valores actuales. La fecha la cortamos a YYYY-MM-DD
+    // para alimentar input type=date — Postgres devuelve full ISO con TZ.
+    const dateStr = t.planExpiresAt
+      ? t.planExpiresAt.slice(0, 10)
+      : "";
+    setEditForm({
+      plan: t.plan.toLowerCase() as PlanLower,
+      planExpiresAt: dateStr,
+      overrides: { ...t.moduleOverrides },
+    });
+  }, []);
+
+  const handleSaveEdit = useCallback(async () => {
+    if (!editingTenant || !editForm) return;
+    setEditSaving(true);
+    setEditError(null);
+    try {
+      // Solo mandamos overrides con valor explicito (true/false). Los
+      // que el Master deja en "respetar plan" salen como ausentes para
+      // no inflar el JSON con todas las claves.
+      const overrides: Record<string, boolean> = {};
+      for (const [k, v] of Object.entries(editForm.overrides)) {
+        if (typeof v === "boolean") overrides[k] = v;
+      }
+      const payload: Record<string, unknown> = {
+        id: editingTenant.id,
+        plan: editForm.plan,
+        status: editForm.plan === "trial" ? "trial" : "active",
+        moduleOverrides: overrides,
+      };
+      // Fecha: si quedó vacia, mandar null para limpiar el campo.
+      // Si tiene valor, transformar a ISO de fin del dia (23:59 local).
+      if (editForm.planExpiresAt) {
+        const d = new Date(editForm.planExpiresAt + "T23:59:59");
+        if (!Number.isNaN(d.getTime())) payload.planExpiresAt = d.toISOString();
+      } else {
+        payload.planExpiresAt = null;
+      }
+      const res = await fetch("/api/admin/tenants", {
+        method: "PATCH",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      if (!res.ok) {
+        const j = await res.json().catch(() => ({}));
+        throw new Error(j?.error ?? `HTTP ${res.status}`);
+      }
+      setEditingTenant(null);
+      setEditForm(null);
+      await loadTenants();
+    } catch (e) {
+      setEditError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setEditSaving(false);
+    }
+  }, [editingTenant, editForm, loadTenants]);
 
   const handleSuspendTenant = useCallback(async (tenantId: string) => {
     if (!confirm("¿Suspender este cliente? Perderá acceso hasta reactivarlo.")) return;
@@ -634,8 +708,9 @@ export default function AdminPanel() {
                             )}
                           </div>
                           <Button variant="outline" size="sm"
-                            className="h-8 px-2 text-xs gap-1 hover:bg-amber-50 hover:border-amber-300 hover:text-amber-700">
-                            <ShieldCheck className="h-3.5 w-3.5"/>Acceder
+                            className="h-8 px-2 text-xs gap-1 hover:bg-amber-50 hover:border-amber-300 hover:text-amber-700"
+                            onClick={() => handleOpenEdit(t)}>
+                            <Settings className="h-3.5 w-3.5"/>Editar
                           </Button>
                         </div>
                       </td>
@@ -946,6 +1021,136 @@ export default function AdminPanel() {
           </div>
         </TabsContent>
       </Tabs>
+
+      {/* ════════════════════ DIALOG: EDITAR TENANT (plan a medida) ════════════ */}
+      <Dialog open={!!editingTenant} onOpenChange={(open) => {
+        if (!open) { setEditingTenant(null); setEditForm(null); setEditError(null); }
+      }}>
+        <DialogContent className="sm:max-w-2xl max-h-[90vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Settings className="h-5 w-5 text-primary"/>
+              Editar cliente: {editingTenant?.name ?? ""}
+            </DialogTitle>
+          </DialogHeader>
+          {editForm && editingTenant && (
+            <div className="space-y-5 py-2">
+              <p className="text-xs text-muted-foreground">
+                Editá el plan, la fecha de expiración y los módulos habilitados puntualmente para este cliente.
+                Los overrides sobreescriben el set base del plan — útil para planes a medida.
+              </p>
+
+              {/* Plan base */}
+              <div className="space-y-2">
+                <Label className="text-xs">Plan base</Label>
+                <div className="grid grid-cols-4 gap-2">
+                  {(["trial","starter","growth","master"] as const).map(p => (
+                    <button
+                      key={p}
+                      type="button"
+                      onClick={() => setEditForm(f => f ? { ...f, plan: p } : f)}
+                      className={`text-xs px-2 py-2 rounded-lg border capitalize font-medium transition-colors ${
+                        editForm.plan === p
+                          ? "bg-primary text-primary-foreground border-primary"
+                          : "bg-card hover:bg-muted border-border"
+                      }`}
+                    >
+                      {p}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Fecha de expiración */}
+              <div className="space-y-1.5">
+                <Label className="text-xs">Fecha de expiración del plan</Label>
+                <Input
+                  type="date"
+                  value={editForm.planExpiresAt}
+                  onChange={(e) => setEditForm(f => f ? { ...f, planExpiresAt: e.target.value } : f)}
+                />
+                <p className="text-[11px] text-muted-foreground">
+                  Vacío = sin expiración (plan pago indefinido). Para trial, dejá fecha — pasada esa, el cliente cae en /pricing-wall.
+                </p>
+              </div>
+
+              {/* Module overrides */}
+              <div className="space-y-2">
+                <Label className="text-xs">Módulos (overrides por tenant)</Label>
+                <p className="text-[11px] text-muted-foreground">
+                  Tres estados por módulo: Plan (respeta el plan base), Forzar ON, Forzar OFF.
+                </p>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 max-h-72 overflow-y-auto pr-1">
+                  {BUILTIN_PLUGINS.map(m => {
+                    const ov = editForm.overrides[m.id];
+                    const setOv = (val: boolean | undefined) => {
+                      setEditForm(f => {
+                        if (!f) return f;
+                        const next = { ...f.overrides };
+                        if (val === undefined) delete next[m.id];
+                        else next[m.id] = val;
+                        return { ...f, overrides: next };
+                      });
+                    };
+                    return (
+                      <div key={m.id} className="flex items-center justify-between p-2 rounded-lg border bg-muted/30 gap-2">
+                        <div className="min-w-0 flex-1">
+                          <p className="text-xs font-medium truncate">{m.name}</p>
+                          <p className="text-[10px] text-muted-foreground capitalize">Plan: {m.planTier}</p>
+                        </div>
+                        <div className="flex items-center gap-1 shrink-0">
+                          <button
+                            type="button"
+                            onClick={() => setOv(undefined)}
+                            className={`text-[10px] px-2 py-1 rounded font-medium ${
+                              ov === undefined ? "bg-slate-700 text-white" : "bg-slate-100 hover:bg-slate-200"
+                            }`}
+                          >
+                            Plan
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setOv(true)}
+                            className={`text-[10px] px-2 py-1 rounded font-medium ${
+                              ov === true ? "bg-emerald-600 text-white" : "bg-emerald-50 text-emerald-700 hover:bg-emerald-100"
+                            }`}
+                          >
+                            ON
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setOv(false)}
+                            className={`text-[10px] px-2 py-1 rounded font-medium ${
+                              ov === false ? "bg-red-600 text-white" : "bg-red-50 text-red-700 hover:bg-red-100"
+                            }`}
+                          >
+                            OFF
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {editError && (
+                <div className="flex items-start gap-2 p-3 rounded-lg bg-red-50 border border-red-200 text-xs text-red-700">
+                  <AlertTriangle className="h-4 w-4 shrink-0 mt-0.5"/>
+                  <span>{editError}</span>
+                </div>
+              )}
+            </div>
+          )}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => { setEditingTenant(null); setEditForm(null); }} disabled={editSaving}>
+              Cancelar
+            </Button>
+            <Button onClick={() => void handleSaveEdit()} disabled={editSaving} className="gradient-gold text-primary-foreground">
+              {editSaving ? "Guardando..." : "Guardar cambios"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* ════════════════════ DIALOG: NUEVO CLIENTE ═══════════════════════════ */}
       <Dialog open={newClientOpen} onOpenChange={setNewClientOpen}>

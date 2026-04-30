@@ -166,42 +166,24 @@ const defaultRules: PricingRule[] = [
   },
 ];
 
-const weeklyForecast = [
-  { day: "Lun", price: 180, market: 172, occupancy: 70 },
-  { day: "Mar", price: 175, market: 170, occupancy: 65 },
-  { day: "Mié", price: 185, market: 178, occupancy: 72 },
-  { day: "Jue", price: 195, market: 185, occupancy: 78 },
-  { day: "Vie", price: 245, market: 210, occupancy: 95 },
-  { day: "Sáb", price: 260, market: 225, occupancy: 98 },
-  { day: "Dom", price: 220, market: 195, occupancy: 85 },
-];
-
-const priceFactors = [
-  { name: "Demanda local", impact: 85, trend: "up" },
-  { name: "Eventos cercanos", impact: 72, trend: "up" },
-  { name: "Estacionalidad", impact: 65, trend: "up" },
-  { name: "Competencia", impact: 45, trend: "down" },
-  { name: "Día de la semana", impact: 60, trend: "up" },
-];
-
-const mockGapNights = [
-  { from: "Mar 14", to: "Mar 16", nights: 2, property: "Villa Mar Azul", suggestedDiscount: 25 },
-  { from: "Mar 19", to: "Mar 20", nights: 1, property: "Loft Moderno", suggestedDiscount: 30 },
-];
+// Pricing dinámico: motor en construcción (Sprint 3.2). Estos datos eran
+// mock visible para todos los tenants. Vacíos hasta tener data real.
+type ForecastDay = { day: string; price: number; market: number; occupancy: number };
+type PriceFactor = { name: string; impact: number; trend: string };
+type GapNight = { from: string; to: string; nights: number; property: string; suggestedDiscount: number };
+const weeklyForecast: ForecastDay[] = [];
+const priceFactors: PriceFactor[] = [];
+const mockGapNights: GapNight[] = [];
 
 export default function DynamicPricingPanel() {
   const [selectedProperty, setSelectedProperty] = useState("all");
   const [autoAdjust, setAutoAdjust] = useState(true);
   const [strategy, setStrategy] = useState<"conservative" | "recommended" | "aggressive">("recommended");
-  const [rules, setRules] = useState<PricingRule[]>(() => {
-    if (typeof window === "undefined") return defaultRules;
-    try {
-      const saved = localStorage.getItem("stayhost_pricing_rules");
-      return saved ? JSON.parse(saved) : defaultRules;
-    } catch {
-      return defaultRules;
-    }
-  });
+  // Reglas: defaultRules son plantillas (Última Hora, Fin de Semana, etc).
+  // Sin localStorage — la persistencia real espera Sprint 3.2 (tabla
+  // pricing_rules + endpoint). Hasta entonces, las activaciones del user
+  // se pierden al recargar — pero al menos no leakean entre tenants.
+  const [rules, setRules] = useState<PricingRule[]>(defaultRules);
 
   // Scraper Logic
   const [url, setUrl] = useState("");
@@ -211,16 +193,17 @@ export default function DynamicPricingPanel() {
 
   const [properties, setProperties] = useState<Property[]>([]);
 
+  // Properties via API — sin localStorage (leakeaba propiedades del
+  // tenant anterior).
   useEffect(() => {
-    try {
-      const raw = localStorage.getItem("stayhost_properties");
-      if (raw) setProperties(JSON.parse(raw));
-    } catch {}
+    fetch("/api/properties", { credentials: "same-origin", cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        const list = Array.isArray(data?.properties) ? data.properties : [];
+        setProperties(list);
+      })
+      .catch(() => {});
   }, []);
-
-  useEffect(() => {
-    localStorage.setItem("stayhost_pricing_rules", JSON.stringify(rules));
-  }, [rules]);
 
   const handleAnalyze = () => {
     if (!url) return;

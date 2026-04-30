@@ -19,17 +19,19 @@
  */
 import { NextResponse } from "next/server";
 import { getAuthenticatedTenant } from "@/lib/supabase/server";
-import { supabaseAdmin } from "@/lib/supabase/admin";
 import { listGatewaysForAccount, getLinkedGatewayId, type GatewayStatus } from "@/lib/ttlock/gateway-status";
 
 export async function GET() {
-  const { tenantId } = await getAuthenticatedTenant();
+  const { tenantId, supabase } = await getAuthenticatedTenant();
   if (!tenantId) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const { data: props } = await (supabaseAdmin.from("properties") as any)
+  // RLS sobre `properties` filtra por tenant del caller — no necesitamos
+  // service_role para esta lectura. Mantenemos el `.eq("tenant_id", ...)`
+  // por claridad, pero RLS es la barrera real.
+  const { data: props } = await supabase
+    .from("properties")
     .select("id, name, ttlock_account_id, ttlock_lock_id")
     .eq("tenant_id", tenantId)
     .not("ttlock_lock_id", "is", null);

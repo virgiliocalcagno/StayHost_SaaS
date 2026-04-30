@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetTrigger } from "@/components/ui/sheet";
@@ -10,7 +10,8 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { ChevronDown, Menu, Home, Star } from "lucide-react";
+import { ChevronDown, Menu, Home, Star, LogOut, LayoutDashboard } from "lucide-react";
+import { supabase } from "@/lib/supabase/client";
 
 type NavItemWithSubmenu = {
   label: string;
@@ -50,6 +51,28 @@ const hasSubmenu = (item: NavItem): item is NavItemWithSubmenu => "items" in ite
 
 export default function Header() {
   const [isOpen, setIsOpen] = useState(false);
+  // null = desconocido (todavia no chequeamos), boolean = ya sabemos.
+  // Mientras es null no renderizamos los CTAs para evitar flicker entre
+  // "Iniciar Sesion" y "Ir al Dashboard".
+  const [hasSession, setHasSession] = useState<boolean | null>(null);
+
+  useEffect(() => {
+    let active = true;
+
+    (async () => {
+      const { data } = await supabase.auth.getUser();
+      if (active) setHasSession(!!data.user);
+    })();
+
+    const { data: sub } = supabase.auth.onAuthStateChange((_event, session) => {
+      setHasSession(!!session?.user);
+    });
+
+    return () => {
+      active = false;
+      sub.subscription.unsubscribe();
+    };
+  }, []);
 
   return (
     <header className="sticky top-0 z-50 w-full border-b border-border/40 bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
@@ -99,17 +122,40 @@ export default function Header() {
           )}
         </nav>
 
-        {/* CTA Buttons */}
+        {/* CTA Buttons (desktop) */}
         <div className="hidden md:flex items-center gap-3">
-          <Button variant="ghost" asChild>
-            <Link href="/acceso">Iniciar Sesion</Link>
-          </Button>
-          <Button asChild className="gradient-gold text-primary-foreground hover:opacity-90 transition-opacity">
-            <Link href="/acceso">
-              <Star className="h-4 w-4 mr-2" />
-              Prueba Gratis 14 Dias
-            </Link>
-          </Button>
+          {hasSession === null ? (
+            // Placeholder mientras determinamos la sesion, mismo footprint
+            // que los botones reales para evitar layout shift.
+            <div className="h-10 w-72" aria-hidden />
+          ) : hasSession ? (
+            <>
+              <Button variant="ghost" asChild>
+                <a href="/salir" className="flex items-center gap-2">
+                  <LogOut className="h-4 w-4" />
+                  Cerrar Sesion
+                </a>
+              </Button>
+              <Button asChild className="gradient-gold text-primary-foreground hover:opacity-90 transition-opacity">
+                <Link href="/dashboard" className="flex items-center gap-2">
+                  <LayoutDashboard className="h-4 w-4" />
+                  Ir al Dashboard
+                </Link>
+              </Button>
+            </>
+          ) : (
+            <>
+              <Button variant="ghost" asChild>
+                <Link href="/acceso">Iniciar Sesion</Link>
+              </Button>
+              <Button asChild className="gradient-gold text-primary-foreground hover:opacity-90 transition-opacity">
+                <Link href="/register">
+                  <Star className="h-4 w-4 mr-2" />
+                  Prueba Gratis 14 Dias
+                </Link>
+              </Button>
+            </>
+          )}
         </div>
 
         {/* Mobile Menu */}
@@ -150,12 +196,33 @@ export default function Header() {
                 )
               )}
               <div className="flex flex-col gap-2 pt-4 border-t">
-                <Button variant="outline" asChild>
-                  <Link href="/acceso">Iniciar Sesion</Link>
-                </Button>
-                <Button asChild className="gradient-gold text-primary-foreground">
-                  <Link href="/acceso">Prueba Gratis</Link>
-                </Button>
+                {hasSession === null ? (
+                  <div className="h-24" aria-hidden />
+                ) : hasSession ? (
+                  <>
+                    <Button variant="outline" asChild>
+                      <a href="/salir" className="flex items-center gap-2 justify-center">
+                        <LogOut className="h-4 w-4" />
+                        Cerrar Sesion
+                      </a>
+                    </Button>
+                    <Button asChild className="gradient-gold text-primary-foreground">
+                      <Link href="/dashboard" className="flex items-center gap-2 justify-center">
+                        <LayoutDashboard className="h-4 w-4" />
+                        Ir al Dashboard
+                      </Link>
+                    </Button>
+                  </>
+                ) : (
+                  <>
+                    <Button variant="outline" asChild>
+                      <Link href="/acceso">Iniciar Sesion</Link>
+                    </Button>
+                    <Button asChild className="gradient-gold text-primary-foreground">
+                      <Link href="/register">Prueba Gratis</Link>
+                    </Button>
+                  </>
+                )}
               </div>
             </div>
           </SheetContent>

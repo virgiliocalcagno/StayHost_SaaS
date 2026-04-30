@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getAuthenticatedTenant } from "@/lib/supabase/server";
 import { ensureCleaningTasksForProperty } from "@/lib/cleaning/ensure-tasks";
 import { deriveCorrectStatus } from "@/lib/cleaning/status";
+import { syncStaffPinForTask } from "@/lib/staff-access/sync-task";
 
 // All handlers resolve the tenant from the authenticated session. Callers no
 // longer pass `email` or `tenantEmail`. RLS ensures the tenant can only
@@ -242,6 +243,17 @@ export async function POST(req: NextRequest) {
     } as never);
 
     if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+
+    // Si la nueva tarea ya quedó asignada, activar el PIN del staff.
+    if (assigneeId) {
+      try {
+        const result = await syncStaffPinForTask({ supabase, tenantId, taskId: id });
+        console.log("[cleaning-tasks POST] sync result:", result);
+      } catch (e) {
+        console.error("[cleaning-tasks POST] syncStaffPinForTask failed:", e);
+      }
+    }
+
     return NextResponse.json({ ok: true, id });
   } catch (err) {
     return NextResponse.json(
@@ -307,6 +319,19 @@ export async function PATCH(req: NextRequest) {
       .eq("id", id);
     if (error) return NextResponse.json({ error: error.message }, { status: 500 });
     if (!count) return NextResponse.json({ error: "Not found" }, { status: 404 });
+
+    // Si la actualización tocó status o assignee, reconciliar el PIN de
+    // staff en la cerradura. Idempotente — si nada cambió relevante para
+    // el PIN, sale rápido.
+    if (touchesStatus || touchesAssignee) {
+      try {
+        const result = await syncStaffPinForTask({ supabase, tenantId, taskId: id });
+        console.log("[cleaning-tasks PATCH] sync result for", id, result);
+      } catch (e) {
+        console.error("[cleaning-tasks PATCH] syncStaffPinForTask failed:", e);
+      }
+    }
+
     return NextResponse.json({ ok: true });
   } catch (err) {
     return NextResponse.json(
