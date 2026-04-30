@@ -251,9 +251,12 @@ export default function PropertyPage({ params }: { params: Promise<{ hostId: str
           photoPath?: string;
         };
       };
-      if (doc.guestName && !guestName) setGuestName(doc.guestName);
-      if (doc.docNumber && !guestDoc) setGuestDoc(doc.docNumber);
-      if (doc.nationality && !guestNationality) setGuestNationality(doc.nationality);
+      // Re-escanear SIEMPRE reemplaza los 3 campos OCR. Si el OCR no
+      // detecta un campo, queda como string vacío y el huésped lo edita
+      // a mano. Comportamiento estándar (Airbnb, Booking).
+      setGuestName(doc.guestName ?? "");
+      setGuestDoc(doc.docNumber ?? "");
+      setGuestNationality(doc.nationality ?? "");
       if (doc.photoPath) setGuestDocPhotoPath(doc.photoPath);
     } catch (err) {
       setScanError(err instanceof Error ? err.message : String(err));
@@ -261,6 +264,61 @@ export default function PropertyPage({ params }: { params: Promise<{ hostId: str
       setScanning(false);
     }
   };
+
+  // Limpia explicitamente los datos de identidad del huesped. Lo usa el
+  // boton "Cambiar documento" cuando el huesped escaneo el doc equivocado.
+  // No borra la foto del bucket (atacante podria DoS si pudiera) — queda
+  // huerfana y un cron la limpia despues.
+  const clearGuestIdentity = () => {
+    setGuestName("");
+    setGuestDoc("");
+    setGuestNationality("");
+    setGuestDocPhotoPath(null);
+    setScanError(null);
+  };
+
+  // Reset completo del form. Lo llamamos cuando: (1) cambia la propiedad
+  // (navegacion entre listings), (2) la solicitud se envio con exito (para
+  // que si el huesped vuelve al Hub no vea datos stale).
+  const resetBookingForm = () => {
+    setShowCheckout(false);
+    setGuestName("");
+    setGuestEmail("");
+    setGuestPhone("");
+    setGuestDoc("");
+    setGuestNationality("");
+    setGuestDocPhotoPath(null);
+    setScanError(null);
+    setSubmitError(null);
+    setSelectedUpsellIds([]);
+    setAppliedCoupon(null);
+    setCouponInput("");
+    setCouponError("");
+    setCouponSuccess("");
+  };
+
+  // Limpia el form al cambiar de propiedad (huesped navega entre listings).
+  // Inline porque resetBookingForm se redefine en cada render — depender
+  // de él dispararia el effect siempre. Los setters de useState son
+  // estables, asi que no hace falta declararlos como deps.
+  useEffect(() => {
+    setShowCheckout(false);
+    setGuestName("");
+    setGuestEmail("");
+    setGuestPhone("");
+    setGuestDoc("");
+    setGuestNationality("");
+    setGuestDocPhotoPath(null);
+    setScanError(null);
+    setSubmitError(null);
+    setSelectedUpsellIds([]);
+    setAppliedCoupon(null);
+    setCouponInput("");
+    setCouponError("");
+    setCouponSuccess("");
+    setBookingConfirmed(null);
+    setRequestRefId(null);
+  }, [propertyId]);
 
   // ── Price calculations ────────────────────────────────────────────────────
   const nights = diffNights(checkin, checkout);
@@ -354,7 +412,7 @@ export default function PropertyPage({ params }: { params: Promise<{ hostId: str
       setRequestRefId(json.requestId ?? null);
       const propName = property?.name ?? "Propiedad";
       const propImage = property?.image;
-      setBookingConfirmed({
+      const confirmation = {
         id: json.requestId ?? `req-${Date.now()}`,
         propertyId,
         propertyName: propName,
@@ -374,9 +432,15 @@ export default function PropertyPage({ params }: { params: Promise<{ hostId: str
         total: finalTotal,
         couponCode: appliedCoupon?.code,
         upsellIds: selectedUpsellIds,
-        status: "confirmed",
+        status: "confirmed" as const,
         createdAt: new Date().toISOString(),
-      });
+      };
+      // Reseteamos el form ANTES de mostrar la confirmación. La pantalla
+      // de "Solicitud enviada" se renderiza con los datos del objeto
+      // `confirmation`, no con los useState — así el form queda vacío
+      // si el huésped vuelve atrás (ej. para hacer otra reserva).
+      resetBookingForm();
+      setBookingConfirmed(confirmation);
       void appliedCoupon;
     } catch (err) {
       setSubmitError(err instanceof Error ? err.message : String(err));
@@ -928,13 +992,26 @@ export default function PropertyPage({ params }: { params: Promise<{ hostId: str
                       {scanning ? (
                         <><Loader2 className="h-4 w-4 animate-spin" /> Escaneando...</>
                       ) : guestDocPhotoPath ? (
-                        <><CheckCircle2 className="h-4 w-4" /> Documento escaneado</>
+                        <><Sparkles className="h-4 w-4" /> Volver a escanear</>
                       ) : (
                         <><Sparkles className="h-4 w-4" /> Escanear ID o pasaporte</>
                       )}
                     </Button>
                     {guestDocPhotoPath && (
-                      <span className="text-xs text-emerald-700 font-semibold">Foto guardada</span>
+                      <>
+                        <span className="text-xs text-emerald-700 font-semibold flex items-center gap-1">
+                          <CheckCircle2 className="h-3 w-3" /> Foto guardada
+                        </span>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          onClick={clearGuestIdentity}
+                          className="text-xs text-red-600 hover:text-red-700 hover:bg-red-50 h-9 px-3"
+                          title="Limpiar nombre, documento, nacionalidad y foto"
+                        >
+                          <X className="h-3.5 w-3.5 mr-1" /> Cambiar documento
+                        </Button>
+                      </>
                     )}
                   </div>
                   {scanError && (
