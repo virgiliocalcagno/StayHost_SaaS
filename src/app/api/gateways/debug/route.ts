@@ -78,11 +78,13 @@ export async function GET() {
   if (email !== MASTER_EMAIL) return NextResponse.json({ error: "Forbidden" }, { status: 403 });
 
   // Tenant del usuario autenticado (helper estandar del proyecto).
-  const { tenantId } = await getAuthenticatedTenant();
+  const { tenantId, supabase: tenantSupabase } = await getAuthenticatedTenant();
   if (!tenantId) return NextResponse.json({ error: "No tenant" }, { status: 400 });
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const { data: props } = await (supabaseAdmin.from("properties") as any)
+  // Lectura de properties con sesion + RLS — no hace falta service_role
+  // aca; el master gate y RLS por tenant_id ya garantizan aislamiento.
+  const { data: props } = await tenantSupabase
+    .from("properties")
     .select("id, name, ttlock_account_id, ttlock_lock_id")
     .eq("tenant_id", tenantId)
     .not("ttlock_lock_id", "is", null);
