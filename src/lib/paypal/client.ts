@@ -42,7 +42,11 @@ async function getAccessToken(args: {
     return cached.token;
   }
 
-  const auth = Buffer.from(`${args.clientId}:${args.clientSecret}`).toString("base64");
+  // Trim defensivo: paste mete trailing/leading spaces y PayPal rechaza
+  // con `invalid_client` sin pista de por qué (501h-debug recurrente).
+  const clientId = args.clientId.trim();
+  const clientSecret = args.clientSecret.trim();
+  const auth = Buffer.from(`${clientId}:${clientSecret}`).toString("base64");
   const res = await fetch(TOKEN_URLS[args.mode], {
     method: "POST",
     headers: {
@@ -53,8 +57,20 @@ async function getAccessToken(args: {
   });
 
   if (!res.ok) {
-    const text = await res.text().catch(() => "");
-    throw new Error(`PayPal OAuth failed: ${res.status} ${text}`);
+    let errBody: { error?: string; error_description?: string } = {};
+    try {
+      errBody = (await res.json()) as typeof errBody;
+    } catch {
+      /* ignore parse errors */
+    }
+    if (errBody.error === "invalid_client") {
+      throw new Error(
+        `PayPal rechazó las credenciales del host (modo ${args.mode}). El host debe verificar en Configuración → Pagos que las claves correspondan al modo seleccionado (Sandbox vs Live tienen claves distintas).`
+      );
+    }
+    throw new Error(
+      `PayPal OAuth ${res.status}: ${errBody.error ?? "unknown"} ${errBody.error_description ?? ""}`.trim()
+    );
   }
 
   const json = (await res.json()) as { access_token: string; expires_in: number };

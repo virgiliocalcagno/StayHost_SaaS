@@ -44,6 +44,7 @@ import {
   Save,
   KeyRound,
   Lock,
+  CheckCircle2,
 } from "lucide-react";
 import Link from "next/link";
 
@@ -94,6 +95,11 @@ export default function SettingsPanel() {
   });
   const [paypalLoading, setPaypalLoading] = useState(true);
   const [paypalSave, setPaypalSave] = useState<SaveState>({ kind: "idle" });
+  // Resultado del botón "Probar conexión" — separado de save porque el
+  // host puede querer testear sin haber tocado el form.
+  const [paypalTest, setPaypalTest] = useState<{
+    kind: "idle" | "testing";
+  } | { kind: "ok"; message: string } | { kind: "err"; message: string }>({ kind: "idle" });
 
   useEffect(() => {
     let cancelled = false;
@@ -127,6 +133,28 @@ export default function SettingsPanel() {
     })();
     return () => { cancelled = true; };
   }, []);
+
+  const testPaypal = async () => {
+    setPaypalTest({ kind: "testing" });
+    try {
+      const res = await fetch("/api/settings/payments/test", {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ provider: "paypal" }),
+      });
+      const json = (await res.json().catch(() => ({}))) as {
+        ok?: boolean; message?: string; error?: string;
+      };
+      if (json.ok) {
+        setPaypalTest({ kind: "ok", message: json.message ?? "Conexión exitosa." });
+      } else {
+        setPaypalTest({ kind: "err", message: json.error ?? `Error ${res.status}` });
+      }
+    } catch (e) {
+      setPaypalTest({ kind: "err", message: (e as Error).message });
+    }
+  };
 
   const savePaypal = async () => {
     setPaypalSave({ kind: "saving" });
@@ -707,14 +735,43 @@ export default function SettingsPanel() {
                     </div>
                   </div>
 
-                  <div className="flex items-center gap-3 pt-2">
+                  <div className="flex flex-wrap items-center gap-3 pt-2">
                     <Button onClick={savePaypal} disabled={paypalSave.kind === "saving"} className="gap-2">
                       {paypalSave.kind === "saving" ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
                       Guardar
                     </Button>
+                    <Button
+                      variant="outline"
+                      onClick={testPaypal}
+                      disabled={paypalTest.kind === "testing" || !paypalConfig.hasSecret}
+                      className="gap-2"
+                      title={!paypalConfig.hasSecret ? "Guardá las credenciales primero" : "Hace una llamada de prueba a PayPal"}
+                    >
+                      {paypalTest.kind === "testing" ? (
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                      ) : (
+                        <KeyRound className="h-4 w-4" />
+                      )}
+                      Probar conexión
+                    </Button>
                     {paypalSave.kind === "ok" && <span className="text-sm text-emerald-600">Guardado</span>}
                     {paypalSave.kind === "err" && <span className="text-sm text-destructive">{paypalSave.msg}</span>}
                   </div>
+
+                  {/* Resultado del test — bloque grande para que el host
+                      pueda leer mensajes multilínea con detalles. */}
+                  {paypalTest.kind === "ok" && (
+                    <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-3 text-sm text-emerald-900 flex items-start gap-2">
+                      <CheckCircle2 className="h-4 w-4 flex-shrink-0 mt-0.5" />
+                      <span>{paypalTest.message}</span>
+                    </div>
+                  )}
+                  {paypalTest.kind === "err" && (
+                    <div className="bg-red-50 border border-red-200 rounded-xl p-3 text-sm text-red-900 flex items-start gap-2 whitespace-pre-line">
+                      <AlertTriangle className="h-4 w-4 flex-shrink-0 mt-0.5" />
+                      <span>{paypalTest.message}</span>
+                    </div>
+                  )}
                 </>
               )}
             </CardContent>
