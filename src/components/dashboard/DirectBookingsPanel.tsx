@@ -1,6 +1,6 @@
 "use client";
 
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
@@ -17,8 +17,16 @@ import {
   Settings,
   CheckCircle2,
   Loader2,
+  ClipboardList,
+  X,
+  Check,
+  AlertCircle,
+  Calendar,
+  Phone,
+  IdCard,
+  Image as ImageIcon,
 } from "lucide-react";
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 
 interface PropertyLite {
   id: string;
@@ -33,6 +41,23 @@ interface BookingLite {
   totalPrice: number;
 }
 
+interface BookingRequest {
+  id: string;
+  propertyId: string;
+  propertyName: string;
+  checkIn: string;
+  checkOut: string;
+  guestName: string | null;
+  guestPhone: string | null;
+  guestDoc: string | null;
+  guestNationality: string | null;
+  docPhotoUrl: string | null;
+  numGuests: number | null;
+  note: string | null;
+  createdAt: string;
+  phoneLast4: string | null;
+}
+
 const INDIRECT_CHANNELS = new Set(["airbnb", "vrbo", "booking", "expedia", "ical", "ical_manual", "block"]);
 
 const formatCurrency = (n: number) =>
@@ -45,6 +70,25 @@ export default function DirectBookingsPanel() {
   const [directCount, setDirectCount] = useState(0);
   const [directRevenue, setDirectRevenue] = useState(0);
   const [loading, setLoading] = useState(true);
+
+  // Solicitudes pendientes desde el Hub público (pending_review).
+  const [requests, setRequests] = useState<BookingRequest[]>([]);
+  const [requestsLoading, setRequestsLoading] = useState(true);
+  const [actingId, setActingId] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [approvePrice, setApprovePrice] = useState<Record<string, string>>({});
+
+  const loadRequests = useCallback(async () => {
+    setRequestsLoading(true);
+    try {
+      const res = await fetch("/api/bookings/requests", { credentials: "same-origin", cache: "no-store" });
+      if (!res.ok) return;
+      const data = (await res.json()) as { requests?: BookingRequest[] };
+      setRequests(Array.isArray(data.requests) ? data.requests : []);
+    } finally {
+      setRequestsLoading(false);
+    }
+  }, []);
 
   useEffect(() => {
     setOrigin(window.location.origin);
@@ -85,7 +129,61 @@ export default function DirectBookingsPanel() {
     };
 
     fetchAll();
-  }, []);
+    loadRequests();
+  }, [loadRequests]);
+
+  const handleApprove = async (req: BookingRequest) => {
+    setActionError(null);
+    const priceStr = (approvePrice[req.id] ?? "").trim();
+    const price = Number(priceStr);
+    if (!priceStr || Number.isNaN(price) || price < 0) {
+      setActionError(`Cargá un precio válido para "${req.guestName ?? "huésped"}"`);
+      return;
+    }
+    setActingId(req.id);
+    try {
+      const res = await fetch(`/api/bookings/${req.id}/approve`, {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ totalPrice: price, source: "direct" }),
+      });
+      if (!res.ok) {
+        const j = (await res.json().catch(() => ({}))) as { error?: string };
+        throw new Error(j.error ?? `HTTP ${res.status}`);
+      }
+      // Sacamos la solicitud aprobada de la lista local sin esperar reload.
+      setRequests((prev) => prev.filter((r) => r.id !== req.id));
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setActingId(null);
+    }
+  };
+
+  const handleReject = async (req: BookingRequest) => {
+    if (!confirm(`¿Rechazar la solicitud de ${req.guestName ?? "este huésped"}?`)) return;
+    setActionError(null);
+    setActingId(req.id);
+    try {
+      // Reusamos PATCH /api/bookings (cambia status a cancelled).
+      const res = await fetch("/api/bookings", {
+        method: "PATCH",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ bookingId: req.id, status: "cancelled" }),
+      });
+      if (!res.ok) {
+        const j = (await res.json().catch(() => ({}))) as { error?: string };
+        throw new Error(j.error ?? `HTTP ${res.status}`);
+      }
+      setRequests((prev) => prev.filter((r) => r.id !== req.id));
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setActingId(null);
+    }
+  };
 
   // El hub público hoy resuelve cualquier string en /hub/[hostId]. Hasta que
   // exista columna tenants.slug, usamos el tenantId. Es feo pero estable y
@@ -158,6 +256,152 @@ export default function DirectBookingsPanel() {
           </Button>
         </div>
       </div>
+
+      {/* Solicitudes pendientes desde el Hub público */}
+      {(requests.length > 0 || requestsLoading) && (
+        <Card className="border-amber-200 bg-amber-50/50">
+          <CardHeader className="pb-3">
+            <div className="flex items-center justify-between gap-3">
+              <div className="flex items-center gap-2">
+                <ClipboardList className="h-5 w-5 text-amber-600" />
+                <CardTitle className="text-lg">Solicitudes pendientes</CardTitle>
+                {!requestsLoading && requests.length > 0 && (
+                  <Badge className="bg-amber-600 text-white">{requests.length}</Badge>
+                )}
+              </div>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={loadRequests}
+                disabled={requestsLoading}
+              >
+                {requestsLoading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : "Refrescar"}
+              </Button>
+            </div>
+            <CardDescription>
+              Reservas solicitadas por huéspedes desde tu Hub público. Revisá la identidad antes de aprobar.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            {actionError && (
+              <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700 flex items-start gap-2">
+                <AlertCircle className="h-4 w-4 flex-shrink-0 mt-0.5" />
+                <span>{actionError}</span>
+              </div>
+            )}
+            {requestsLoading && requests.length === 0 ? (
+              <div className="flex items-center justify-center py-8 text-muted-foreground">
+                <Loader2 className="h-5 w-5 animate-spin mr-2" />
+                Cargando solicitudes...
+              </div>
+            ) : (
+              requests.map((req) => {
+                const nights = Math.max(
+                  1,
+                  Math.round(
+                    (new Date(req.checkOut).getTime() - new Date(req.checkIn).getTime()) / 86400000
+                  )
+                );
+                const isActing = actingId === req.id;
+                return (
+                  <div
+                    key={req.id}
+                    className="rounded-xl border border-amber-200 bg-white p-4 grid md:grid-cols-[120px_1fr_auto] gap-4"
+                  >
+                    {/* Foto del documento */}
+                    <div className="md:row-span-2">
+                      {req.docPhotoUrl ? (
+                        <a
+                          href={req.docPhotoUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="block aspect-[4/3] rounded-lg overflow-hidden border bg-muted relative group"
+                          title="Click para ver foto completa"
+                        >
+                          <img
+                            src={req.docPhotoUrl}
+                            alt="Documento del huésped"
+                            className="w-full h-full object-cover"
+                          />
+                          <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
+                            <Eye className="h-5 w-5 text-white" />
+                          </div>
+                        </a>
+                      ) : (
+                        <div className="aspect-[4/3] rounded-lg border-2 border-dashed border-muted flex items-center justify-center text-muted-foreground">
+                          <ImageIcon className="h-6 w-6" />
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Datos del huésped y de la reserva */}
+                    <div className="space-y-2 min-w-0">
+                      <div className="flex items-baseline gap-2 flex-wrap">
+                        <h4 className="font-bold text-base truncate">{req.guestName ?? "(sin nombre)"}</h4>
+                        <Badge variant="outline" className="text-xs">{req.guestNationality ?? "—"}</Badge>
+                      </div>
+                      <div className="text-sm text-muted-foreground space-y-1">
+                        <p className="flex items-center gap-1.5"><Layout className="h-3.5 w-3.5" /> {req.propertyName}</p>
+                        <p className="flex items-center gap-1.5">
+                          <Calendar className="h-3.5 w-3.5" />
+                          {req.checkIn} → {req.checkOut} ({nights} {nights === 1 ? "noche" : "noches"})
+                        </p>
+                        <p className="flex items-center gap-1.5">
+                          <Users className="h-3.5 w-3.5" />
+                          {req.numGuests ?? 1} {req.numGuests === 1 ? "huésped" : "huéspedes"}
+                        </p>
+                        <p className="flex items-center gap-1.5"><Phone className="h-3.5 w-3.5" /> {req.guestPhone ?? "—"}</p>
+                        <p className="flex items-center gap-1.5"><IdCard className="h-3.5 w-3.5" /> {req.guestDoc ?? "—"}</p>
+                        {req.note && (
+                          <p className="text-xs italic mt-1 bg-muted/50 p-2 rounded">{req.note}</p>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Acciones: precio + aprobar/rechazar */}
+                    <div className="flex flex-col gap-2 md:items-end md:min-w-[180px]">
+                      <div className="space-y-1 w-full md:w-40">
+                        <label className="text-xs font-bold text-muted-foreground uppercase tracking-wider">
+                          Precio total
+                        </label>
+                        <Input
+                          type="number"
+                          min={0}
+                          step={1}
+                          value={approvePrice[req.id] ?? ""}
+                          onChange={(e) =>
+                            setApprovePrice((prev) => ({ ...prev, [req.id]: e.target.value }))
+                          }
+                          placeholder="USD"
+                          className="text-right"
+                        />
+                      </div>
+                      <Button
+                        size="sm"
+                        className="w-full md:w-40 bg-emerald-600 hover:bg-emerald-700 gap-2"
+                        onClick={() => handleApprove(req)}
+                        disabled={isActing}
+                      >
+                        {isActing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Check className="h-3.5 w-3.5" />}
+                        Aprobar
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="w-full md:w-40 text-red-600 border-red-200 hover:bg-red-50 gap-2"
+                        onClick={() => handleReject(req)}
+                        disabled={isActing}
+                      >
+                        <X className="h-3.5 w-3.5" /> Rechazar
+                      </Button>
+                    </div>
+                  </div>
+                );
+              })
+            )}
+          </CardContent>
+        </Card>
+      )}
 
       {/* Website URL */}
       <Card className="bg-gradient-to-r from-primary/5 to-chart-2/5 border-primary/20">
