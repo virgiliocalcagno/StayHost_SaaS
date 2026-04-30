@@ -461,15 +461,14 @@ export default function PropertyPage({ params }: { params: Promise<{ hostId: str
           checkIn: checkin,
           checkOut: checkout,
           guestName: guestName.trim(),
+          guestEmail: guestEmail.trim() || null,
           guestPhone: guestPhone.trim(),
           guestDoc: guestDoc.trim(),
           guestNationality: guestNationality.trim().toUpperCase(),
           guestDocPhotoPath,
           numGuests: guests,
           paymentMethod,
-          note: guestEmail
-            ? `Email del huésped: ${guestEmail.trim()}`
-            : null,
+          note: null,
         }),
       });
       if (!res.ok) {

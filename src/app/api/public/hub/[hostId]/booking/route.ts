@@ -63,6 +63,7 @@ export async function POST(
     const checkIn = String(body.checkIn ?? "").trim();
     const checkOut = String(body.checkOut ?? "").trim();
     const guestName = String(body.guestName ?? "").trim();
+    const guestEmail = body.guestEmail ? String(body.guestEmail).trim().toLowerCase() : null;
     const guestPhone = String(body.guestPhone ?? "").trim();
     const guestDoc = String(body.guestDoc ?? "").trim();
     const guestNationality = String(body.guestNationality ?? "").trim();
@@ -70,6 +71,12 @@ export async function POST(
       typeof body.guestDocPhotoPath === "string" ? body.guestDocPhotoPath : null;
     const numGuests = Number(body.numGuests ?? 1);
     const note = body.note ? String(body.note).trim().slice(0, 500) : null;
+
+    // Validación email opcional pero si viene, debe ser válido. Lo
+    // necesitamos para mandar el recibo post-pago.
+    if (guestEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(guestEmail)) {
+      return NextResponse.json({ error: "Email inválido" }, { status: 400 });
+    }
 
     if (!propertyId || !checkIn || !checkOut) {
       return NextResponse.json(
@@ -233,6 +240,7 @@ export async function POST(
       check_in: checkIn,
       check_out: checkOut,
       guest_name: guestName,
+      guest_email: guestEmail,
       guest_phone: guestPhone,
       guest_doc: guestDoc,
       guest_nationality: guestNationality,
