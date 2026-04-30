@@ -77,6 +77,17 @@ export default function DirectBookingsPanel() {
   const [actingId, setActingId] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [approvePrice, setApprovePrice] = useState<Record<string, string>>({});
+  // Modal post-aprobacion: sugiere texto de WhatsApp para pedir el pago
+  // al huesped manualmente (no hay procesador integrado todavia).
+  const [approvedInfo, setApprovedInfo] = useState<{
+    guestName: string;
+    guestPhone: string | null;
+    propertyName: string;
+    checkIn: string;
+    checkOut: string;
+    total: number;
+    channelCode: string | null;
+  } | null>(null);
 
   const loadRequests = useCallback(async () => {
     setRequestsLoading(true);
@@ -152,8 +163,19 @@ export default function DirectBookingsPanel() {
         const j = (await res.json().catch(() => ({}))) as { error?: string };
         throw new Error(j.error ?? `HTTP ${res.status}`);
       }
+      const json = (await res.json()) as { channelCode?: string };
       // Sacamos la solicitud aprobada de la lista local sin esperar reload.
       setRequests((prev) => prev.filter((r) => r.id !== req.id));
+      // Mostramos modal con sugerencia de cobro por WhatsApp.
+      setApprovedInfo({
+        guestName: req.guestName ?? "Huésped",
+        guestPhone: req.guestPhone,
+        propertyName: req.propertyName,
+        checkIn: req.checkIn,
+        checkOut: req.checkOut,
+        total: price,
+        channelCode: json.channelCode ?? null,
+      });
     } catch (err) {
       setActionError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -534,6 +556,92 @@ export default function DirectBookingsPanel() {
           </CardContent>
         </Card>
       </div>
+
+      {/* Modal post-aprobación: sugerencia de cobro manual por WhatsApp.
+          StayHost no procesa pagos todavía — el host coordina el cobro
+          él mismo (transferencia, link PayPal.me, link Stripe individual). */}
+      {approvedInfo && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
+          <div className="bg-white rounded-2xl shadow-2xl max-w-lg w-full max-h-[90vh] overflow-y-auto">
+            <div className="p-6 border-b flex items-start justify-between gap-4">
+              <div className="flex items-start gap-3">
+                <div className="bg-emerald-100 p-2 rounded-xl">
+                  <Check className="h-5 w-5 text-emerald-600" />
+                </div>
+                <div>
+                  <h3 className="font-bold text-lg">Reserva aprobada</h3>
+                  <p className="text-sm text-muted-foreground">
+                    {approvedInfo.guestName} · {approvedInfo.propertyName}
+                  </p>
+                  {approvedInfo.channelCode && (
+                    <p className="text-xs font-mono mt-1 text-emerald-700 bg-emerald-50 inline-block px-2 py-0.5 rounded">
+                      {approvedInfo.channelCode}
+                    </p>
+                  )}
+                </div>
+              </div>
+              <Button
+                variant="ghost"
+                size="icon"
+                onClick={() => setApprovedInfo(null)}
+              >
+                <X className="h-4 w-4" />
+              </Button>
+            </div>
+
+            <div className="p-6 space-y-4">
+              <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 text-sm text-amber-900">
+                <p className="font-bold mb-1">Coordiná el pago con el huésped</p>
+                <p className="text-xs leading-relaxed">
+                  StayHost todavía no procesa pagos automáticamente. Compartile al huésped
+                  tu método de cobro (PayPal.me, transferencia, link de Stripe individual).
+                  Cuando confirmes el pago, marcá la reserva como pagada en el calendario.
+                </p>
+              </div>
+
+              {approvedInfo.guestPhone ? (
+                <div className="space-y-2">
+                  <p className="text-xs font-bold uppercase tracking-wider text-muted-foreground">
+                    Mensaje sugerido para WhatsApp
+                  </p>
+                  <textarea
+                    readOnly
+                    rows={6}
+                    className="w-full text-sm p-3 border rounded-xl bg-slate-50 font-mono"
+                    value={`Hola ${approvedInfo.guestName}! 👋\n\nTu reserva en ${approvedInfo.propertyName} fue aprobada:\n📅 ${approvedInfo.checkIn} → ${approvedInfo.checkOut}\n💰 Total: $${approvedInfo.total}\n${approvedInfo.channelCode ? `🔑 Código: ${approvedInfo.channelCode}\n` : ""}\nPara confirmar la reserva, te paso el método de pago. ¿Cómo te queda más cómodo?`}
+                  />
+                  <div className="flex gap-2">
+                    <Button
+                      size="sm"
+                      className="flex-1 bg-emerald-600 hover:bg-emerald-700"
+                      asChild
+                    >
+                      <a
+                        href={`https://wa.me/${approvedInfo.guestPhone.replace(/\D/g, "")}?text=${encodeURIComponent(
+                          `Hola ${approvedInfo.guestName}! Tu reserva en ${approvedInfo.propertyName} (${approvedInfo.checkIn} → ${approvedInfo.checkOut}) fue aprobada. Total: $${approvedInfo.total}.${approvedInfo.channelCode ? ` Código: ${approvedInfo.channelCode}.` : ""} Para confirmar te paso el método de pago, ¿cuál te queda mejor?`
+                        )}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                      >
+                        <Phone className="h-3.5 w-3.5 mr-1.5" />
+                        Abrir WhatsApp
+                      </a>
+                    </Button>
+                  </div>
+                </div>
+              ) : (
+                <p className="text-xs text-muted-foreground italic">
+                  El huésped no dejó teléfono — contactalo por otro medio.
+                </p>
+              )}
+            </div>
+
+            <div className="p-4 border-t flex justify-end">
+              <Button onClick={() => setApprovedInfo(null)}>Listo</Button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

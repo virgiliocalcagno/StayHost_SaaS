@@ -149,6 +149,12 @@ export default function PropertyPage({ params }: { params: Promise<{ hostId: str
   const [upsells, setUpsells] = useState<StoredUpsell[]>(DEFAULT_UPSELLS);
   void setUpsells;
   const [coupons] = useState<Coupon[]>([]);
+  // Fechas no disponibles para esta propiedad (confirmed/blocked) — vienen
+  // del endpoint público y se usan para deshabilitar fechas en el picker
+  // y validar antes de submit.
+  const [unavailableRanges, setUnavailableRanges] = useState<
+    Array<{ checkIn: string; checkOut: string; status: string }>
+  >([]);
 
   useEffect(() => {
     fetch(`/api/public/hub/${encodeURIComponent(hostId)}`, { cache: "no-store" })
@@ -157,6 +163,15 @@ export default function PropertyPage({ params }: { params: Promise<{ hostId: str
         if (!data || !Array.isArray(data.properties)) return;
         const found = data.properties.find((p: { id: string }) => p.id === propertyId);
         if (found) setProperty(found as StoredProperty);
+        // Cargar ranges no disponibles SOLO de esta propiedad.
+        if (Array.isArray(data.unavailable)) {
+          const filtered = (data.unavailable as Array<{
+            propertyId: string; checkIn: string; checkOut: string; status: string;
+          }>)
+            .filter((u) => u.propertyId === propertyId)
+            .map((u) => ({ checkIn: u.checkIn, checkOut: u.checkOut, status: u.status }));
+          setUnavailableRanges(filtered);
+        }
       })
       .catch(() => {})
       .finally(() => setPropertyLoading(false));
@@ -200,6 +215,16 @@ export default function PropertyPage({ params }: { params: Promise<{ hostId: str
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [bookingConfirmed, setBookingConfirmed] = useState<DirectBooking | null>(null);
+  // ID corto de la solicitud para que el huesped tenga referencia.
+  const [requestRefId, setRequestRefId] = useState<string | null>(null);
+
+  // Chequeo de disponibilidad: el rango [checkin, checkout) se solapa con
+  // alguna reserva confirmed/blocked? Mismo criterio del backend.
+  const isRangeAvailable = useMemo(() => {
+    if (!checkin || !checkout) return false;
+    if (checkin >= checkout) return false;
+    return !unavailableRanges.some((u) => u.checkIn < checkout && u.checkOut > checkin);
+  }, [checkin, checkout, unavailableRanges]);
 
   // Escanear documento del huesped: igual que en NewBookingModal del host.
   // Reusa Gemini OCR pero via endpoint publico que valida hostId + sube la
@@ -297,6 +322,10 @@ export default function PropertyPage({ params }: { params: Promise<{ hostId: str
       setSubmitError("Completa nombre, teléfono, documento y nacionalidad para enviar la solicitud.");
       return;
     }
+    if (!isRangeAvailable) {
+      setSubmitError("Las fechas seleccionadas no están disponibles. Elegí otras fechas.");
+      return;
+    }
     setIsSubmitting(true);
     try {
       const res = await fetch(`/api/public/hub/${encodeURIComponent(hostId)}/booking`, {
@@ -321,10 +350,12 @@ export default function PropertyPage({ params }: { params: Promise<{ hostId: str
         const j = (await res.json().catch(() => ({}))) as { error?: string };
         throw new Error(j.error ?? `HTTP ${res.status}`);
       }
+      const json = (await res.json()) as { requestId?: string };
+      setRequestRefId(json.requestId ?? null);
       const propName = property?.name ?? "Propiedad";
       const propImage = property?.image;
       setBookingConfirmed({
-        id: `req-${Date.now()}`,
+        id: json.requestId ?? `req-${Date.now()}`,
         propertyId,
         propertyName: propName,
         propertyImage: propImage,
@@ -364,7 +395,25 @@ export default function PropertyPage({ params }: { params: Promise<{ hostId: str
           </div>
           <div>
             <h1 className="text-3xl font-extrabold text-slate-900 mb-2">¡Solicitud enviada!</h1>
-            <p className="text-slate-600">Tu solicitud para <strong>{bookingConfirmed.propertyName}</strong> fue registrada. El host te contactará a la brevedad para confirmar disponibilidad y coordinar el pago.</p>
+            <p className="text-slate-600">
+              Tu solicitud para <strong>{bookingConfirmed.propertyName}</strong> está esperando aprobación.
+              El host la revisa y te contacta para confirmar disponibilidad y coordinar el pago.
+            </p>
+            {requestRefId && (
+              <p className="text-xs text-slate-500 mt-3 font-mono bg-slate-100 inline-block px-3 py-1 rounded-full">
+                N° de referencia: {requestRefId.slice(0, 8).toUpperCase()}
+              </p>
+            )}
+          </div>
+
+          <div className="bg-amber-100 rounded-2xl p-4 border-2 border-amber-300 text-sm text-amber-900 flex items-start gap-3 text-left">
+            <AlertCircle className="h-5 w-5 shrink-0 mt-0.5" />
+            <div>
+              <p className="font-bold mb-1">Tu reserva NO está confirmada todavía</p>
+              <p className="text-xs">
+                Esto es una solicitud. El host puede aprobarla o rechazarla. <strong>No se realizó ningún cargo.</strong> Cuando el host apruebe, te enviará el método de pago.
+              </p>
+            </div>
           </div>
 
           <div className="bg-white rounded-3xl border border-slate-200 shadow-lg p-6 text-left space-y-3">
@@ -384,21 +433,13 @@ export default function PropertyPage({ params }: { params: Promise<{ hostId: str
               <span className="text-muted-foreground">Noches</span>
               <span className="font-bold">{bookingConfirmed.nights}</span>
             </div>
-            {bookingConfirmed.couponCode && (
-              <div className="flex justify-between text-sm">
-                <span className="text-muted-foreground flex items-center gap-1"><Tag className="h-3.5 w-3.5" /> Cupón</span>
-                <span className="font-bold text-green-600">{bookingConfirmed.couponCode} (−${bookingConfirmed.discount})</span>
-              </div>
-            )}
-            <div className="border-t pt-3 flex justify-between font-extrabold text-lg">
-              <span>Total Pagado</span>
-              <span className="text-amber-600">${bookingConfirmed.total.toLocaleString()}</span>
+            <div className="border-t pt-3 flex justify-between font-extrabold text-base">
+              <span className="text-slate-700">Total estimado</span>
+              <span className="text-slate-900">${bookingConfirmed.total.toLocaleString()}</span>
             </div>
-          </div>
-
-          <div className="bg-amber-50 rounded-2xl p-4 border border-amber-100 text-sm text-amber-800 flex items-start gap-3">
-            <Sparkles className="h-4 w-4 shrink-0 mt-0.5" />
-            <p>El equipo de limpieza ya fue notificado para preparar la propiedad el día de tu check-out (<strong>{formatDate(bookingConfirmed.checkout)}</strong>).</p>
+            <p className="text-[10px] text-slate-400 italic">
+              Estimado preliminar. El total final lo confirma el host al aprobar.
+            </p>
           </div>
 
           <div className="flex gap-3">
@@ -625,10 +666,40 @@ export default function PropertyPage({ params }: { params: Promise<{ hostId: str
 
                 {/* Nights badge */}
                 {nights > 0 && (
-                  <div className="flex items-center justify-center gap-1.5 mb-4 text-xs font-bold text-amber-700 bg-amber-50 border border-amber-100 rounded-xl py-2">
+                  <div className="flex items-center justify-center gap-1.5 mb-2 text-xs font-bold text-amber-700 bg-amber-50 border border-amber-100 rounded-xl py-2">
                     <Calendar className="h-3.5 w-3.5" />
                     {nights} {nights === 1 ? "noche" : "noches"} · {formatDate(checkin)} → {formatDate(checkout)}
                   </div>
+                )}
+
+                {/* Aviso de no disponibilidad — visible si el rango choca con
+                    una reserva confirmada o un bloqueo. */}
+                {nights > 0 && !isRangeAvailable && (
+                  <div className="flex items-start gap-2 mb-4 p-3 text-xs font-semibold text-red-700 bg-red-50 border border-red-200 rounded-xl">
+                    <AlertCircle className="h-4 w-4 flex-shrink-0 mt-0.5" />
+                    <span>Estas fechas ya están ocupadas. Probá con otras fechas.</span>
+                  </div>
+                )}
+
+                {/* Lista de proximos rangos no disponibles — ayuda al huesped
+                    a elegir fechas libres sin tener que probar a ciegas. */}
+                {unavailableRanges.length > 0 && (
+                  <details className="mb-4 text-xs">
+                    <summary className="cursor-pointer text-slate-600 font-semibold hover:text-amber-600">
+                      Ver fechas no disponibles ({unavailableRanges.length})
+                    </summary>
+                    <ul className="mt-2 space-y-1 pl-2">
+                      {unavailableRanges
+                        .slice()
+                        .sort((a, b) => a.checkIn.localeCompare(b.checkIn))
+                        .slice(0, 8)
+                        .map((u, i) => (
+                          <li key={i} className="text-slate-500">
+                            {formatDate(u.checkIn)} → {formatDate(u.checkOut)}
+                          </li>
+                        ))}
+                    </ul>
+                  </details>
                 )}
 
                 {/* Coupon Field */}
@@ -673,9 +744,13 @@ export default function PropertyPage({ params }: { params: Promise<{ hostId: str
                 <Button
                   className="w-full gradient-gold text-white font-bold text-lg py-7 rounded-xl hover:scale-[1.02] transition-transform shadow-lg shadow-amber-500/30 mb-4 border-none"
                   onClick={() => setShowCheckout(true)}
-                  disabled={nights < 1}
+                  disabled={nights < 1 || !isRangeAvailable}
                 >
-                  {nights < 1 ? "Selecciona las fechas" : t("bookNow")}
+                  {nights < 1
+                    ? "Selecciona las fechas"
+                    : !isRangeAvailable
+                      ? "Fechas no disponibles"
+                      : t("bookNow")}
                 </Button>
                 <p className="text-center text-xs text-slate-500 font-medium mb-6">{t("noChargeYet")}</p>
 

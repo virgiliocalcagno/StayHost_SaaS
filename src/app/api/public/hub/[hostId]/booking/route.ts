@@ -141,6 +141,29 @@ export async function POST(
       );
     }
 
+    // VALIDAR DISPONIBILIDAD: si las fechas chocan con un booking
+    // confirmed o blocked, rechazamos sin crear la solicitud. Las
+    // pending_review NO bloquean (el host puede recibir multiples
+    // solicitudes y elegir cual aprobar).
+    const { data: overlapping } = await supabaseAdmin
+      .from("bookings")
+      .select("id, check_in, check_out, status")
+      .eq("property_id", propertyId)
+      .in("status", ["confirmed", "blocked"])
+      .lt("check_in", checkOut)
+      .gt("check_out", checkIn)
+      .limit(1);
+
+    if (overlapping && overlapping.length > 0) {
+      return NextResponse.json(
+        {
+          error: "Las fechas seleccionadas no están disponibles",
+          available: false,
+        },
+        { status: 409 }
+      );
+    }
+
     // Last-4 del telefono para que el host lo identifique rapido.
     const phoneDigits = guestPhone.replace(/\D/g, "");
     const phoneLast4 = phoneDigits.length >= 4 ? phoneDigits.slice(-4) : null;

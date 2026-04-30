@@ -94,6 +94,30 @@ export async function GET(
       amenities: Array.isArray(p.amenities) ? p.amenities : [],
     }));
 
+  // Fechas no disponibles por propiedad — solo confirmed/blocked (las
+  // pending_review NO bloquean: el host puede recibir multiples solicitudes
+  // para las mismas fechas y elegir). Solo miramos a futuro: bookings con
+  // check_out >= today.
+  const today = new Date().toISOString().slice(0, 10);
+  const propIds = properties.map((p) => p.id);
+  let unavailable: Array<{ propertyId: string; checkIn: string; checkOut: string; status: string }> = [];
+  if (propIds.length > 0) {
+    const { data: bookingRows } = await supabaseAdmin
+      .from("bookings")
+      .select("property_id, check_in, check_out, status")
+      .in("property_id", propIds)
+      .in("status", ["confirmed", "blocked"])
+      .gte("check_out", today);
+    unavailable = ((bookingRows ?? []) as Array<{
+      property_id: string; check_in: string; check_out: string; status: string;
+    }>).map((b) => ({
+      propertyId: b.property_id,
+      checkIn: b.check_in,
+      checkOut: b.check_out,
+      status: b.status,
+    }));
+  }
+
   return NextResponse.json({
     hub: {
       name: tenantRow.company || tenantRow.name || "Reservas Directas",
@@ -103,6 +127,7 @@ export async function GET(
       whatsapp: tenantRow.owner_whatsapp ?? null,
     },
     properties,
+    unavailable,
     // Upsells/experiencias: pendiente Sprint 3.1 (tabla upsells todavía
     // no existe). Devolvemos array vacío hasta entonces.
     experiences: [],
