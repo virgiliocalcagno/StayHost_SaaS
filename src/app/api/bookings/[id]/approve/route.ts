@@ -105,10 +105,14 @@ export async function POST(
     );
   }
 
-  // Generar channel_code y phoneLast4.
+  // Generar channel_code, phoneLast4 y payment_token.
   const channelCode = `SH${crypto.randomUUID().replace(/-/g, "").slice(0, 8).toUpperCase()}`;
   const cleanPhone = String(bk.guest_phone ?? "").replace(/\D/g, "");
   const phoneLast4 = cleanPhone.length >= 4 ? cleanPhone.slice(-4) : null;
+  // payment_token: UUID que el huesped usa para acceder a la pagina de
+  // pago publica /hub/[hostId]/pay/[token]. Se mantiene aunque el huesped
+  // ya haya pagado (sirve como referencia para mostrar status).
+  const paymentToken = crypto.randomUUID();
 
   // UPDATE atomico con guard: el .eq('status', 'pending_review') asegura
   // que solo updateamos si el estado SIGUE siendo solicitud.
@@ -121,6 +125,7 @@ export async function POST(
         total_price: totalPrice,
         channel_code: channelCode,
         phone_last4: phoneLast4,
+        payment_token: paymentToken,
       },
       { count: "exact" }
     )
@@ -181,5 +186,6 @@ export async function POST(
     id: bookingId,
     channelCode,
     phoneLast4,
+    paymentToken,
   });
 }

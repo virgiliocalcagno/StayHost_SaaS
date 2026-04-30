@@ -77,8 +77,8 @@ export default function DirectBookingsPanel() {
   const [actingId, setActingId] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [approvePrice, setApprovePrice] = useState<Record<string, string>>({});
-  // Modal post-aprobacion: sugiere texto de WhatsApp para pedir el pago
-  // al huesped manualmente (no hay procesador integrado todavia).
+  // Modal post-aprobacion: muestra link de pago publico (si el host
+  // tiene PayPal habilitado) y sugiere texto de WhatsApp para enviarlo.
   const [approvedInfo, setApprovedInfo] = useState<{
     guestName: string;
     guestPhone: string | null;
@@ -87,6 +87,7 @@ export default function DirectBookingsPanel() {
     checkOut: string;
     total: number;
     channelCode: string | null;
+    payUrl: string | null;
   } | null>(null);
 
   const loadRequests = useCallback(async () => {
@@ -163,10 +164,16 @@ export default function DirectBookingsPanel() {
         const j = (await res.json().catch(() => ({}))) as { error?: string };
         throw new Error(j.error ?? `HTTP ${res.status}`);
       }
-      const json = (await res.json()) as { channelCode?: string };
+      const json = (await res.json()) as { channelCode?: string; paymentToken?: string };
       // Sacamos la solicitud aprobada de la lista local sin esperar reload.
       setRequests((prev) => prev.filter((r) => r.id !== req.id));
-      // Mostramos modal con sugerencia de cobro por WhatsApp.
+      // Construimos el payUrl si hay paymentToken — la pagina publica
+      // de pago se monta solo si el host tiene PayPal configurado, pero
+      // el link siempre es valido (cae a "pago no disponible" si no hay).
+      const payUrl =
+        json.paymentToken && tenantId
+          ? `${window.location.origin}/hub/${tenantId}/pay/${json.paymentToken}`
+          : null;
       setApprovedInfo({
         guestName: req.guestName ?? "Huésped",
         guestPhone: req.guestPhone,
@@ -175,6 +182,7 @@ export default function DirectBookingsPanel() {
         checkOut: req.checkOut,
         total: price,
         channelCode: json.channelCode ?? null,
+        payUrl,
       });
     } catch (err) {
       setActionError(err instanceof Error ? err.message : String(err));
@@ -590,14 +598,34 @@ export default function DirectBookingsPanel() {
             </div>
 
             <div className="p-6 space-y-4">
-              <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 text-sm text-amber-900">
-                <p className="font-bold mb-1">Coordiná el pago con el huésped</p>
-                <p className="text-xs leading-relaxed">
-                  StayHost todavía no procesa pagos automáticamente. Compartile al huésped
-                  tu método de cobro (PayPal.me, transferencia, link de Stripe individual).
-                  Cuando confirmes el pago, marcá la reserva como pagada en el calendario.
-                </p>
-              </div>
+              {/* Link de pago — copiar y compartir al huésped */}
+              {approvedInfo.payUrl && (
+                <div className="space-y-2">
+                  <p className="text-xs font-bold uppercase tracking-wider text-muted-foreground">
+                    Link de pago para el huésped
+                  </p>
+                  <div className="flex gap-2">
+                    <Input
+                      readOnly
+                      value={approvedInfo.payUrl}
+                      className="flex-1 font-mono text-xs"
+                      onClick={(e) => (e.target as HTMLInputElement).select()}
+                    />
+                    <Button
+                      size="icon"
+                      variant="outline"
+                      onClick={() => navigator.clipboard.writeText(approvedInfo.payUrl!)}
+                      title="Copiar link"
+                    >
+                      <Copy className="h-4 w-4" />
+                    </Button>
+                  </div>
+                  <p className="text-[10px] text-muted-foreground">
+                    Si tenés PayPal habilitado en Configuración, el huésped paga directo desde ese link.
+                    Si no, podés coordinar el cobro manualmente.
+                  </p>
+                </div>
+              )}
 
               {approvedInfo.guestPhone ? (
                 <div className="space-y-2">
@@ -608,7 +636,7 @@ export default function DirectBookingsPanel() {
                     readOnly
                     rows={6}
                     className="w-full text-sm p-3 border rounded-xl bg-slate-50 font-mono"
-                    value={`Hola ${approvedInfo.guestName}! 👋\n\nTu reserva en ${approvedInfo.propertyName} fue aprobada:\n📅 ${approvedInfo.checkIn} → ${approvedInfo.checkOut}\n💰 Total: $${approvedInfo.total}\n${approvedInfo.channelCode ? `🔑 Código: ${approvedInfo.channelCode}\n` : ""}\nPara confirmar la reserva, te paso el método de pago. ¿Cómo te queda más cómodo?`}
+                    value={`Hola ${approvedInfo.guestName}! 👋\n\nTu reserva en ${approvedInfo.propertyName} fue aprobada:\n📅 ${approvedInfo.checkIn} → ${approvedInfo.checkOut}\n💰 Total: $${approvedInfo.total}\n${approvedInfo.channelCode ? `🔑 Código: ${approvedInfo.channelCode}\n` : ""}${approvedInfo.payUrl ? `\nPagá tu reserva acá: ${approvedInfo.payUrl}\n` : ""}`}
                   />
                   <div className="flex gap-2">
                     <Button
@@ -618,7 +646,7 @@ export default function DirectBookingsPanel() {
                     >
                       <a
                         href={`https://wa.me/${approvedInfo.guestPhone.replace(/\D/g, "")}?text=${encodeURIComponent(
-                          `Hola ${approvedInfo.guestName}! Tu reserva en ${approvedInfo.propertyName} (${approvedInfo.checkIn} → ${approvedInfo.checkOut}) fue aprobada. Total: $${approvedInfo.total}.${approvedInfo.channelCode ? ` Código: ${approvedInfo.channelCode}.` : ""} Para confirmar te paso el método de pago, ¿cuál te queda mejor?`
+                          `Hola ${approvedInfo.guestName}! Tu reserva en ${approvedInfo.propertyName} (${approvedInfo.checkIn} → ${approvedInfo.checkOut}) fue aprobada. Total: $${approvedInfo.total}.${approvedInfo.channelCode ? ` Código: ${approvedInfo.channelCode}.` : ""}${approvedInfo.payUrl ? ` Pagá acá: ${approvedInfo.payUrl}` : ""}`
                         )}`}
                         target="_blank"
                         rel="noopener noreferrer"
