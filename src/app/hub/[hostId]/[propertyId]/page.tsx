@@ -210,6 +210,12 @@ export default function PropertyPage({ params }: { params: Promise<{ hostId: str
   const [guestDoc, setGuestDoc] = useState("");
   const [guestNationality, setGuestNationality] = useState("");
   const [guestDocPhotoPath, setGuestDocPhotoPath] = useState<string | null>(null);
+  // Preview local del documento escaneado (object URL del File) — para que
+  // el huésped vea miniatura sin tener que volver a fetch al Storage.
+  const [docPreviewUrl, setDocPreviewUrl] = useState<string | null>(null);
+  // Diálogo de confirmación al re-escanear: solo se muestra si ya hay datos
+  // OCR detectados (si están vacíos, no hay nada que perder y vamos directo).
+  const [confirmReplace, setConfirmReplace] = useState(false);
   const [scanning, setScanning] = useState(false);
   const [scanError, setScanError] = useState<string | null>(null);
   const [submitError, setSubmitError] = useState<string | null>(null);
@@ -232,6 +238,11 @@ export default function PropertyPage({ params }: { params: Promise<{ hostId: str
   const handleScanDoc = async (file: File) => {
     setScanning(true);
     setScanError(null);
+    // Preview local inmediato — feedback visual mientras el OCR procesa.
+    // Liberamos el object URL anterior si existe (memory leak minimo pero
+    // limpio).
+    if (docPreviewUrl) URL.revokeObjectURL(docPreviewUrl);
+    setDocPreviewUrl(URL.createObjectURL(file));
     try {
       const form = new FormData();
       form.append("image", file);
@@ -274,7 +285,32 @@ export default function PropertyPage({ params }: { params: Promise<{ hostId: str
     setGuestDoc("");
     setGuestNationality("");
     setGuestDocPhotoPath(null);
+    if (docPreviewUrl) URL.revokeObjectURL(docPreviewUrl);
+    setDocPreviewUrl(null);
     setScanError(null);
+  };
+
+  // El huesped tocó "Reemplazar". Si ya hay al menos un campo OCR detectado,
+  // pedimos confirmación (es accion destructiva — perder datos validados).
+  // Si todos los campos están vacíos (OCR fallido o doc nunca escaneado),
+  // vamos directo al file picker.
+  const handleReplaceClick = () => {
+    const hasData =
+      guestName.trim().length > 0 ||
+      guestDoc.trim().length > 0 ||
+      guestNationality.trim().length > 0;
+    if (hasData) {
+      setConfirmReplace(true);
+    } else {
+      document.getElementById("hubDocScan")?.click();
+    }
+  };
+
+  const confirmReplaceAndPick = () => {
+    setConfirmReplace(false);
+    // Pequeño delay para que el dialog haga su animación de cierre antes
+    // de abrir el file picker (evita parpadeo en mobile).
+    setTimeout(() => document.getElementById("hubDocScan")?.click(), 50);
   };
 
   // Reset completo del form. Lo llamamos cuando: (1) cambia la propiedad
@@ -288,8 +324,11 @@ export default function PropertyPage({ params }: { params: Promise<{ hostId: str
     setGuestDoc("");
     setGuestNationality("");
     setGuestDocPhotoPath(null);
+    if (docPreviewUrl) URL.revokeObjectURL(docPreviewUrl);
+    setDocPreviewUrl(null);
     setScanError(null);
     setSubmitError(null);
+    setConfirmReplace(false);
     setSelectedUpsellIds([]);
     setAppliedCoupon(null);
     setCouponInput("");
@@ -309,8 +348,13 @@ export default function PropertyPage({ params }: { params: Promise<{ hostId: str
     setGuestDoc("");
     setGuestNationality("");
     setGuestDocPhotoPath(null);
+    setDocPreviewUrl((prev) => {
+      if (prev) URL.revokeObjectURL(prev);
+      return null;
+    });
     setScanError(null);
     setSubmitError(null);
+    setConfirmReplace(false);
     setSelectedUpsellIds([]);
     setAppliedCoupon(null);
     setCouponInput("");
@@ -970,50 +1014,84 @@ export default function PropertyPage({ params }: { params: Promise<{ hostId: str
                     </div>
                   </div>
 
-                  <div className="flex items-center gap-3">
-                    <input
-                      type="file"
-                      accept="image/*"
-                      capture="environment"
-                      id="hubDocScan"
-                      className="hidden"
-                      onChange={(e) => {
-                        const f = e.target.files?.[0];
-                        if (f) handleScanDoc(f);
-                        e.currentTarget.value = "";
-                      }}
-                    />
+                  <input
+                    type="file"
+                    accept="image/*"
+                    capture="environment"
+                    id="hubDocScan"
+                    className="hidden"
+                    onChange={(e) => {
+                      const f = e.target.files?.[0];
+                      if (f) handleScanDoc(f);
+                      e.currentTarget.value = "";
+                    }}
+                  />
+
+                  {/* Estado: sin documento — botón grande de escaneo */}
+                  {!guestDocPhotoPath && !scanning && (
                     <Button
                       type="button"
                       onClick={() => document.getElementById("hubDocScan")?.click()}
-                      disabled={scanning}
-                      className="bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-bold uppercase tracking-wider gap-2"
+                      className="w-full bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-sm font-bold uppercase tracking-wider gap-2 py-6"
                     >
-                      {scanning ? (
-                        <><Loader2 className="h-4 w-4 animate-spin" /> Escaneando...</>
-                      ) : guestDocPhotoPath ? (
-                        <><Sparkles className="h-4 w-4" /> Volver a escanear</>
-                      ) : (
-                        <><Sparkles className="h-4 w-4" /> Escanear ID o pasaporte</>
-                      )}
+                      <Sparkles className="h-4 w-4" /> Escanear ID o pasaporte
                     </Button>
-                    {guestDocPhotoPath && (
-                      <>
-                        <span className="text-xs text-emerald-700 font-semibold flex items-center gap-1">
-                          <CheckCircle2 className="h-3 w-3" /> Foto guardada
-                        </span>
+                  )}
+
+                  {/* Estado: escaneando — placeholder con spinner */}
+                  {scanning && (
+                    <div className="flex items-center justify-center gap-2 bg-white rounded-xl border border-blue-100 p-6 text-blue-600 text-sm font-medium">
+                      <Loader2 className="h-4 w-4 animate-spin" /> Procesando documento...
+                    </div>
+                  )}
+
+                  {/* Estado: documento escaneado — card con preview + datos
+                      detectados + botón "Reemplazar" */}
+                  {guestDocPhotoPath && !scanning && (
+                    <div className="bg-white rounded-xl border border-emerald-200 overflow-hidden shadow-sm">
+                      <div className="flex gap-3 p-3">
+                        {/* Preview de la foto. Si docPreviewUrl está
+                            (caso normal), mostramos la miniatura local. Si
+                            no (volvió de un refresh sin cargar la foto),
+                            mostramos un ícono. */}
+                        <div className="w-20 h-20 rounded-lg bg-slate-100 flex-shrink-0 overflow-hidden border">
+                          {docPreviewUrl ? (
+                            <img src={docPreviewUrl} alt="Documento escaneado" className="w-full h-full object-cover" />
+                          ) : (
+                            <div className="w-full h-full flex items-center justify-center text-slate-400">
+                              <CheckCircle2 className="h-8 w-8" />
+                            </div>
+                          )}
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-1.5 text-emerald-700 text-[10px] font-bold uppercase tracking-wider">
+                            <CheckCircle2 className="h-3 w-3" /> Documento detectado
+                          </div>
+                          <p className="font-bold text-sm text-slate-900 truncate mt-0.5">
+                            {guestName || <span className="text-slate-400 italic">Nombre no detectado</span>}
+                          </p>
+                          <p className="text-xs text-slate-600 truncate">
+                            {guestDoc ? `Doc: ${guestDoc}` : <span className="text-slate-400 italic">Documento no detectado</span>}
+                          </p>
+                          <p className="text-xs text-slate-600">
+                            {guestNationality ? `Nacionalidad: ${guestNationality}` : <span className="text-slate-400 italic">Nacionalidad no detectada</span>}
+                          </p>
+                        </div>
+                      </div>
+                      <div className="border-t bg-slate-50 px-3 py-2 flex gap-2 justify-end">
                         <Button
                           type="button"
                           variant="ghost"
-                          onClick={clearGuestIdentity}
-                          className="text-xs text-red-600 hover:text-red-700 hover:bg-red-50 h-9 px-3"
-                          title="Limpiar nombre, documento, nacionalidad y foto"
+                          size="sm"
+                          onClick={handleReplaceClick}
+                          className="text-xs text-blue-700 hover:text-blue-800 hover:bg-blue-100 h-8"
                         >
-                          <X className="h-3.5 w-3.5 mr-1" /> Cambiar documento
+                          <Sparkles className="h-3 w-3 mr-1.5" /> Reemplazar
                         </Button>
-                      </>
-                    )}
-                  </div>
+                      </div>
+                    </div>
+                  )}
+
                   {scanError && (
                     <p className="text-xs text-red-600 flex items-center gap-1">
                       <AlertCircle className="h-3 w-3" /> {scanError}
@@ -1111,6 +1189,52 @@ export default function PropertyPage({ params }: { params: Promise<{ hostId: str
                 Esto es una <strong>solicitud</strong>, no una reserva confirmada. El host la revisará
                 y te contactará para coordinar el pago. No se realizará ningún cargo ahora.
               </p>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── DIALOG: CONFIRMAR REEMPLAZO DE DOCUMENTO ─────────────────────────
+          Solo aparece si el huésped ya tiene datos OCR detectados y toca
+          "Reemplazar". Z-index 110 para tapar el modal de checkout (z-100). */}
+      {confirmReplace && (
+        <div
+          className="fixed inset-0 z-[110] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 animate-in fade-in"
+          onClick={() => setConfirmReplace(false)}
+        >
+          <div
+            className="bg-white rounded-2xl shadow-2xl max-w-sm w-full p-6 animate-in zoom-in-95"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-start gap-3 mb-4">
+              <div className="bg-amber-100 p-2.5 rounded-xl flex-shrink-0">
+                <AlertCircle className="h-5 w-5 text-amber-600" />
+              </div>
+              <div>
+                <h3 className="font-bold text-slate-900 mb-1">¿Reemplazar documento?</h3>
+                <p className="text-sm text-slate-600 leading-relaxed">
+                  Vas a borrar los datos actuales {guestName ? <>de <strong>{guestName}</strong></> : null} y
+                  escanear un documento nuevo. Esta acción no se puede deshacer.
+                </p>
+              </div>
+            </div>
+            <div className="flex gap-2 justify-end">
+              <Button
+                type="button"
+                variant="ghost"
+                onClick={() => setConfirmReplace(false)}
+                className="text-slate-600"
+              >
+                Cancelar
+              </Button>
+              <Button
+                type="button"
+                onClick={confirmReplaceAndPick}
+                className="bg-blue-600 hover:bg-blue-700 text-white gap-2"
+              >
+                <Sparkles className="h-4 w-4" />
+                Sí, reemplazar
+              </Button>
             </div>
           </div>
         </div>
