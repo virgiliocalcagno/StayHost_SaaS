@@ -2,28 +2,28 @@
  * POST /api/public/hub/[hostId]/booking
  *
  * Endpoint PUBLICO (sin sesion) para que un huesped solicite una reserva
- * desde el Hub del host. Crea una fila en bookings con
- *   status = 'pending_review'  (no bloquea overlap; el host aprueba)
- *   source = 'hub'               (distinguible de manual/airbnb/vrbo/etc.)
+ * desde el Hub del host. Soporta dos flujos según `paymentMethod`:
+ *
+ *   - 'manual'  → Crea pending_review como hasta ahora. El host aprueba
+ *                 desde el panel y coordina el cobro por fuera.
+ *
+ *   - 'paypal'  → Crea pending_review con payment_token + total_price ya
+ *                 calculado (incluye processing_fee del host) y devuelve
+ *                 un `payUrl` apuntando a /hub/[hostId]/pay/[token]. El
+ *                 huésped paga ahí; al capturarse se auto-confirma.
  *
  * Validaciones:
  *   - hostId existe (tenant real).
  *   - propertyId pertenece a ese tenant.
  *   - checkIn < checkOut.
  *   - Campos minimos del huesped: nombre + telefono + doc + nacionalidad.
- *     Sin doc no permitimos solicitar — politica del SaaS para LATAM:
- *     trazabilidad e identificacion del huesped son obligatorias.
- *   - guestDocPhotoPath debe estar bajo `{tenantId}/hub-requests/...`
- *     para evitar que un atacante referencie fotos de OTRO tenant.
+ *   - guestDocPhotoPath debe estar bajo `{tenantId}/hub-requests/...`.
+ *   - paymentMethod=paypal solo si el host tiene PayPal habilitado.
  *
- * Anti-abuso:
- *   - Sin rate limiting por IP por ahora (TODO: Upstash o tabla con
- *     INSERT OR IGNORE por ip+timestamp). El Hub no es scrapeable
- *     trivialmente y la foto del documento sube fricción.
- *
- * Side effects:
- *   - Ninguno hasta que el host apruebe. NO crea PIN, NO genera
- *     channel_code, NO toca cleaning_tasks. Esos pasan en /approve.
+ * Side effects en flow paypal:
+ *   - Genera payment_token. NO crea aún la PayPal order — la crea el
+ *     endpoint /api/public/payments/paypal/create-order cuando el huésped
+ *     hace click en el Smart Button. Mantiene este endpoint barato.
  */
 import { NextRequest, NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabase/admin";
@@ -119,10 +119,12 @@ export async function POST(
       );
     }
 
-    // Validar property pertenece al tenant.
+    // Validar property pertenece al tenant. Traemos también precio +
+    // cleaning fees porque si paymentMethod=paypal el server tiene que
+    // calcular el total autoritativo (no confiar en el cliente).
     const { data: prop } = await supabaseAdmin
       .from("properties")
-      .select("id, tenant_id, prop_status, direct_enabled")
+      .select("id, tenant_id, prop_status, direct_enabled, price, currency, cleaning_fee_one_day, cleaning_fee_more_days")
       .eq("id", propertyId)
       .maybeSingle();
     const propRow = prop as {
@@ -130,6 +132,10 @@ export async function POST(
       tenant_id: string;
       prop_status: string | null;
       direct_enabled: boolean | null;
+      price: number | null;
+      currency: string | null;
+      cleaning_fee_one_day: number | null;
+      cleaning_fee_more_days: number | null;
     } | null;
     if (!propRow || propRow.tenant_id !== tenantId) {
       return NextResponse.json({ error: "Propiedad no encontrada" }, { status: 404 });
@@ -139,6 +145,32 @@ export async function POST(
         { error: "Esta propiedad no está aceptando reservas directas" },
         { status: 403 }
       );
+    }
+
+    // Método de pago: 'paypal' o 'manual' (default).
+    const paymentMethod = body.paymentMethod === "paypal" ? "paypal" : "manual";
+
+    // Si el huésped quiere pagar online, el host debe tener PayPal
+    // habilitado. Si no, fallback silencioso a manual no es buena UX —
+    // mejor 400 explícito así el front re-renderiza con lo que toca.
+    let processingFeePercent = 0;
+    if (paymentMethod === "paypal") {
+      const { data: pp } = await supabaseAdmin
+        .from("tenant_payment_configs")
+        .select("client_id, enabled, processing_fee_percent")
+        .eq("tenant_id", tenantId)
+        .eq("provider", "paypal")
+        .maybeSingle();
+      const ppCfg = pp as {
+        client_id: string | null; enabled: boolean; processing_fee_percent: number | string | null;
+      } | null;
+      if (!ppCfg || !ppCfg.enabled || !ppCfg.client_id) {
+        return NextResponse.json(
+          { error: "Este host no acepta pagos online por ahora. Elegí pago manual." },
+          { status: 400 }
+        );
+      }
+      processingFeePercent = Number(ppCfg.processing_fee_percent ?? 0);
     }
 
     // VALIDAR DISPONIBILIDAD: si las fechas chocan con un booking
@@ -170,28 +202,56 @@ export async function POST(
 
     const sourceUid = `hub-${crypto.randomUUID()}`;
 
+    // Cálculo autoritativo del total cuando hay pago online. Replica la
+    // fórmula del Hub (subtotal + 16% impuestos + processing_fee). Para
+    // método manual el total queda null — el host lo fija al aprobar.
+    let totalPrice: number | null = null;
+    let paymentToken: string | null = null;
+    if (paymentMethod === "paypal") {
+      const nights = Math.max(
+        1,
+        Math.round((new Date(checkOut).getTime() - new Date(checkIn).getTime()) / 86400000)
+      );
+      const pricePerNight = Number(propRow.price ?? 0);
+      const cleaning = nights === 1
+        ? Number(propRow.cleaning_fee_one_day ?? 0)
+        : Number(propRow.cleaning_fee_more_days ?? 0);
+      const subtotal = pricePerNight * nights + cleaning;
+      const taxes = Math.round(subtotal * 0.16);
+      const baseTotal = subtotal + taxes;
+      const processingFee = Math.round((baseTotal * processingFeePercent) / 100);
+      totalPrice = baseTotal + processingFee;
+      paymentToken = crypto.randomUUID();
+    }
+
+    const insertPayload: Record<string, unknown> = {
+      tenant_id: tenantId,
+      property_id: propertyId,
+      source: "hub",
+      source_uid: sourceUid,
+      status: "pending_review",
+      check_in: checkIn,
+      check_out: checkOut,
+      guest_name: guestName,
+      guest_phone: guestPhone,
+      guest_doc: guestDoc,
+      guest_nationality: guestNationality,
+      guest_doc_photo_path: guestDocPhotoPath,
+      num_guests: numGuests,
+      total_price: totalPrice,
+      note,
+      phone_last4: phoneLast4,
+      channel_code: null,
+      payment_method: paymentMethod,
+      payment_token: paymentToken,
+    };
+    if (paymentMethod === "paypal") {
+      insertPayload.payment_provider = "paypal";
+    }
+
     const { data: insertRes, error: insertErr } = await supabaseAdmin
       .from("bookings")
-      .insert({
-        tenant_id: tenantId,
-        property_id: propertyId,
-        source: "hub",
-        source_uid: sourceUid,
-        status: "pending_review",
-        check_in: checkIn,
-        check_out: checkOut,
-        guest_name: guestName,
-        guest_phone: guestPhone,
-        guest_doc: guestDoc,
-        guest_nationality: guestNationality,
-        guest_doc_photo_path: guestDocPhotoPath,
-        num_guests: numGuests,
-        total_price: null, // El host fija el precio al aprobar.
-        note,
-        phone_last4: phoneLast4,
-        // No generamos channel_code todavia — lo crea /approve al confirmar.
-        channel_code: null,
-      } as never)
+      .insert(insertPayload as never)
       .select("id")
       .single();
 
@@ -202,9 +262,24 @@ export async function POST(
 
     const bookingId = (insertRes as { id: string }).id;
 
+    if (paymentMethod === "paypal" && paymentToken) {
+      // payUrl es relativo al hostId — construirlo con el origin del request
+      // para soportar dominios custom en el futuro sin tocar el front.
+      const origin = req.nextUrl.origin;
+      return NextResponse.json({
+        ok: true,
+        requestId: bookingId,
+        paymentMethod: "paypal",
+        payUrl: `${origin}/hub/${tenantId}/pay/${paymentToken}`,
+        total: totalPrice,
+        message: "Te llevamos a la pasarela de pago para confirmar la reserva.",
+      });
+    }
+
     return NextResponse.json({
       ok: true,
       requestId: bookingId,
+      paymentMethod: "manual",
       message: "Solicitud enviada. El host la revisará y te confirmará pronto.",
     });
   } catch (err) {

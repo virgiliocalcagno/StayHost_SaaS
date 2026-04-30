@@ -123,14 +123,17 @@ export async function GET(
   // recién en /hub/[hostId]/pay/[token] cuando el huésped va a pagar.
   const { data: paypalConfig } = await supabaseAdmin
     .from("tenant_payment_configs")
-    .select("enabled, client_id")
+    .select("enabled, client_id, processing_fee_percent")
     .eq("tenant_id", hostId)
     .eq("provider", "paypal")
     .maybeSingle();
-  const paypalEnabled =
-    !!paypalConfig &&
-    !!(paypalConfig as { enabled?: boolean; client_id?: string }).enabled &&
-    !!(paypalConfig as { enabled?: boolean; client_id?: string }).client_id;
+  const ppRow = paypalConfig as {
+    enabled?: boolean; client_id?: string; processing_fee_percent?: number | string | null;
+  } | null;
+  const paypalEnabled = !!ppRow && !!ppRow.enabled && !!ppRow.client_id;
+  // El fee se devuelve siempre que exista config (incluso deshabilitada),
+  // pero solo se aplica en la UI si el huésped elige pagar online.
+  const processingFeePercent = Number(ppRow?.processing_fee_percent ?? 0);
 
   return NextResponse.json({
     hub: {
@@ -142,6 +145,7 @@ export async function GET(
       paymentMethods: {
         paypal: paypalEnabled,
       },
+      processingFeePercent,
     },
     properties,
     unavailable,

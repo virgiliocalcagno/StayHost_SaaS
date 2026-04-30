@@ -155,6 +155,11 @@ export default function PropertyPage({ params }: { params: Promise<{ hostId: str
   const [unavailableRanges, setUnavailableRanges] = useState<
     Array<{ checkIn: string; checkOut: string; status: string }>
   >([]);
+  // Métodos de pago disponibles del host. paypalEnabled controla si se
+  // muestra el botón "Pagar y confirmar". processingFeePercent es la
+  // comisión que el host pasa al huésped al pagar online.
+  const [paypalEnabled, setPaypalEnabled] = useState(false);
+  const [processingFeePercent, setProcessingFeePercent] = useState(0);
 
   useEffect(() => {
     fetch(`/api/public/hub/${encodeURIComponent(hostId)}`, { cache: "no-store" })
@@ -163,6 +168,10 @@ export default function PropertyPage({ params }: { params: Promise<{ hostId: str
         if (!data || !Array.isArray(data.properties)) return;
         const found = data.properties.find((p: { id: string }) => p.id === propertyId);
         if (found) setProperty(found as StoredProperty);
+        if (data.hub) {
+          setPaypalEnabled(!!data.hub.paymentMethods?.paypal);
+          setProcessingFeePercent(Number(data.hub.processingFeePercent ?? 0));
+        }
         // Cargar ranges no disponibles SOLO de esta propiedad.
         if (Array.isArray(data.unavailable)) {
           const filtered = (data.unavailable as Array<{
@@ -223,6 +232,14 @@ export default function PropertyPage({ params }: { params: Promise<{ hostId: str
   const [bookingConfirmed, setBookingConfirmed] = useState<DirectBooking | null>(null);
   // ID corto de la solicitud para que el huesped tenga referencia.
   const [requestRefId, setRequestRefId] = useState<string | null>(null);
+  // Método de pago elegido por el huésped. Default 'paypal' si el host lo
+  // tiene habilitado (cierra reserva al instante = mejor para todos);
+  // 'manual' si no hay PayPal o si el huésped lo elige (efectivo, transfer).
+  const [paymentMethod, setPaymentMethod] = useState<"paypal" | "manual">("manual");
+  // Sincronizamos default con paypalEnabled cuando se carga el hub.
+  useEffect(() => {
+    if (paypalEnabled) setPaymentMethod("paypal");
+  }, [paypalEnabled]);
 
   // Chequeo de disponibilidad: el rango [checkin, checkout) se solapa con
   // alguna reserva confirmed/blocked? Mismo criterio del backend.
@@ -386,7 +403,13 @@ export default function PropertyPage({ params }: { params: Promise<{ hostId: str
 
   const subtotal = stayTotal + cleaningFee + upsellsTotal - discount;
   const taxes = Math.round(subtotal * 0.16);
-  const finalTotal = subtotal + taxes;
+  const baseTotal = subtotal + taxes;
+  // Comisión de procesamiento PayPal: solo se aplica si el huésped elige
+  // pagar online. Si elige manual, el fee es 0 (el host coordina por fuera).
+  const processingFee = paymentMethod === "paypal"
+    ? Math.round((baseTotal * processingFeePercent) / 100)
+    : 0;
+  const finalTotal = baseTotal + processingFee;
 
   // ── Coupon logic ──────────────────────────────────────────────────────────
   const handleApplyCoupon = () => {
@@ -415,9 +438,9 @@ export default function PropertyPage({ params }: { params: Promise<{ hostId: str
   };
 
   // ── Booking submission ────────────────────────────────────────────────────
-  // POST a /api/public/hub/[hostId]/booking. Crea una solicitud
-  // (status='pending_review') que el host aprueba/rechaza desde su panel.
-  // No se cobra en este paso — el host coordina pago al confirmar.
+  // POST a /api/public/hub/[hostId]/booking con paymentMethod elegido:
+  //   - 'paypal' → backend devuelve payUrl, redirigimos al huésped
+  //   - 'manual' → solicitud pending_review, el host coordina cobro por fuera
   const handleConfirmBooking = async () => {
     setSubmitError(null);
     if (!guestName.trim() || !guestPhone.trim() || !guestDoc.trim() || !guestNationality.trim()) {
@@ -443,6 +466,7 @@ export default function PropertyPage({ params }: { params: Promise<{ hostId: str
           guestNationality: guestNationality.trim().toUpperCase(),
           guestDocPhotoPath,
           numGuests: guests,
+          paymentMethod,
           note: guestEmail
             ? `Email del huésped: ${guestEmail.trim()}`
             : null,
@@ -452,7 +476,18 @@ export default function PropertyPage({ params }: { params: Promise<{ hostId: str
         const j = (await res.json().catch(() => ({}))) as { error?: string };
         throw new Error(j.error ?? `HTTP ${res.status}`);
       }
-      const json = (await res.json()) as { requestId?: string };
+      const json = (await res.json()) as {
+        requestId?: string;
+        paymentMethod?: string;
+        payUrl?: string;
+      };
+      // Si el huésped eligió pagar online, redirigimos a la pasarela. NO
+      // mostramos pantalla "solicitud enviada" — la confirmación la da
+      // PayPal después del pago, y la página /pay/[token] muestra el resultado.
+      if (json.paymentMethod === "paypal" && json.payUrl) {
+        window.location.assign(json.payUrl);
+        return;
+      }
       setRequestRefId(json.requestId ?? null);
       const propName = property?.name ?? "Propiedad";
       const propImage = property?.image;
@@ -1144,6 +1179,40 @@ export default function PropertyPage({ params }: { params: Promise<{ hostId: str
                 </div>
               )}
 
+              {/* Método de pago — solo si el host habilitó PayPal. Si no,
+                  default 'manual' y no se muestra selector. */}
+              {paypalEnabled && (
+                <div className="space-y-2">
+                  <p className="text-xs font-black uppercase tracking-wider text-slate-500">¿Cómo querés pagar?</p>
+                  <div className="grid grid-cols-2 gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setPaymentMethod("paypal")}
+                      className={`p-3 rounded-xl border-2 text-left transition ${
+                        paymentMethod === "paypal"
+                          ? "border-amber-500 bg-amber-50 ring-2 ring-amber-200"
+                          : "border-slate-200 bg-white hover:border-slate-300"
+                      }`}
+                    >
+                      <p className="font-bold text-sm text-slate-900">Pagar online</p>
+                      <p className="text-[10px] text-slate-500 leading-tight">PayPal o tarjeta · confirma al instante</p>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setPaymentMethod("manual")}
+                      className={`p-3 rounded-xl border-2 text-left transition ${
+                        paymentMethod === "manual"
+                          ? "border-amber-500 bg-amber-50 ring-2 ring-amber-200"
+                          : "border-slate-200 bg-white hover:border-slate-300"
+                      }`}
+                    >
+                      <p className="font-bold text-sm text-slate-900">Pago manual</p>
+                      <p className="text-[10px] text-slate-500 leading-tight">Efectivo o transferencia · coordina el host</p>
+                    </button>
+                  </div>
+                </div>
+              )}
+
               {/* Final price */}
               <div className="bg-slate-50 rounded-2xl p-4 border border-slate-200 space-y-2 text-sm">
                 <div className="flex justify-between text-slate-600"><span>${basePrice} × {Math.max(nights, 1)} noches</span><span>${stayTotal}</span></div>
@@ -1151,6 +1220,12 @@ export default function PropertyPage({ params }: { params: Promise<{ hostId: str
                 {discount > 0 && <div className="flex justify-between text-green-600"><span>Descuento ({appliedCoupon?.code})</span><span>−${discount}</span></div>}
                 <div className="flex justify-between text-slate-600"><span>Limpieza</span><span>${cleaningFee}</span></div>
                 <div className="flex justify-between text-slate-600"><span>Impuestos (16%)</span><span>${taxes}</span></div>
+                {processingFee > 0 && (
+                  <div className="flex justify-between text-slate-600">
+                    <span>Comisión de procesamiento ({processingFeePercent}%)</span>
+                    <span>${processingFee}</span>
+                  </div>
+                )}
                 <div className="flex justify-between font-extrabold text-base text-slate-900 border-t pt-2 mt-2">
                   <span>Total</span><span>${finalTotal.toLocaleString()}</span>
                 </div>
@@ -1164,7 +1239,7 @@ export default function PropertyPage({ params }: { params: Promise<{ hostId: str
                 </div>
               )}
 
-              {/* Confirm Button */}
+              {/* Confirm Button — texto y semántica cambian según método de pago */}
                <Button
                 className="w-full gradient-gold text-white font-bold text-base py-6 rounded-2xl shadow-xl border-none hover:scale-[1.02] transition-transform disabled:opacity-50 disabled:grayscale disabled:scale-100"
                 onClick={handleConfirmBooking}
@@ -1178,17 +1253,27 @@ export default function PropertyPage({ params }: { params: Promise<{ hostId: str
               >
                 {isSubmitting ? (
                   <span className="flex items-center gap-2">
-                    <Loader2 className="h-5 w-5 animate-spin" /> Enviando solicitud...
+                    <Loader2 className="h-5 w-5 animate-spin" />
+                    {paymentMethod === "paypal" ? "Llevándote al pago..." : "Enviando solicitud..."}
                   </span>
+                ) : paymentMethod === "paypal" ? (
+                  `Pagar y confirmar reserva · $${finalTotal.toLocaleString()}`
                 ) : (
                   "Enviar solicitud al host"
                 )}
               </Button>
 
-              <p className="text-center text-[10px] text-slate-400 font-medium leading-relaxed">
-                Esto es una <strong>solicitud</strong>, no una reserva confirmada. El host la revisará
-                y te contactará para coordinar el pago. No se realizará ningún cargo ahora.
-              </p>
+              {paymentMethod === "paypal" ? (
+                <p className="text-center text-[10px] text-slate-400 font-medium leading-relaxed">
+                  Te llevamos a la pasarela de pago segura. Cuando se confirme el pago, tu reserva queda
+                  automáticamente confirmada y recibís el código de check-in.
+                </p>
+              ) : (
+                <p className="text-center text-[10px] text-slate-400 font-medium leading-relaxed">
+                  Esto es una <strong>solicitud</strong>, no una reserva confirmada. El host la revisará
+                  y te contactará para coordinar el pago. No se realizará ningún cargo ahora.
+                </p>
+              )}
             </div>
           </div>
         </div>

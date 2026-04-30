@@ -35,24 +35,31 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Token inválido" }, { status: 400 });
   }
 
-  // Resolver booking por token. Status debe ser confirmed (ya aprobada por
-  // el host) y NO debe estar paid_at todavía.
+  // Resolver booking por token. Aceptamos:
+  //   - status='confirmed' (legacy: el host aprobó manual y el huésped paga después)
+  //   - status='pending_review' + payment_method='paypal' (flow nuevo: el huésped
+  //     paga ANTES de aprobación manual; capture auto-confirma)
+  // En ambos casos NO debe estar paid_at todavía.
   const { data: bk } = await supabaseAdmin
     .from("bookings")
-    .select("id, tenant_id, property_id, status, total_price, paid_at, guest_name, guest_phone, check_in, check_out, channel_code")
+    .select("id, tenant_id, property_id, status, payment_method, total_price, paid_at, guest_name, guest_phone, check_in, check_out, channel_code")
     .eq("payment_token", paymentToken)
     .maybeSingle();
 
   if (!bk) return NextResponse.json({ error: "Reserva no encontrada" }, { status: 404 });
   const booking = bk as {
     id: string; tenant_id: string; property_id: string; status: string;
+    payment_method: string | null;
     total_price: number | null; paid_at: string | null;
     guest_name: string | null; guest_phone: string | null;
     check_in: string; check_out: string; channel_code: string | null;
   };
 
-  if (booking.status !== "confirmed") {
-    return NextResponse.json({ error: "Esta reserva no está aprobada" }, { status: 409 });
+  const acceptable =
+    booking.status === "confirmed" ||
+    (booking.status === "pending_review" && booking.payment_method === "paypal");
+  if (!acceptable) {
+    return NextResponse.json({ error: "Esta reserva no está disponible para pago" }, { status: 409 });
   }
   if (booking.paid_at) {
     return NextResponse.json({ error: "Esta reserva ya está pagada" }, { status: 409 });

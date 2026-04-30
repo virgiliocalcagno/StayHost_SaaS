@@ -30,7 +30,7 @@ export async function GET() {
 
   const { data, error } = await supabase
     .from("tenant_payment_configs")
-    .select("id, provider, client_id, client_secret, mode, enabled, updated_at")
+    .select("id, provider, client_id, client_secret, mode, enabled, processing_fee_percent, updated_at")
     .eq("tenant_id", tenantId);
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
@@ -42,6 +42,7 @@ export async function GET() {
     client_secret: string | null;
     mode: string;
     enabled: boolean;
+    processing_fee_percent: number | string | null;
     updated_at: string;
   }>).map((c) => ({
     id: c.id,
@@ -50,6 +51,7 @@ export async function GET() {
     clientSecretMasked: maskSecret(c.client_secret),
     mode: c.mode,
     enabled: c.enabled,
+    processingFeePercent: Number(c.processing_fee_percent ?? 0),
     updatedAt: c.updated_at,
   }));
 
@@ -81,6 +83,20 @@ export async function PUT(req: NextRequest) {
     return NextResponse.json({ error: "Mode debe ser sandbox o live" }, { status: 400 });
   }
   const enabled = Boolean(body.enabled);
+
+  // Comisión de procesamiento (0–20%). Si no viene en el body, queda como
+  // está en BD (no la pisamos con 0).
+  const feeRaw = body.processingFeePercent;
+  let processingFeePercent: number | undefined;
+  if (feeRaw !== undefined && feeRaw !== null && feeRaw !== "") {
+    processingFeePercent = Number(feeRaw);
+    if (Number.isNaN(processingFeePercent) || processingFeePercent < 0 || processingFeePercent > 20) {
+      return NextResponse.json(
+        { error: "La comisión de procesamiento debe estar entre 0 y 20%" },
+        { status: 400 }
+      );
+    }
+  }
 
   if (clientId && clientId.length > 200) {
     return NextResponse.json({ error: "client_id demasiado largo" }, { status: 400 });
@@ -118,28 +134,36 @@ export async function PUT(req: NextRequest) {
   }
 
   if (existing) {
+    const updatePayload: Record<string, unknown> = {
+      client_id: clientId,
+      client_secret: finalSecret,
+      mode,
+      enabled,
+      updated_at: new Date().toISOString(),
+    };
+    if (processingFeePercent !== undefined) {
+      updatePayload.processing_fee_percent = processingFeePercent;
+    }
     const { error: upErr } = await supabase
       .from("tenant_payment_configs")
-      .update({
-        client_id: clientId,
-        client_secret: finalSecret,
-        mode,
-        enabled,
-        updated_at: new Date().toISOString(),
-      } as never)
+      .update(updatePayload as never)
       .eq("id", existing.id);
     if (upErr) return NextResponse.json({ error: upErr.message }, { status: 500 });
   } else {
+    const insertPayload: Record<string, unknown> = {
+      tenant_id: tenantId,
+      provider,
+      client_id: clientId,
+      client_secret: finalSecret,
+      mode,
+      enabled,
+    };
+    if (processingFeePercent !== undefined) {
+      insertPayload.processing_fee_percent = processingFeePercent;
+    }
     const { error: insErr } = await supabase
       .from("tenant_payment_configs")
-      .insert({
-        tenant_id: tenantId,
-        provider,
-        client_id: clientId,
-        client_secret: finalSecret,
-        mode,
-        enabled,
-      } as never);
+      .insert(insertPayload as never);
     if (insErr) return NextResponse.json({ error: insErr.message }, { status: 500 });
   }
 

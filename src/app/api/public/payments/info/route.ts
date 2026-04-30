@@ -25,12 +25,13 @@ export async function GET(req: NextRequest) {
 
   const { data: bk } = await supabaseAdmin
     .from("bookings")
-    .select("id, tenant_id, property_id, status, total_price, paid_at, check_in, check_out, guest_name, num_guests, channel_code")
+    .select("id, tenant_id, property_id, status, payment_method, total_price, paid_at, check_in, check_out, guest_name, num_guests, channel_code")
     .eq("payment_token", token)
     .maybeSingle();
   if (!bk) return NextResponse.json({ error: "Reserva no encontrada" }, { status: 404 });
   const booking = bk as {
     id: string; tenant_id: string; property_id: string; status: string;
+    payment_method: string | null;
     total_price: number | null; paid_at: string | null;
     check_in: string; check_out: string;
     guest_name: string | null; num_guests: number | null;
@@ -58,6 +59,7 @@ export async function GET(req: NextRequest) {
     booking: {
       id: booking.id,
       status: booking.status,
+      paymentMethod: booking.payment_method,
       paid: !!booking.paid_at,
       paidAt: booking.paid_at,
       total: booking.total_price ?? 0,

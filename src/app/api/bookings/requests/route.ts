@@ -24,12 +24,19 @@ export async function GET() {
 
   // RLS scopea por tenant. El índice parcial bookings_pending_review_idx
   // (creado en la migración) hace este query barato.
+  //
+  // Filtramos las pending_review con payment_method='paypal' que aún no
+  // fueron pagadas (paid_at IS NULL): esas son "esperando pago del huésped",
+  // no requieren acción del host. Si el huésped paga, se auto-confirma; si
+  // no paga, queda huérfana (un cron las limpiará a futuro). En el panel
+  // solo mostramos las que requieren decisión manual del host.
   const { data, error } = await supabase
     .from("bookings")
     .select(
-      "id, property_id, check_in, check_out, guest_name, guest_phone, guest_doc, guest_nationality, guest_doc_photo_path, num_guests, note, created_at, phone_last4"
+      "id, property_id, check_in, check_out, guest_name, guest_phone, guest_doc, guest_nationality, guest_doc_photo_path, num_guests, note, created_at, phone_last4, payment_method"
     )
     .eq("status", "pending_review")
+    .or("payment_method.is.null,payment_method.eq.manual")
     .order("created_at", { ascending: false });
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });

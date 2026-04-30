@@ -85,6 +85,7 @@ export default function SettingsPanel() {
     mode: "sandbox" | "live";
     enabled: boolean;
     hasSecret: boolean;
+    processingFeePercent: number;
   }>({
     clientId: "",
     clientSecret: "",
@@ -92,6 +93,7 @@ export default function SettingsPanel() {
     mode: "sandbox",
     enabled: false,
     hasSecret: false,
+    processingFeePercent: 5.5,
   });
   const [paypalLoading, setPaypalLoading] = useState(true);
   const [paypalSave, setPaypalSave] = useState<SaveState>({ kind: "idle" });
@@ -114,6 +116,7 @@ export default function SettingsPanel() {
             clientSecretMasked: string | null;
             mode: string;
             enabled: boolean;
+            processingFeePercent?: number;
           }>;
         };
         const pp = json.configs.find((c) => c.provider === "paypal");
@@ -125,6 +128,7 @@ export default function SettingsPanel() {
             mode: (pp.mode === "live" ? "live" : "sandbox") as "sandbox" | "live",
             enabled: pp.enabled,
             hasSecret: !!pp.clientSecretMasked,
+            processingFeePercent: typeof pp.processingFeePercent === "number" ? pp.processingFeePercent : 5.5,
           });
         }
       } finally {
@@ -171,6 +175,7 @@ export default function SettingsPanel() {
           clientSecret: paypalConfig.clientSecret,
           mode: paypalConfig.mode,
           enabled: paypalConfig.enabled,
+          processingFeePercent: paypalConfig.processingFeePercent,
         }),
       });
       if (!res.ok) {
@@ -733,6 +738,34 @@ export default function SettingsPanel() {
                         Si está deshabilitado, el botón de pago no aparece en el Hub público.
                       </p>
                     </div>
+                  </div>
+
+                  {/* Comisión de procesamiento — el host la pasa al huésped o
+                      la absorbe (0). PayPal cobra ~3.5% USA, ~5.4% LATAM. */}
+                  <div className="space-y-2 pt-2 border-t">
+                    <Label>Comisión de procesamiento</Label>
+                    <div className="flex items-center gap-2 max-w-xs">
+                      <Input
+                        type="number"
+                        min={0}
+                        max={20}
+                        step={0.1}
+                        value={paypalConfig.processingFeePercent}
+                        onChange={(e) =>
+                          setPaypalConfig((p) => ({
+                            ...p,
+                            processingFeePercent: Math.max(0, Math.min(20, Number(e.target.value) || 0)),
+                          }))
+                        }
+                        className="text-right"
+                      />
+                      <span className="text-sm font-bold">%</span>
+                    </div>
+                    <p className="text-xs text-muted-foreground">
+                      Se le suma al huésped al pagar online (línea separada en el desglose: &ldquo;Comisión de procesamiento&rdquo;).
+                      PayPal te cobra entre 3.5% (USA) y 5.4% (cross-border LATAM) — poné acá lo que querés trasladar.
+                      Dejá <strong>0</strong> si preferís absorberla vos.
+                    </p>
                   </div>
 
                   <div className="flex flex-wrap items-center gap-3 pt-2">
