@@ -298,18 +298,31 @@ export default function CleaningPanel() {
   useEffect(() => {
     const viewParam = searchParams.get("view");
     const taskParam = searchParams.get("task");
-    
+
     if (viewParam === "staff") {
       setViewMode("staff");
       if (taskParam) {
         setActiveTaskId(taskParam);
         setStaffAppScreen("task");
-        setWizardStep(1); 
+        setWizardStep(1);
       } else {
         setStaffAppScreen("home");
       }
     }
   }, [searchParams]);
+
+  // Auto-simular como el assignee de la tarea cuando el owner abre el link
+  // del WhatsApp. Antes el simulador quedaba en "Vista previa" aunque la
+  // tarea ya tuviera dueño — confuso para el owner que esperaba ver lo
+  // que ve ese miembro.
+  useEffect(() => {
+    const taskParam = searchParams.get("task");
+    if (!taskParam) return;
+    const t = tasks.find(x => x.id === taskParam);
+    if (t?.assigneeId) {
+      setSelectedStaff(t.assigneeId);
+    }
+  }, [searchParams, tasks]);
 
   // Sync team & properties via apiServices. SIEMPRE seteamos lo que
   // devuelve la API, incluso array vacio (sin esto un tenant sin staff
