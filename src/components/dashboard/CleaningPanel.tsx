@@ -794,9 +794,14 @@ export default function CleaningPanel() {
     setActiveMonth(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`);
   };
 
-  const handleSendMessage = (phone: string, property: string, taskId: string) => {
-    const link = `${window.location.origin}/dashboard?view=staff&task=${taskId}`;
-    const msg = encodeURIComponent(`Hola, tienes una limpieza en ${property}. ✨\nAccede aquí para ver detalles y reportar: ${link}`);
+  const handleSendMessage = (phone: string, property: string, taskId: string, memberName?: string) => {
+    // ANTES iba a /dashboard?view=staff&task=... — eso entra al simulador
+    // del owner (que aún tiene placeholder "Laura Sánchez" hardcoded del
+    // mock viejo). Ahora va a /staff que es la app móvil real con login
+    // por email/teléfono.
+    const link = `${window.location.origin}/staff?task=${taskId}`;
+    const greeting = memberName ? `Hola ${memberName}, ` : "Hola, ";
+    const msg = encodeURIComponent(`${greeting}tienes una limpieza en ${property}. ✨\nAccede aquí para ver detalles y reportar: ${link}`);
     window.open(`https://wa.me/${phone}?text=${msg}`, '_blank', 'noopener,noreferrer');
   };
 
@@ -1076,9 +1081,19 @@ export default function CleaningPanel() {
   // ─── Staff Views Renderers ───────────────────────────────────────────────
 
   const renderStaffHome = () => {
-    // Filter logic for staff
-    const myTasks = tasks.filter(t => t.assigneeId === "1"); // Hardcoded Laura for demo
-    
+    // Esto es la SIMULACIÓN para el owner — el botón "Simular App Staff"
+    // dentro del CleaningPanel. La app real es /staff/page.tsx con login
+    // por email o teléfono.
+    //
+    // Para que la simulación sea útil, mostramos las tareas del staff
+    // seleccionado en el filtro `selectedStaff`. Si está en "all" o vacío,
+    // mostramos todas las tareas (preview mode).
+    const simulatingId = selectedStaff && selectedStaff !== "all" ? selectedStaff : null;
+    const simulatingMember = simulatingId ? team.find(m => m.id === simulatingId) : null;
+    const myTasks = simulatingId
+      ? tasks.filter(t => t.assigneeId === simulatingId)
+      : tasks;
+
     const staffSummary = {
       urgent: myTasks.filter(t => t.dueDate === getDateStr(0) && parseInt(t.dueTime.split(":")[0]) < 6).length,
       pending: myTasks.filter(t => t.acceptanceStatus === "pending").length,
@@ -1106,12 +1121,22 @@ export default function CleaningPanel() {
           <div className="flex justify-between items-start mb-6">
             <div className="flex items-center gap-3">
               <Avatar className="h-12 w-12 border-2 border-primary/10">
-                <AvatarImage src={team.find(m => m.id === "1")?.avatar} />
-                <AvatarFallback>LS</AvatarFallback>
+                <AvatarImage src={simulatingMember?.avatar} />
+                <AvatarFallback>
+                  {simulatingMember?.name
+                    ? simulatingMember.name.split(" ").map(n => n[0]).join("").slice(0, 2).toUpperCase()
+                    : "👁"}
+                </AvatarFallback>
               </Avatar>
               <div>
-                <h2 className="text-xl font-black text-slate-800">Laura Sánchez</h2>
-                <p className="text-xs font-bold text-slate-400">Personal de Limpieza</p>
+                <h2 className="text-xl font-black text-slate-800">
+                  {simulatingMember?.name ?? "Vista previa (simulación)"}
+                </h2>
+                <p className="text-xs font-bold text-slate-400">
+                  {simulatingMember
+                    ? "Personal · Simulación"
+                    : "Seleccioná un miembro arriba para simular su vista"}
+                </p>
               </div>
             </div>
             <div className="h-10 w-10 flex items-center justify-center bg-primary/5 rounded-full">
@@ -1747,7 +1772,10 @@ export default function CleaningPanel() {
                                     variant="ghost" 
                                     size="sm" 
                                     className="h-8 w-8 p-0 rounded-full text-emerald-600 hover:bg-emerald-50 transition-colors"
-                                    onClick={() => handleSendMessage(team.find(m => m.id === task.assigneeId)?.phone || "", task.propertyName, task.id)}
+                                    onClick={() => {
+                                      const m = team.find(mm => mm.id === task.assigneeId);
+                                      handleSendMessage(m?.phone || "", task.propertyName, task.id, m?.name);
+                                    }}
                                     title="Contactar por WhatsApp"
                                   >
                                     <MessageSquare className="h-4 w-4" />
