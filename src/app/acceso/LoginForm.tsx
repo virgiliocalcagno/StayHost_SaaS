@@ -42,8 +42,19 @@ export function LoginForm({ initialEmail }: { initialEmail: string }) {
     setLoading(true);
 
     try {
+      // Resolvemos el identificador (email o teléfono) al email real que
+      // Supabase Auth espera. Para usuarios con cuenta por phone, esto
+      // busca el pseudo-email correspondiente. Para emails, devuelve el
+      // mismo input lowercase.
+      const resolveRes = await fetch("/api/auth/resolve", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ identifier: email.trim() }),
+      });
+      const { email: resolvedEmail } = await resolveRes.json();
+
       const { data, error: authError } = await supabase.auth.signInWithPassword({
-        email: email.trim(),
+        email: resolvedEmail || email.trim(),
         password,
       });
 
@@ -96,15 +107,15 @@ export function LoginForm({ initialEmail }: { initialEmail: string }) {
         <div className="bg-white/70 backdrop-blur-xl border border-white rounded-[2.5rem] shadow-2xl shadow-slate-200/50 p-8 space-y-8">
           <div className="space-y-5">
             <div className="space-y-3">
-              <Label htmlFor="email" className="text-xs font-bold uppercase tracking-widest text-slate-400 pl-1">Correo Electrónico</Label>
+              <Label htmlFor="email" className="text-xs font-bold uppercase tracking-widest text-slate-400 pl-1">Correo o Teléfono</Label>
               <div className="relative group">
                 <div className="absolute left-4 top-1/2 -translate-y-1/2 h-10 w-10 bg-slate-100 rounded-xl flex items-center justify-center group-focus-within:bg-primary/10 transition-colors">
                   <Mail className="h-4 w-4 text-slate-400 group-focus-within:text-primary transition-colors" />
                 </div>
                 <Input
                   id="email"
-                  type="email"
-                  placeholder="tu@correo.com"
+                  type="text"
+                  placeholder="tu@correo.com  o  +18091234567"
                   className="pl-16 h-14 rounded-2xl border-slate-200 bg-white/50 focus:bg-white focus:ring-2 focus:ring-primary/20 transition-all font-medium"
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}

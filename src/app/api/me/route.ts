@@ -58,6 +58,21 @@ export async function GET() {
     }
   }
 
+  // Auto-promover staff: si este user matchea un team_member con
+  // status='pending', lo movemos a 'active' (el primer login exitoso es
+  // la confirmación implícita de que la cuenta funciona). Best-effort —
+  // si falla no bloqueamos /api/me.
+  if (user?.id) {
+    await supabase
+      .from("team_members")
+      .update({ status: "active" })
+      .eq("auth_user_id", user.id)
+      .eq("status", "pending")
+      .then(() => undefined, (e) =>
+        console.warn("[/api/me] promote pending→active failed", e)
+      );
+  }
+
   return NextResponse.json({
     email: email || null,
     tenantId: tenantId ?? null,
