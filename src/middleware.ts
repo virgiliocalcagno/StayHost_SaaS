@@ -85,6 +85,19 @@ function isProtectedPath(pathname: string): boolean {
 // ── Middleware ──────────────────────────────────────────────────────────────
 
 export async function middleware(req: NextRequest) {
+  // Backwards-compat: el simulador viejo vivía en /dashboard?view=staff.
+  // Lo matamos en 2026-05-01, pero seguimos respetando WhatsApps que ya
+  // están en celulares de limpiadoras: redirigimos al app real /staff.
+  if (
+    req.nextUrl.pathname === "/dashboard" &&
+    req.nextUrl.searchParams.get("view") === "staff"
+  ) {
+    const target = req.nextUrl.clone();
+    target.pathname = "/staff";
+    target.searchParams.delete("view");
+    return NextResponse.redirect(target);
+  }
+
   const res = NextResponse.next();
   const supabase = createSupabaseMiddlewareClient(req, res);
 
