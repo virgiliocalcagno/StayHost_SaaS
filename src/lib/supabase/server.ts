@@ -86,9 +86,14 @@ export function createSupabaseMiddlewareClient(
  * Resolve the tenant_id for the currently authenticated user.
  * Returns null if the user is not logged in or has no tenant linked.
  *
- * This is the single place where the `auth.users.id → tenants.id` mapping
- * is resolved. Every route handler that needs a tenant_id should go through
- * here, not re-query itself.
+ * Lookup order:
+ *   1. `tenants.user_id = auth.uid()` (owner case)
+ *   2. `team_members.auth_user_id = auth.uid()` (staff case — limpiadoras,
+ *      mantenimiento, co-host, etc. linkeados a un tenant ajeno)
+ *
+ * Mantener este orden importa: si una persona es OWNER de un tenant Y
+ * además está como team_member en otro tenant, su lookup primario debe
+ * ser el suyo propio. (Caso raro pero posible en el futuro con co-hosts).
  */
 export async function getAuthenticatedTenant() {
   const supabase = await createSupabaseServerClient();
@@ -98,17 +103,26 @@ export async function getAuthenticatedTenant() {
 
   if (!user) return { user: null, tenantId: null, supabase };
 
+  // 1. Owner lookup.
   const { data: tenant } = await supabase
     .from("tenants")
     .select("id")
     .eq("user_id", user.id)
-    .single();
+    .maybeSingle();
 
-  return {
-    user,
-    tenantId: (tenant as { id: string } | null)?.id ?? null,
-    supabase,
-  };
+  let tenantId = (tenant as { id: string } | null)?.id ?? null;
+
+  // 2. Staff lookup — solo si el usuario no es owner de ningún tenant.
+  if (!tenantId) {
+    const { data: member } = await supabase
+      .from("team_members")
+      .select("tenant_id")
+      .eq("auth_user_id", user.id)
+      .maybeSingle();
+    tenantId = (member as { tenant_id: string } | null)?.tenant_id ?? null;
+  }
+
+  return { user, tenantId, supabase };
 }
 
 // ─── Deprecated re-export ────────────────────────────────────────────────────

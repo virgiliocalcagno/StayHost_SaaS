@@ -29,6 +29,11 @@ export async function GET() {
   let onboarded = true;
   let trialExpired = false;
   let moduleOverrides: Record<string, boolean> = {};
+  // Rol resuelto desde team_members: 'cleaner' | 'maintenance' | 'admin' |
+  // 'manager' | 'co_host' | 'guest_support' | 'accountant' | 'owner'.
+  // null si el user es owner directo (no tiene row en team_members) o si
+  // no pertenece al tenant. La UI usa esto para decidir el landing post-login.
+  let role: string | null = null;
 
   if (tenantId) {
     const { data } = await supabase
@@ -58,25 +63,35 @@ export async function GET() {
     }
   }
 
-  // Auto-promover staff: si este user matchea un team_member con
-  // status='pending', lo movemos a 'active' (el primer login exitoso es
-  // la confirmación implícita de que la cuenta funciona). Best-effort —
-  // si falla no bloqueamos /api/me.
+  // Resolver role desde team_members. Mismo lookup que el auto-promote
+  // de status — lo combinamos para no hacer dos queries.
   if (user?.id) {
-    await supabase
+    const { data: memberRow } = await supabase
       .from("team_members")
-      .update({ status: "active" })
+      .select("role, status")
       .eq("auth_user_id", user.id)
-      .eq("status", "pending")
-      .then(() => undefined, (e) =>
-        console.warn("[/api/me] promote pending→active failed", e)
-      );
+      .maybeSingle();
+
+    const member = memberRow as { role: string; status: string } | null;
+    if (member?.role) role = member.role;
+
+    // Auto-promover pending → active al primer login exitoso. Best-effort.
+    if (member?.status === "pending") {
+      await supabase
+        .from("team_members")
+        .update({ status: "active" })
+        .eq("auth_user_id", user.id)
+        .then(() => undefined, (e) =>
+          console.warn("[/api/me] promote pending→active failed", e)
+        );
+    }
   }
 
   return NextResponse.json({
     email: email || null,
     tenantId: tenantId ?? null,
     isMaster: email === MASTER_EMAIL,
+    role,
     plan,
     planExpiresAt,
     onboarded,

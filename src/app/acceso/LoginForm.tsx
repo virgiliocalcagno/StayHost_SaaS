@@ -74,8 +74,30 @@ export function LoginForm({ initialEmail }: { initialEmail: string }) {
         return;
       }
 
-      const next = searchParams.get("next") ?? "/dashboard";
-      window.location.assign(next);
+      // Routing post-login:
+      //   1. Si la URL trae ?next= (vino de un link interno protegido),
+      //      respetar ese destino — el usuario quería ir ahí específicamente.
+      //   2. Si no, mirar el rol: cleaner/maintenance van a /staff (su app
+      //      operativa). Resto va a /dashboard (panel admin del owner).
+      //   3. Fallback /dashboard si /api/me falla.
+      const explicitNext = searchParams.get("next");
+      let landing = explicitNext ?? "/dashboard";
+
+      if (!explicitNext) {
+        try {
+          const meRes = await fetch("/api/me", { cache: "no-store" });
+          if (meRes.ok) {
+            const me = (await meRes.json()) as { role: string | null };
+            if (me.role === "cleaner" || me.role === "maintenance") {
+              landing = "/staff";
+            }
+          }
+        } catch {
+          // Si falla /api/me, dejamos el fallback /dashboard.
+        }
+      }
+
+      window.location.assign(landing);
     } catch (err) {
       console.error("[login] unexpected error:", err);
       setError("Error al iniciar sesión. Intenta de nuevo.");
