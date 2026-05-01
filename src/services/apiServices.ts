@@ -9,6 +9,7 @@ export interface RawTeamMember {
   tasksCompleted?: number;
   phone: string;
   available?: boolean;
+  status?: string;
 }
 
 export interface RawProperty {
@@ -33,14 +34,25 @@ export interface RawProperty {
   [key: string]: unknown;
 }
 
-// ─── Team: reads from localStorage (configured via Team panel) ───────────────
-// TODO: migrate the team roster to a Supabase table linked by tenant_id.
+// ─── Team: reads from Supabase via API ───────────────────────────────────────
 
 export async function getTeam(): Promise<RawTeamMember[]> {
   if (typeof window === "undefined") return [];
   try {
-    const raw = localStorage.getItem("stayhost_team");
-    return raw ? (JSON.parse(raw) as RawTeamMember[]) : [];
+    const res = await fetch("/api/team-members", { credentials: "same-origin" });
+    if (!res.ok) return [];
+    const data = await res.json();
+    return ((data.members ?? []) as any[]).map((m: any) => ({
+      id: m.id,
+      name: m.name,
+      role: m.role,
+      avatar: m.avatar ?? undefined,
+      tasksToday: m.tasksToday ?? 0,
+      tasksCompleted: m.tasksCompleted ?? 0,
+      phone: m.phone ?? "",
+      available: m.available ?? false,
+      status: m.status ?? "pending",
+    }));
   } catch {
     return [];
   }

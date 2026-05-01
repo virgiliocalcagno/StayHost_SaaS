@@ -714,17 +714,21 @@ export default function PropertiesPanel() {
   }, []);
 
   // ─── Cleaners from team (for automation tab) ───────────────────────────────
+  // Fuente de verdad: /api/team-members. Filtramos por role="cleaner" en cliente.
   const [availableCleaners, setAvailableCleaners] = useState<{id: string; name: string; avatar?: string}[]>([]);
   useEffect(() => {
-    if (typeof window !== "undefined") {
-      const saved = localStorage.getItem("stayhost_team");
-      if (saved) {
-        try {
-          const teamData = JSON.parse(saved);
-          setAvailableCleaners(teamData.filter((m: any) => m.role === "cleaner"));
-        } catch {}
-      }
-    }
+    let cancelled = false;
+    fetch("/api/team-members", { credentials: "same-origin" })
+      .then((res) => (res.ok ? res.json() : { members: [] }))
+      .then((data) => {
+        if (cancelled) return;
+        const cleaners = ((data.members ?? []) as Array<{ id: string; name: string; avatar?: string; role: string }>)
+          .filter((m) => m.role === "cleaner")
+          .map((m) => ({ id: m.id, name: m.name, avatar: m.avatar }));
+        setAvailableCleaners(cleaners);
+      })
+      .catch(() => { if (!cancelled) setAvailableCleaners([]); });
+    return () => { cancelled = true; };
   }, []);
 
   // Form state

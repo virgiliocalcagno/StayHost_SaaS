@@ -323,43 +323,52 @@ export default function StaffPage() {
     });
 
   // ─── Handlers ─────────────────────────────────────────────────────────────
-  const toggleAvailable = () => {
+  const toggleAvailable = async () => {
     if (!session) return;
     const next = !available;
+    // Optimista: actualiza UI primero, después sincroniza con BD.
     setAvailable(next);
+    const updated = { ...session, available: next };
+    setSession(updated);
+    localStorage.setItem("stayhost_session", JSON.stringify(updated));
+
     try {
-      const rawTeam = localStorage.getItem("stayhost_team");
-      if (rawTeam) {
-        const team = JSON.parse(rawTeam);
-        localStorage.setItem(
-          "stayhost_team",
-          JSON.stringify(team.map((m: { id: string }) =>
-            m.id === session.memberId ? { ...m, available: next } : m
-          ))
-        );
+      const res = await fetch(
+        `/api/team-members?id=${encodeURIComponent(session.memberId)}`,
+        {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          credentials: "same-origin",
+          body: JSON.stringify({ available: next }),
+        }
+      );
+      if (!res.ok) {
+        // Revertir en error: la BD es la fuente de verdad.
+        setAvailable(!next);
+        const reverted = { ...session, available: !next };
+        setSession(reverted);
+        localStorage.setItem("stayhost_session", JSON.stringify(reverted));
       }
-      const updated = { ...session, available: next };
-      localStorage.setItem("stayhost_session", JSON.stringify(updated));
-      setSession(updated);
-    } catch {}
+    } catch {
+      setAvailable(!next);
+      const reverted = { ...session, available: !next };
+      setSession(reverted);
+      localStorage.setItem("stayhost_session", JSON.stringify(reverted));
+    }
   };
 
   const handleLogout = async () => {
+    if (session) {
+      // Best-effort: registrar último activo en BD. No bloquea logout.
+      fetch(`/api/team-members?id=${encodeURIComponent(session.memberId)}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        credentials: "same-origin",
+        body: JSON.stringify({ lastActive: new Date().toISOString() }),
+      }).catch(() => {});
+    }
     try {
       localStorage.removeItem("stayhost_session");
-      const rawTeam = localStorage.getItem("stayhost_team");
-      if (rawTeam && session) {
-        const team = JSON.parse(rawTeam);
-        const time = new Date().toLocaleTimeString("es-MX", { hour: "2-digit", minute: "2-digit" });
-        localStorage.setItem(
-          "stayhost_team",
-          JSON.stringify(team.map((m: { id: string }) =>
-            m.id === session.memberId
-              ? { ...m, lastActive: `Última vez: ${time}` }
-              : m
-          ))
-        );
-      }
     } catch {}
     window.location.assign("/salir");
   };
