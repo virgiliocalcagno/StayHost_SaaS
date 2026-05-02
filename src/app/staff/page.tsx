@@ -192,10 +192,20 @@ export default function StaffPage() {
 
     async function initSession() {
       try {
-        // 1. Check Supabase auth session via /api/me
+        // 1. /api/me ahora resuelve memberId, name y role en una sola
+        // query (lookup por auth_user_id en team_members). El frontend
+        // ya no necesita pegarle a /api/team-members ni hacer match por
+        // email — eso fallaba para staff con pseudo-email.
         const meRes = await fetch("/api/me");
         if (!meRes.ok) throw new Error("api/me failed");
-        const me = await meRes.json();
+        const me = (await meRes.json()) as {
+          email: string | null;
+          tenantId: string | null;
+          isMaster: boolean;
+          role: string | null;
+          memberId: string | null;
+          name: string | null;
+        };
 
         if (cancelled) return;
 
@@ -204,20 +214,14 @@ export default function StaffPage() {
           return;
         }
 
-        // 2. Fetch team member for authenticated user
-        const tmRes = await fetch("/api/team-members");
-        const members = tmRes.ok ? ((await tmRes.json()).members ?? []) : [];
-        if (cancelled) return;
-
-        const myMember = members.find(
-          (m: { email: string }) => m.email.trim().toLowerCase() === me.email.trim().toLowerCase()
-        );
-
+        // 2. Si el user está autenticado y es Master pero no tiene team_member,
+        // mostramos su email como name (caso owner sin auto-seed). Para
+        // staff normal usamos memberId + name del DTO.
         const sess: StaffSession = {
-          memberId: myMember?.id ?? me.tenantId,
-          name: myMember?.name ?? me.email.split("@")[0],
-          role: myMember?.role ?? (me.isMaster ? "owner" : "cleaner"),
-          available: myMember?.available ?? true,
+          memberId: me.memberId ?? me.tenantId,
+          name: me.name ?? (me.isMaster ? "Owner" : (me.email.split("@")[0] || "Staff")),
+          role: me.role ?? (me.isMaster ? "owner" : "cleaner"),
+          available: true, // BD ya lo tiene; UI lo lee de session local hasta el primer toggle
         };
 
         localStorage.setItem("stayhost_session", JSON.stringify(sess));
@@ -374,16 +378,40 @@ export default function StaffPage() {
   };
 
   const toggleChecklistItem = (taskId: string, itemId: string) => {
+    let updatedItems: { id: string; label: string; done: boolean; type: "general" | "appliance" }[] | undefined;
     setTasks(prev =>
-      prev.map(t =>
-        t.id !== taskId ? t : {
-          ...t,
-          checklistItems: t.checklistItems?.map(i =>
-            i.id === itemId ? { ...i, done: !i.done } : i
-          ),
-        }
-      )
+      prev.map(t => {
+        if (t.id !== taskId) return t;
+        updatedItems = t.checklistItems?.map(i =>
+          i.id === itemId ? { ...i, done: !i.done } : i
+        );
+        return { ...t, checklistItems: updatedItems };
+      })
     );
+    if (updatedItems) {
+      patchTask(taskId, { checklistItems: updatedItems });
+    }
+  };
+
+  // Helper: PATCH a /api/cleaning-tasks. Best-effort en errores de red —
+  // si falla, el estado local ya está actualizado y el siguiente reload
+  // de /api/cleaning-tasks corregirá. No queremos bloquear al staff por
+  // un error transient de conexión móvil.
+  const patchTask = async (taskId: string, patch: Record<string, unknown>) => {
+    try {
+      const res = await fetch(
+        `/api/cleaning-tasks?id=${encodeURIComponent(taskId)}`,
+        {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          credentials: "same-origin",
+          body: JSON.stringify(patch),
+        }
+      );
+      if (!res.ok) console.warn("[/staff] patchTask non-ok", res.status);
+    } catch (e) {
+      console.warn("[/staff] patchTask network error", e);
+    }
   };
 
   const handleAcceptTask = (taskId: string) => {
@@ -392,20 +420,31 @@ export default function StaffPage() {
         t.id === taskId ? { ...t, acceptanceStatus: "accepted", status: "accepted" } : t
       )
     );
+    patchTask(taskId, { status: "accepted" });
   };
 
   const handleDeclineTask = (taskId: string, reason?: string) => {
+    const newDeclinedIds = (() => {
+      const t = tasks.find(x => x.id === taskId);
+      const prev = t?.declinedByIds ?? [];
+      return session?.memberId ? [...prev, session.memberId] : prev;
+    })();
     setTasks(prev =>
       prev.map(t =>
         t.id !== taskId ? t : {
           ...t,
-          declinedByIds: [...(t.declinedByIds ?? []), ...(session?.memberId ? [session.memberId] : [])],
+          declinedByIds: newDeclinedIds,
           rejectionReason: reason,
           acceptanceStatus: "declined",
           status: "rejected",
         }
       )
     );
+    patchTask(taskId, {
+      status: "rejected",
+      declinedByIds: newDeclinedIds,
+      rejectionReason: reason ?? null,
+    });
   };
 
   const handleStartCleaning = (taskId: string) => {
@@ -416,6 +455,7 @@ export default function StaffPage() {
       )
     );
     setWizardStep(1);
+    patchTask(taskId, { status: "in_progress", startTime: now });
   };
 
   const handleUploadPhoto = (category: string) => {
@@ -425,10 +465,12 @@ export default function StaffPage() {
 
   const handleSubmitTask = () => {
     if (!activeTaskId) return;
+    const taskId = activeTaskId;
+    const photos = tempPhotos;
     setTasks(prev =>
       prev.map(t =>
-        t.id === activeTaskId
-          ? { ...t, status: "completed", isWaitingValidation: true, closurePhotos: tempPhotos }
+        t.id === taskId
+          ? { ...t, status: "completed", isWaitingValidation: true, closurePhotos: photos }
           : t
       )
     );
@@ -436,6 +478,11 @@ export default function StaffPage() {
     setActiveTaskId(null);
     setWizardStep(1);
     setTempPhotos([]);
+    patchTask(taskId, {
+      status: "completed",
+      isWaitingValidation: true,
+      closurePhotos: photos,
+    });
   };
 
   // ─── Loading / guard ───────────────────────────────────────────────────────

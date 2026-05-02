@@ -63,27 +63,37 @@ export async function GET() {
     }
   }
 
-  // Resolver role desde team_members. Mismo lookup que el auto-promote
-  // de status — lo combinamos para no hacer dos queries.
+  // Resolver datos del team_member (memberId, name, role) para que el
+  // frontend no tenga que hacer lookup adicional en /api/team-members.
+  // También combinamos con el auto-promote pending→active para una sola
+  // query.
+  let memberId: string | null = null;
+  let name: string | null = null;
   if (user?.id) {
     const { data: memberRow } = await supabase
       .from("team_members")
-      .select("role, status")
+      .select("id, name, role, status")
       .eq("auth_user_id", user.id)
       .maybeSingle();
 
-    const member = memberRow as { role: string; status: string } | null;
-    if (member?.role) role = member.role;
+    const member = memberRow as
+      | { id: string; name: string; role: string; status: string }
+      | null;
+    if (member) {
+      memberId = member.id;
+      name = member.name;
+      role = member.role;
 
-    // Auto-promover pending → active al primer login exitoso. Best-effort.
-    if (member?.status === "pending") {
-      await supabase
-        .from("team_members")
-        .update({ status: "active" })
-        .eq("auth_user_id", user.id)
-        .then(() => undefined, (e) =>
-          console.warn("[/api/me] promote pending→active failed", e)
-        );
+      // Auto-promover pending → active al primer login exitoso. Best-effort.
+      if (member.status === "pending") {
+        await supabase
+          .from("team_members")
+          .update({ status: "active" })
+          .eq("auth_user_id", user.id)
+          .then(() => undefined, (e) =>
+            console.warn("[/api/me] promote pending→active failed", e)
+          );
+      }
     }
   }
 
@@ -92,6 +102,8 @@ export async function GET() {
     tenantId: tenantId ?? null,
     isMaster: email === MASTER_EMAIL,
     role,
+    memberId,
+    name,
     plan,
     planExpiresAt,
     onboarded,
