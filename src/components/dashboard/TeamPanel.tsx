@@ -53,6 +53,7 @@ import {
   KeyRound,
 } from "lucide-react";
 import { StaffAccessDialog } from "@/components/dashboard/StaffAccessDialog";
+import { useTableSync } from "@/lib/realtime/useTableSync";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 interface TeamMember {
@@ -164,6 +165,42 @@ export default function TeamPanel() {
   
   const [team, setTeam] = useState<TeamMember[]>([]);
   const [teamLoading, setTeamLoading] = useState(true);
+  const [tenantId, setTenantId] = useState<string | null>(null);
+
+  // Helper: re-fetcha el team. Se usa al montar y cuando llega evento Realtime.
+  const refetchTeam = async () => {
+    try {
+      const res = await fetch("/api/team-members", {
+        cache: "no-store",
+        credentials: "include",
+      });
+      if (!res.ok) return;
+      const data = (await res.json()) as { members: TeamMember[] };
+      setTeam(data.members ?? []);
+    } catch (e) {
+      console.warn("[TeamPanel] realtime refetch failed", e);
+    }
+  };
+
+  // Tenant ID para suscribir Realtime. Lo levantamos de /api/me al montar.
+  useEffect(() => {
+    fetch("/api/me", { cache: "no-store" })
+      .then(r => r.ok ? r.json() : null)
+      .then((me: { tenantId: string | null } | null) => {
+        if (me?.tenantId) setTenantId(me.tenantId);
+      })
+      .catch(() => {});
+  }, []);
+
+  // Realtime: status pending→active al instante cuando una limpiadora
+  // hace su primer login. También captura cualquier cambio de role,
+  // available, etc desde otra sesión.
+  useTableSync({
+    table: "team_members",
+    filter: tenantId ? `tenant_id=eq.${tenantId}` : undefined,
+    enabled: !!tenantId,
+    onChange: () => refetchTeam(),
+  });
 
   // Fuente de verdad: Supabase via /api/team-members. Sin localStorage —
   // leakeaba team entre tenants en el mismo browser.

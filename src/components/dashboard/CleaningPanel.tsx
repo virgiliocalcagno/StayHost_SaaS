@@ -46,6 +46,7 @@ import {
 import { cn } from "@/lib/utils";
 import { logoutAndRedirect } from "@/lib/auth/logout";
 import { getTeam, getProperties, type RawTeamMember } from "@/services/apiServices";
+import { useTableSync } from "@/lib/realtime/useTableSync";
 
 // Nuevos componentes universales de Staff
 import { CleaningTaskDetailModal } from "@/components/dashboard/CleaningTaskDetailModal";
@@ -142,6 +143,17 @@ export default function CleaningPanel() {
     return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
   });
   const [tasks, setTasks] = useState<CleaningTask[]>([]);
+  const [tenantId, setTenantId] = useState<string | null>(null);
+
+  // Tenant ID para suscribir Realtime. Lo levantamos de /api/me al montar.
+  useEffect(() => {
+    fetch("/api/me", { cache: "no-store" })
+      .then(r => r.ok ? r.json() : null)
+      .then((me: { tenantId: string | null } | null) => {
+        if (me?.tenantId) setTenantId(me.tenantId);
+      })
+      .catch(() => {});
+  }, []);
 
   const loadTasks = () => {
     // Tenant is resolved server-side from the session cookie.
@@ -189,6 +201,16 @@ export default function CleaningPanel() {
   };
 
   useEffect(() => { loadTasks(); }, []);
+
+  // ─── Realtime: re-fetch tasks cuando staff cambia algo desde /staff ────
+  // Cuando una limpiadora acepta/rechaza/inicia/completa una tarea, el
+  // owner panel se refresca solo (~100ms) sin necesidad de F5.
+  useTableSync({
+    table: "cleaning_tasks",
+    filter: tenantId ? `tenant_id=eq.${tenantId}` : undefined,
+    enabled: !!tenantId,
+    onChange: () => loadTasks(),
+  });
 
   // Incidencias activas: tickets de mantenimiento abiertos asociados a
   // propiedades del tenant. La sidebar del modulo los muestra como signal
