@@ -110,6 +110,26 @@ export async function middleware(req: NextRequest) {
 
   const { pathname } = req.nextUrl;
 
+  // Bloqueo de superficie: cleaner/maintenance NO puede ver el panel del
+  // owner. El rol viene de una cookie httpOnly que setea /api/me en cada
+  // login (cero queries a BD). Esto es UX/separación, no seguridad: la
+  // autorización real vive en RLS + sesión Supabase. Si alguien manipula
+  // la cookie y llega a /dashboard, igual no verá data del tenant que no
+  // le corresponde porque las /api/* van por sesión.
+  const sessionRole = req.cookies.get("sh_role")?.value;
+  if (
+    user &&
+    (sessionRole === "cleaner" || sessionRole === "maintenance") &&
+    (pathname === "/dashboard" || pathname.startsWith("/dashboard/"))
+  ) {
+    const target = req.nextUrl.clone();
+    target.pathname = "/staff";
+    target.search = "";
+    const redir = NextResponse.redirect(target);
+    redir.headers.set("Cache-Control", "no-store, max-age=0");
+    return redir;
+  }
+
   if (isProtectedPath(pathname) && !user) {
     // API routes → machine-readable 401.
     if (pathname.startsWith("/api/")) {

@@ -59,6 +59,16 @@ async function handle(req: NextRequest) {
         expires: new Date(0),
       });
     }
+    // Cookie de rol que setea /api/me — sin esto, si el siguiente usuario
+    // del mismo browser es owner, el middleware podría rebotarlo a /staff
+    // por el rol heredado del logout anterior.
+    res.cookies.set({
+      name: "sh_role",
+      value: "",
+      path: "/",
+      maxAge: 0,
+      expires: new Date(0),
+    });
   };
 
   if (debug) {
