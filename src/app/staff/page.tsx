@@ -43,6 +43,7 @@ interface StaffSession {
 
 import { StaffWizard } from "@/components/staff-ui/StaffWizard";
 import { StaffTaskDetail } from "@/components/staff-ui/StaffTaskDetail";
+import { useTableSync } from "@/lib/realtime/useTableSync";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 interface CleaningTask {
@@ -101,6 +102,34 @@ const getDateStr = (offsetDays: number) => {
   return `${yyyy}-${mm}-${dd}`;
 };
 
+// Mapper de fila API → DTO de UI. Standalone para que la función de
+// refetch (que dispara realtime) no duplique la lógica.
+const mapApiTask = (t: Record<string, unknown>): CleaningTask => ({
+  id: t.id as string,
+  propertyId: (t.property_id ?? t.propertyId ?? "") as string,
+  propertyName: (t.property_name ?? t.propertyName ?? "Propiedad") as string,
+  address: (t.address ?? "") as string,
+  propertyImage: (t.property_image ?? t.propertyImage) as string | undefined,
+  assigneeId: (t.assignee_id ?? t.assigneeId) as string | undefined,
+  assigneeName: (t.assignee_name ?? t.assigneeName) as string | undefined,
+  dueDate: (t.due_date ?? t.dueDate ?? "") as string,
+  dueTime: (t.due_time ?? t.dueTime ?? "12:00") as string,
+  status: (t.status ?? "pending") as CleaningTask["status"],
+  priority: (t.priority ?? "medium") as CleaningTask["priority"],
+  isBackToBack: (t.is_back_to_back ?? t.isBackToBack ?? false) as boolean,
+  isVacant: (t.is_vacant ?? t.isVacant) as boolean | undefined,
+  guestName: (t.guest_name ?? t.guestName ?? "") as string,
+  guestCount: (t.guest_count ?? t.guestCount) as number | undefined,
+  stayDuration: (t.stay_duration ?? t.stayDuration) as number | undefined,
+  checklistItems: (t.checklist_items ?? t.checklistItems ?? []) as CleaningTask["checklistItems"],
+  closurePhotos: (t.closure_photos ?? t.closurePhotos ?? []) as CleaningTask["closurePhotos"],
+  isWaitingValidation: (t.is_waiting_validation ?? t.isWaitingValidation ?? false) as boolean,
+  startTime: (t.start_time ?? t.startTime) as string | undefined,
+  declinedByIds: (t.declined_by_ids ?? t.declinedByIds ?? []) as string[],
+  rejectionReason: (t.rejection_reason ?? t.rejectionReason) as string | undefined,
+  acceptanceStatus: (t.acceptance_status ?? t.acceptanceStatus ?? "pending") as CleaningTask["acceptanceStatus"],
+});
+
 const getPriorityInfo = (task: CleaningTask) => {
   const isToday = task.dueDate === getDateStr(0);
   const isTomorrow = task.dueDate === getDateStr(1);
@@ -156,6 +185,7 @@ export default function StaffPage() {
 
   // ─── Auth & data state ────────────────────────────────────────────────────
   const [session, setSession] = useState<StaffSession | null>(null);
+  const [tenantId, setTenantId] = useState<string | null>(null);
   const [tasks, setTasks] = useState<CleaningTask[]>([]);
   const [properties, setProperties] = useState<Property[]>([]);
   const [available, setAvailable] = useState(true);
@@ -192,10 +222,20 @@ export default function StaffPage() {
 
     async function initSession() {
       try {
-        // 1. Check Supabase auth session via /api/me
+        // 1. /api/me ahora resuelve memberId, name y role en una sola
+        // query (lookup por auth_user_id en team_members). El frontend
+        // ya no necesita pegarle a /api/team-members ni hacer match por
+        // email — eso fallaba para staff con pseudo-email.
         const meRes = await fetch("/api/me");
         if (!meRes.ok) throw new Error("api/me failed");
-        const me = await meRes.json();
+        const me = (await meRes.json()) as {
+          email: string | null;
+          tenantId: string | null;
+          isMaster: boolean;
+          role: string | null;
+          memberId: string | null;
+          name: string | null;
+        };
 
         if (cancelled) return;
 
@@ -204,20 +244,16 @@ export default function StaffPage() {
           return;
         }
 
-        // 2. Fetch team member for authenticated user
-        const tmRes = await fetch("/api/team-members");
-        const members = tmRes.ok ? ((await tmRes.json()).members ?? []) : [];
-        if (cancelled) return;
+        setTenantId(me.tenantId);
 
-        const myMember = members.find(
-          (m: { email: string }) => m.email.trim().toLowerCase() === me.email.trim().toLowerCase()
-        );
-
+        // 2. Si el user está autenticado y es Master pero no tiene team_member,
+        // mostramos su email como name (caso owner sin auto-seed). Para
+        // staff normal usamos memberId + name del DTO.
         const sess: StaffSession = {
-          memberId: myMember?.id ?? me.tenantId,
-          name: myMember?.name ?? me.email.split("@")[0],
-          role: myMember?.role ?? (me.isMaster ? "owner" : "cleaner"),
-          available: myMember?.available ?? true,
+          memberId: me.memberId ?? me.tenantId,
+          name: me.name ?? (me.isMaster ? "Owner" : (me.email.split("@")[0] || "Staff")),
+          role: me.role ?? (me.isMaster ? "owner" : "cleaner"),
+          available: true, // BD ya lo tiene; UI lo lee de session local hasta el primer toggle
         };
 
         localStorage.setItem("stayhost_session", JSON.stringify(sess));
@@ -228,31 +264,7 @@ export default function StaffPage() {
         const tasksRes = await fetch("/api/cleaning-tasks");
         if (tasksRes.ok && !cancelled) {
           const tasksData = await tasksRes.json();
-          const realTasks = (tasksData.tasks ?? tasksData ?? []).map((t: Record<string, unknown>) => ({
-            id: t.id,
-            propertyId: t.property_id ?? t.propertyId ?? "",
-            propertyName: t.property_name ?? t.propertyName ?? "Propiedad",
-            address: t.address ?? "",
-            propertyImage: t.property_image ?? t.propertyImage,
-            assigneeId: t.assignee_id ?? t.assigneeId,
-            assigneeName: t.assignee_name ?? t.assigneeName,
-            dueDate: t.due_date ?? t.dueDate ?? "",
-            dueTime: t.due_time ?? t.dueTime ?? "12:00",
-            status: t.status ?? "pending",
-            priority: t.priority ?? "medium",
-            isBackToBack: t.is_back_to_back ?? t.isBackToBack ?? false,
-            isVacant: t.is_vacant ?? t.isVacant,
-            guestName: t.guest_name ?? t.guestName ?? "",
-            guestCount: t.guest_count ?? t.guestCount,
-            stayDuration: t.stay_duration ?? t.stayDuration,
-            checklistItems: t.checklist_items ?? t.checklistItems ?? [],
-            closurePhotos: t.closure_photos ?? t.closurePhotos ?? [],
-            isWaitingValidation: t.is_waiting_validation ?? t.isWaitingValidation ?? false,
-            startTime: t.start_time ?? t.startTime,
-            declinedByIds: t.declined_by_ids ?? t.declinedByIds ?? [],
-            rejectionReason: t.rejection_reason ?? t.rejectionReason,
-            acceptanceStatus: t.acceptance_status ?? t.acceptanceStatus ?? "pending",
-          })) as CleaningTask[];
+          const realTasks = (tasksData.tasks ?? tasksData ?? []).map(mapApiTask);
           setTasks(realTasks);
           localStorage.setItem("stayhost_tasks", JSON.stringify(realTasks));
         }
@@ -288,6 +300,27 @@ export default function StaffPage() {
       localStorage.setItem("stayhost_tasks", JSON.stringify(tasks));
     }
   }, [tasks, loading]);
+
+  // ─── Realtime: re-fetch tasks cuando cambia algo en BD ──────────────────
+  // Esto sincroniza al instante (~100ms) los cambios del owner panel:
+  //   - asigna una tarea nueva a Sofia → aparece en su app
+  //   - cambia el priority/checklist → se refresca solo
+  // También captura sus propios cambios (es no-op porque ya están en local).
+  useTableSync({
+    table: "cleaning_tasks",
+    filter: tenantId ? `tenant_id=eq.${tenantId}` : undefined,
+    enabled: !!tenantId,
+    onChange: async () => {
+      try {
+        const res = await fetch("/api/cleaning-tasks", { cache: "no-store" });
+        if (!res.ok) return;
+        const data = await res.json();
+        setTasks((data.tasks ?? data ?? []).map(mapApiTask));
+      } catch (e) {
+        console.warn("[/staff] realtime refetch failed", e);
+      }
+    },
+  });
 
   // ─── Derived ──────────────────────────────────────────────────────────────
   const myTasks = tasks.filter(t => t.assigneeId === session?.memberId);
@@ -374,16 +407,40 @@ export default function StaffPage() {
   };
 
   const toggleChecklistItem = (taskId: string, itemId: string) => {
+    let updatedItems: { id: string; label: string; done: boolean; type: "general" | "appliance" }[] | undefined;
     setTasks(prev =>
-      prev.map(t =>
-        t.id !== taskId ? t : {
-          ...t,
-          checklistItems: t.checklistItems?.map(i =>
-            i.id === itemId ? { ...i, done: !i.done } : i
-          ),
-        }
-      )
+      prev.map(t => {
+        if (t.id !== taskId) return t;
+        updatedItems = t.checklistItems?.map(i =>
+          i.id === itemId ? { ...i, done: !i.done } : i
+        );
+        return { ...t, checklistItems: updatedItems };
+      })
     );
+    if (updatedItems) {
+      patchTask(taskId, { checklistItems: updatedItems });
+    }
+  };
+
+  // Helper: PATCH a /api/cleaning-tasks. Best-effort en errores de red —
+  // si falla, el estado local ya está actualizado y el siguiente reload
+  // de /api/cleaning-tasks corregirá. No queremos bloquear al staff por
+  // un error transient de conexión móvil.
+  const patchTask = async (taskId: string, patch: Record<string, unknown>) => {
+    try {
+      const res = await fetch(
+        `/api/cleaning-tasks?id=${encodeURIComponent(taskId)}`,
+        {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          credentials: "same-origin",
+          body: JSON.stringify(patch),
+        }
+      );
+      if (!res.ok) console.warn("[/staff] patchTask non-ok", res.status);
+    } catch (e) {
+      console.warn("[/staff] patchTask network error", e);
+    }
   };
 
   const handleAcceptTask = (taskId: string) => {
@@ -392,20 +449,31 @@ export default function StaffPage() {
         t.id === taskId ? { ...t, acceptanceStatus: "accepted", status: "accepted" } : t
       )
     );
+    patchTask(taskId, { status: "accepted" });
   };
 
   const handleDeclineTask = (taskId: string, reason?: string) => {
+    const newDeclinedIds = (() => {
+      const t = tasks.find(x => x.id === taskId);
+      const prev = t?.declinedByIds ?? [];
+      return session?.memberId ? [...prev, session.memberId] : prev;
+    })();
     setTasks(prev =>
       prev.map(t =>
         t.id !== taskId ? t : {
           ...t,
-          declinedByIds: [...(t.declinedByIds ?? []), ...(session?.memberId ? [session.memberId] : [])],
+          declinedByIds: newDeclinedIds,
           rejectionReason: reason,
           acceptanceStatus: "declined",
           status: "rejected",
         }
       )
     );
+    patchTask(taskId, {
+      status: "rejected",
+      declinedByIds: newDeclinedIds,
+      rejectionReason: reason ?? null,
+    });
   };
 
   const handleStartCleaning = (taskId: string) => {
@@ -416,6 +484,7 @@ export default function StaffPage() {
       )
     );
     setWizardStep(1);
+    patchTask(taskId, { status: "in_progress", startTime: now });
   };
 
   const handleUploadPhoto = (category: string) => {
@@ -425,10 +494,12 @@ export default function StaffPage() {
 
   const handleSubmitTask = () => {
     if (!activeTaskId) return;
+    const taskId = activeTaskId;
+    const photos = tempPhotos;
     setTasks(prev =>
       prev.map(t =>
-        t.id === activeTaskId
-          ? { ...t, status: "completed", isWaitingValidation: true, closurePhotos: tempPhotos }
+        t.id === taskId
+          ? { ...t, status: "completed", isWaitingValidation: true, closurePhotos: photos }
           : t
       )
     );
@@ -436,6 +507,11 @@ export default function StaffPage() {
     setActiveTaskId(null);
     setWizardStep(1);
     setTempPhotos([]);
+    patchTask(taskId, {
+      status: "completed",
+      isWaitingValidation: true,
+      closurePhotos: photos,
+    });
   };
 
   // ─── Loading / guard ───────────────────────────────────────────────────────

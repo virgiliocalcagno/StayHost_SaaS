@@ -85,6 +85,19 @@ function isProtectedPath(pathname: string): boolean {
 // ── Middleware ──────────────────────────────────────────────────────────────
 
 export async function middleware(req: NextRequest) {
+  // Backwards-compat: el simulador viejo vivía en /dashboard?view=staff.
+  // Lo matamos en 2026-05-01, pero seguimos respetando WhatsApps que ya
+  // están en celulares de limpiadoras: redirigimos al app real /staff.
+  if (
+    req.nextUrl.pathname === "/dashboard" &&
+    req.nextUrl.searchParams.get("view") === "staff"
+  ) {
+    const target = req.nextUrl.clone();
+    target.pathname = "/staff";
+    target.searchParams.delete("view");
+    return NextResponse.redirect(target);
+  }
+
   const res = NextResponse.next();
   const supabase = createSupabaseMiddlewareClient(req, res);
 
@@ -105,10 +118,15 @@ export async function middleware(req: NextRequest) {
         { status: 401 }
       );
     }
-    // Page routes → redirect to login, preserving the intended destination.
+    // Page routes → redirect to login, preserving la URL completa
+    // (path + query) en `next` para que después del login retomemos el
+    // destino exacto. Antes solo preservábamos el pathname y se perdía
+    // el `?task=XXX` de los links del WhatsApp.
     const loginUrl = req.nextUrl.clone();
     loginUrl.pathname = "/acceso";
-    loginUrl.searchParams.set("next", pathname);
+    loginUrl.search = ""; // limpiar query del request original
+    const fullDestination = pathname + (req.nextUrl.search || "");
+    loginUrl.searchParams.set("next", fullDestination);
     const redir = NextResponse.redirect(loginUrl);
     redir.headers.set("Cache-Control", "no-store, max-age=0");
     return redir;

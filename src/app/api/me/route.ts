@@ -29,6 +29,11 @@ export async function GET() {
   let onboarded = true;
   let trialExpired = false;
   let moduleOverrides: Record<string, boolean> = {};
+  // Rol resuelto desde team_members: 'cleaner' | 'maintenance' | 'admin' |
+  // 'manager' | 'co_host' | 'guest_support' | 'accountant' | 'owner'.
+  // null si el user es owner directo (no tiene row en team_members) o si
+  // no pertenece al tenant. La UI usa esto para decidir el landing post-login.
+  let role: string | null = null;
 
   if (tenantId) {
     const { data } = await supabase
@@ -58,10 +63,47 @@ export async function GET() {
     }
   }
 
+  // Resolver datos del team_member (memberId, name, role) para que el
+  // frontend no tenga que hacer lookup adicional en /api/team-members.
+  // También combinamos con el auto-promote pending→active para una sola
+  // query.
+  let memberId: string | null = null;
+  let name: string | null = null;
+  if (user?.id) {
+    const { data: memberRow } = await supabase
+      .from("team_members")
+      .select("id, name, role, status")
+      .eq("auth_user_id", user.id)
+      .maybeSingle();
+
+    const member = memberRow as
+      | { id: string; name: string; role: string; status: string }
+      | null;
+    if (member) {
+      memberId = member.id;
+      name = member.name;
+      role = member.role;
+
+      // Auto-promover pending → active al primer login exitoso. Best-effort.
+      if (member.status === "pending") {
+        await supabase
+          .from("team_members")
+          .update({ status: "active" })
+          .eq("auth_user_id", user.id)
+          .then(() => undefined, (e) =>
+            console.warn("[/api/me] promote pending→active failed", e)
+          );
+      }
+    }
+  }
+
   return NextResponse.json({
     email: email || null,
     tenantId: tenantId ?? null,
     isMaster: email === MASTER_EMAIL,
+    role,
+    memberId,
+    name,
     plan,
     planExpiresAt,
     onboarded,

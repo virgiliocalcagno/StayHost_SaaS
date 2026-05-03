@@ -53,12 +53,20 @@ import {
   KeyRound,
 } from "lucide-react";
 import { StaffAccessDialog } from "@/components/dashboard/StaffAccessDialog";
+import { useTableSync } from "@/lib/realtime/useTableSync";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 interface TeamMember {
   id: string;
+  authUserId?: string | null;
   name: string;
   email: string;
+  /**
+   * Identificador con el que el staff loguea — email real (si lo hay) o
+   * teléfono (cuando la cuenta usa pseudo-email interno). Backend lo
+   * resuelve y lo manda en el DTO. UI lo usa para WhatsApp y display.
+   */
+  loginIdentifier?: string;
   phone: string;
   avatar?: string;
   role: "admin" | "manager" | "cleaner" | "co_host" | "maintenance" | "guest_support" | "owner" | "accountant";
@@ -150,10 +158,49 @@ export default function TeamPanel() {
   const [showModal, setShowModal] = useState(false);
   const [editingMember, setEditingMember] = useState<TeamMember | null>(null);
   const [accessDialogMember, setAccessDialogMember] = useState<TeamMember | null>(null);
+  const [resetPasswordMember, setResetPasswordMember] = useState<TeamMember | null>(null);
+  const [resetPasswordValue, setResetPasswordValue] = useState("");
+  const [resetPasswordSaving, setResetPasswordSaving] = useState(false);
   const [isClient, setIsClient] = useState(false);
   
   const [team, setTeam] = useState<TeamMember[]>([]);
   const [teamLoading, setTeamLoading] = useState(true);
+  const [tenantId, setTenantId] = useState<string | null>(null);
+
+  // Helper: re-fetcha el team. Se usa al montar y cuando llega evento Realtime.
+  const refetchTeam = async () => {
+    try {
+      const res = await fetch("/api/team-members", {
+        cache: "no-store",
+        credentials: "include",
+      });
+      if (!res.ok) return;
+      const data = (await res.json()) as { members: TeamMember[] };
+      setTeam(data.members ?? []);
+    } catch (e) {
+      console.warn("[TeamPanel] realtime refetch failed", e);
+    }
+  };
+
+  // Tenant ID para suscribir Realtime. Lo levantamos de /api/me al montar.
+  useEffect(() => {
+    fetch("/api/me", { cache: "no-store" })
+      .then(r => r.ok ? r.json() : null)
+      .then((me: { tenantId: string | null } | null) => {
+        if (me?.tenantId) setTenantId(me.tenantId);
+      })
+      .catch(() => {});
+  }, []);
+
+  // Realtime: status pending→active al instante cuando una limpiadora
+  // hace su primer login. También captura cualquier cambio de role,
+  // available, etc desde otra sesión.
+  useTableSync({
+    table: "team_members",
+    filter: tenantId ? `tenant_id=eq.${tenantId}` : undefined,
+    enabled: !!tenantId,
+    onChange: () => refetchTeam(),
+  });
 
   // Fuente de verdad: Supabase via /api/team-members. Sin localStorage —
   // leakeaba team entre tenants en el mismo browser.
@@ -388,12 +435,28 @@ export default function TeamPanel() {
   // actualizamos el estado local con la respuesta para quedar sincronizados.
   // Si el backend falla, revertimos y mostramos un alert — sin silencios.
   const handleSave = async () => {
-    if (!formData.name || !formData.email) return;
+    // Validación: nombre + (email o teléfono). Para nuevos miembros además
+    // password ≥6. La API también valida — esto es solo UX para no perder
+    // el round-trip.
+    if (!formData.name) {
+      alert("El nombre es requerido");
+      return;
+    }
+    const hasEmail = formData.email && formData.email.includes("@");
+    const hasPhone = !!formData.phone && formData.phone.replace(/\D/g, "").length >= 8;
+    if (!hasEmail && !hasPhone) {
+      alert("Debes proporcionar un email o un teléfono válido");
+      return;
+    }
+    if (!editingMember && (!formData.password || formData.password.length < 6)) {
+      alert("La contraseña es requerida (mínimo 6 caracteres)");
+      return;
+    }
 
     // Construye el payload que entiende la API (camelCase DTO).
-    const payload = {
+    const payload: Record<string, unknown> = {
       name: formData.name,
-      email: formData.email,
+      email: hasEmail ? formData.email : undefined,
       phone: formData.phone,
       role: formData.role,
       documentId: formData.documentId,
@@ -405,6 +468,10 @@ export default function TeamPanel() {
       propertyAccess: formData.propertyAccess,
       notificationPrefs: formData.notificationPrefs,
     };
+    if (!editingMember && formData.password) {
+      // Solo mandamos password al CREAR — el reset usa endpoint dedicado.
+      payload.password = formData.password;
+    }
 
     try {
       if (editingMember) {
@@ -786,10 +853,11 @@ export default function TeamPanel() {
                               onClick={(e) => {
                                 e.stopPropagation();
                                 const phone = member.phone.replace(/\D/g, "");
-                                const msg = `Hola ${member.name}, fuiste invitado al equipo de StayHost 🏠\n\nAccede aquí: ${window.location.origin}/acceso\n📧 Usuario: ${member.email}\n\nSi tienes dudas responde este mensaje.`;
+                                const identifier = member.loginIdentifier || member.email || member.phone;
+                                const msg = `Hola ${member.name}, te invité al equipo de StayHost 🏠\n\nIngresá en: ${window.location.origin}/acceso\nUsuario: ${identifier}\n\nSi olvidaste tu contraseña, avisame y te genero una nueva.`;
                                 window.open(`https://wa.me/${phone}?text=${encodeURIComponent(msg)}`, "_blank");
                               }}
-                              title="Reenviar Invitación por WhatsApp"
+                              title="Reenviar invitación por WhatsApp"
                               className="p-2 rounded-md hover:bg-amber-100 dark:hover:bg-amber-900/30 transition-colors text-amber-500"
                             >
                               <Send className="h-4 w-4" />
@@ -809,6 +877,19 @@ export default function TeamPanel() {
                               className="p-2 rounded-md hover:bg-amber-100 dark:hover:bg-amber-900/30 transition-colors text-amber-600"
                             >
                               <KeyRound className="h-4 w-4" />
+                            </button>
+                          )}
+                          {member.authUserId && (
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setResetPasswordMember(member);
+                                setResetPasswordValue("");
+                              }}
+                              title="Resetear contraseña de acceso"
+                              className="p-2 rounded-md hover:bg-purple-100 dark:hover:bg-purple-900/30 transition-colors text-purple-600"
+                            >
+                              <Lock className="h-4 w-4" />
                             </button>
                           )}
                           <button
@@ -912,11 +993,12 @@ export default function TeamPanel() {
                       onClick={(e) => {
                         e.stopPropagation();
                         const phone = member.phone.replace(/\D/g, "");
-                        const msg = `Hola ${member.name}, fuiste invitado al equipo de StayHost 🏠\n\nAccede aquí: ${window.location.origin}/acceso\n📧 Usuario: ${member.email}\n\nSi tienes dudas responde este mensaje.`;
+                        const identifier = member.loginIdentifier || member.email || member.phone;
+                        const msg = `Hola ${member.name}, te invité al equipo de StayHost 🏠\n\nIngresá en: ${window.location.origin}/acceso\nUsuario: ${identifier}\n\nSi olvidaste tu contraseña, avisame y te genero una nueva.`;
                         window.open(`https://wa.me/${phone}?text=${encodeURIComponent(msg)}`, "_blank");
                       }}
                       className="p-2 rounded-md border transition-colors border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/20 text-amber-600"
-                      title="Reenviar Invitación por WhatsApp"
+                      title="Reenviar invitación por WhatsApp"
                     >
                       <Send className="h-3.5 w-3.5" />
                     </button>
@@ -1027,23 +1109,37 @@ export default function TeamPanel() {
                         />
                       </div>
                       <div className="space-y-2">
-                        <Label htmlFor="member-email" className="text-sm font-medium">Email de Acceso</Label>
+                        <Label htmlFor="member-email" className="text-sm font-medium">
+                          Email <span className="text-muted-foreground font-normal">(opcional si hay teléfono)</span>
+                        </Label>
                         <Input
                           id="member-email"
                           type="email"
                           placeholder="ejemplo@correo.com"
                           value={formData.email}
                           onChange={(e) => setFormData((prev) => ({ ...prev, email: e.target.value }))}
+                          disabled={!!editingMember}
                         />
+                        {editingMember && (
+                          <p className="text-xs text-muted-foreground">
+                            El email/teléfono no se puede cambiar después de crear la cuenta.
+                          </p>
+                        )}
                       </div>
                       <div className="space-y-2">
-                        <Label htmlFor="member-phone" className="text-sm font-medium">Teléfono (WhatsApp)</Label>
+                        <Label htmlFor="member-phone" className="text-sm font-medium">
+                          Teléfono <span className="text-muted-foreground font-normal">(WhatsApp + login)</span>
+                        </Label>
                         <Input
                           id="member-phone"
-                          placeholder="Ej: 8295551234"
+                          placeholder="+18295551234"
                           value={formData.phone}
                           onChange={(e) => setFormData((prev) => ({ ...prev, phone: e.target.value }))}
+                          disabled={!!editingMember}
                         />
+                        <p className="text-xs text-muted-foreground">
+                          Si el miembro no tiene email, ingresá su teléfono — podrá loguearse con ese número.
+                        </p>
                       </div>
                     </div>
                   </div>
@@ -1096,22 +1192,35 @@ export default function TeamPanel() {
                           onChange={(e) => setFormData((prev) => ({ ...prev, emergencyPhone: e.target.value }))}
                         />
                       </div>
-                      <div className="space-y-2 sm:col-span-2">
-                        <Label htmlFor="member-pass" className="text-sm font-medium flex items-center gap-2">
-                          <Fingerprint className="h-4 w-4 text-purple-500" />
-                          Contraseña de Primer Ingreso
-                        </Label>
-                        <Input
-                          id="member-pass"
-                          type="password"
-                          placeholder="Mínimo 6 caracteres"
-                          value={formData.password}
-                          onChange={(e) => setFormData((prev) => ({ ...prev, password: e.target.value }))}
-                        />
-                        <p className="text-[10px] text-muted-foreground italic">
-                          El usuario usará esta clave para entrar a la App Móvil. Después podrá cambiarla.
-                        </p>
-                      </div>
+                      {!editingMember && (
+                        <div className="space-y-2 sm:col-span-2">
+                          <Label htmlFor="member-pass" className="text-sm font-medium flex items-center gap-2">
+                            <Fingerprint className="h-4 w-4 text-purple-500" />
+                            Contraseña de Primer Ingreso
+                          </Label>
+                          <Input
+                            id="member-pass"
+                            type="password"
+                            placeholder="Mínimo 6 caracteres"
+                            value={formData.password}
+                            onChange={(e) => setFormData((prev) => ({ ...prev, password: e.target.value }))}
+                          />
+                          <p className="text-[10px] text-muted-foreground italic">
+                            El miembro usará esta clave para entrar a la App. Si la olvida, podrás resetearla desde la lista.
+                          </p>
+                        </div>
+                      )}
+                      {editingMember && (
+                        <div className="space-y-2 sm:col-span-2">
+                          <Label className="text-sm font-medium flex items-center gap-2">
+                            <Fingerprint className="h-4 w-4 text-purple-500" />
+                            Contraseña
+                          </Label>
+                          <p className="text-xs text-muted-foreground">
+                            Para cambiar la contraseña, cerrá este modal y tocá el icono de candado en la fila del miembro.
+                          </p>
+                        </div>
+                      )}
                     </div>
                   </div>
                 </div>
@@ -1361,7 +1470,12 @@ export default function TeamPanel() {
                       onClick={() => {
                         const phone = formData.phone.replace(/\D/g, "");
                         const portalUrl = `${window.location.origin}/acceso`;
-                        const msg = `Hola ${formData.name}, fuiste invitado al equipo de StayHost 🏠\n\nAccede aquí: ${portalUrl}\n📧 Usuario: ${formData.email}${formData.password ? `\n🔑 Clave: ${formData.password}` : ""}\n\nSi tienes dudas responde este mensaje.`;
+                        // Identificador de login: email real si lo hay, si no
+                        // el teléfono normalizado (que el staff conoce de memoria).
+                        const identifier = formData.email && formData.email.includes("@")
+                          ? formData.email
+                          : (formData.phone.startsWith("+") ? formData.phone : `+${formData.phone.replace(/\D/g, "")}`);
+                        const msg = `Hola ${formData.name}, te invité al equipo de StayHost 🏠\n\nIngresá en: ${portalUrl}\nUsuario: ${identifier}${formData.password ? `\nClave: ${formData.password}` : ""}\n\nDespués podés cambiar tu contraseña. Cualquier duda respondeme acá.`;
                         window.open(`https://wa.me/${phone}?text=${encodeURIComponent(msg)}`, "_blank");
                       }}
                       disabled={!formData.phone}
@@ -1466,6 +1580,108 @@ export default function TeamPanel() {
           memberName={accessDialogMember.name}
           properties={savedProperties}
         />
+      )}
+
+      {/* Modal: resetear contraseña de un miembro */}
+      {resetPasswordMember && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4"
+          onClick={() => !resetPasswordSaving && setResetPasswordMember(null)}
+        >
+          <div
+            className="bg-background rounded-2xl shadow-2xl w-full max-w-md p-6 space-y-5"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center gap-3">
+              <div className="p-2 rounded-xl bg-purple-100 dark:bg-purple-900/40 text-purple-600">
+                <Lock className="h-5 w-5" />
+              </div>
+              <div>
+                <h3 className="font-bold text-lg">Resetear contraseña</h3>
+                <p className="text-xs text-muted-foreground">
+                  {resetPasswordMember.name}
+                  {resetPasswordMember.loginIdentifier
+                    ? ` · ${resetPasswordMember.loginIdentifier}`
+                    : ""}
+                </p>
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="reset-pwd" className="text-sm font-medium">Nueva contraseña</Label>
+              <Input
+                id="reset-pwd"
+                type="text"
+                placeholder="Mínimo 6 caracteres"
+                value={resetPasswordValue}
+                onChange={(e) => setResetPasswordValue(e.target.value)}
+                autoFocus
+              />
+              <p className="text-xs text-muted-foreground">
+                Después de guardar, copiala y mandasela al miembro por WhatsApp. La clave anterior queda invalidada al instante.
+              </p>
+            </div>
+
+            <div className="flex gap-2 justify-end pt-2">
+              <Button
+                variant="outline"
+                onClick={() => setResetPasswordMember(null)}
+                disabled={resetPasswordSaving}
+              >
+                Cancelar
+              </Button>
+              <Button
+                onClick={async () => {
+                  if (resetPasswordValue.length < 6) {
+                    alert("La contraseña debe tener al menos 6 caracteres");
+                    return;
+                  }
+                  setResetPasswordSaving(true);
+                  try {
+                    const res = await fetch(
+                      `/api/team-members/${encodeURIComponent(resetPasswordMember.id)}/reset-password`,
+                      {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        credentials: "include",
+                        body: JSON.stringify({ password: resetPasswordValue }),
+                      }
+                    );
+                    if (!res.ok) {
+                      const err = await res.json().catch(() => ({}));
+                      alert(err.error || "No se pudo resetear la contraseña");
+                      return;
+                    }
+                    // Ofrecer copiar la clave + mandar WhatsApp.
+                    const phone = resetPasswordMember.phone.replace(/\D/g, "");
+                    const identifier =
+                      resetPasswordMember.loginIdentifier ||
+                      resetPasswordMember.email ||
+                      resetPasswordMember.phone;
+                    const msg = encodeURIComponent(
+                      `Hola ${resetPasswordMember.name}, tu nueva clave de acceso a StayHost es:\n\nUsuario: ${identifier}\nClave: ${resetPasswordValue}\n\nIngresá en: ${window.location.origin}/acceso`
+                    );
+                    if (phone && confirm("Contraseña actualizada. ¿Abrir WhatsApp para enviar la nueva clave?")) {
+                      window.open(`https://wa.me/${phone}?text=${msg}`, "_blank");
+                    } else {
+                      alert("Contraseña actualizada correctamente.");
+                    }
+                    setResetPasswordMember(null);
+                    setResetPasswordValue("");
+                  } catch (e) {
+                    console.error(e);
+                    alert("Error de red al resetear contraseña");
+                  } finally {
+                    setResetPasswordSaving(false);
+                  }
+                }}
+                disabled={resetPasswordSaving || resetPasswordValue.length < 6}
+              >
+                {resetPasswordSaving ? "Guardando..." : "Guardar nueva clave"}
+              </Button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

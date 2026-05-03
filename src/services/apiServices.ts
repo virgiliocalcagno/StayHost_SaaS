@@ -42,7 +42,18 @@ export async function getTeam(): Promise<RawTeamMember[]> {
     const res = await fetch("/api/team-members", { credentials: "same-origin" });
     if (!res.ok) return [];
     const data = await res.json();
-    return ((data.members ?? []) as any[]).map((m: any) => ({
+    type ApiMember = {
+      id: string;
+      name: string;
+      role: string;
+      avatar?: string | null;
+      tasksToday?: number;
+      tasksCompleted?: number;
+      phone?: string;
+      available?: boolean;
+      status?: string;
+    };
+    return ((data.members ?? []) as ApiMember[]).map((m) => ({
       id: m.id,
       name: m.name,
       role: m.role,

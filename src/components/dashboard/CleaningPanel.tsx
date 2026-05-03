@@ -1,7 +1,6 @@
-"use client";
+﻿"use client";
 
 import { useState, useMemo, useEffect, useCallback } from "react";
-import { useSearchParams } from "next/navigation";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -27,26 +26,13 @@ import {
   ClipboardList,
   LogOut,
   Users,
-  Sparkles,
-  Camera,
-  Archive,
-  Eye,
-  Box,
-  Check,
   X,
-  ArrowLeft,
-  Tv,
-  Wind,
-  Refrigerator,
-  PackageCheck,
-  Upload,
   Image as ImageIcon,
   Bot,
   Wrench,
   Zap,
   Bed,
   Layers,
-  FileText,
 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -60,10 +46,9 @@ import {
 import { cn } from "@/lib/utils";
 import { logoutAndRedirect } from "@/lib/auth/logout";
 import { getTeam, getProperties, type RawTeamMember } from "@/services/apiServices";
+import { useTableSync } from "@/lib/realtime/useTableSync";
 
 // Nuevos componentes universales de Staff
-import { StaffWizard } from "@/components/staff-ui/StaffWizard";
-import { StaffTaskDetail } from "@/components/staff-ui/StaffTaskDetail";
 import { CleaningTaskDetailModal } from "@/components/dashboard/CleaningTaskDetailModal";
 import { getEffectiveStatus, deriveCorrectStatus } from "@/lib/cleaning/status";
 import type { MaintenanceTicket } from "@/types/maintenance";
@@ -158,6 +143,17 @@ export default function CleaningPanel() {
     return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
   });
   const [tasks, setTasks] = useState<CleaningTask[]>([]);
+  const [tenantId, setTenantId] = useState<string | null>(null);
+
+  // Tenant ID para suscribir Realtime. Lo levantamos de /api/me al montar.
+  useEffect(() => {
+    fetch("/api/me", { cache: "no-store" })
+      .then(r => r.ok ? r.json() : null)
+      .then((me: { tenantId: string | null } | null) => {
+        if (me?.tenantId) setTenantId(me.tenantId);
+      })
+      .catch(() => {});
+  }, []);
 
   const loadTasks = () => {
     // Tenant is resolved server-side from the session cookie.
@@ -205,6 +201,16 @@ export default function CleaningPanel() {
   };
 
   useEffect(() => { loadTasks(); }, []);
+
+  // ─── Realtime: re-fetch tasks cuando staff cambia algo desde /staff ────
+  // Cuando una limpiadora acepta/rechaza/inicia/completa una tarea, el
+  // owner panel se refresca solo (~100ms) sin necesidad de F5.
+  useTableSync({
+    table: "cleaning_tasks",
+    filter: tenantId ? `tenant_id=eq.${tenantId}` : undefined,
+    enabled: !!tenantId,
+    onChange: () => loadTasks(),
+  });
 
   // Incidencias activas: tickets de mantenimiento abiertos asociados a
   // propiedades del tenant. La sidebar del modulo los muestra como signal
@@ -282,34 +288,13 @@ export default function CleaningPanel() {
     isVacant: false,
   });
 
-  // Experience State
-  const [viewMode, setViewMode] = useState<"admin" | "staff">("admin");
-  const [staffAppScreen, setStaffAppScreen] = useState<"home" | "task">("home");
-  const [activeTaskId, setActiveTaskId] = useState<string | null>(null);
-  const [staffTimeFilter, setStaffTimeFilter] = useState<"today" | "tomorrow" | "week">("today");
-  const [wizardStep, setWizardStep] = useState<number>(1);
-  const [tempPhotos, setTempPhotos] = useState<{ category: string; url: string }[]>([]);
-  const [rejectMode, setRejectMode] = useState(false);
-  const [rejectReason, setRejectReason] = useState("");
-  
-  const searchParams = useSearchParams();
-
-  // URL Auto-navigation for Staff
-  useEffect(() => {
-    const viewParam = searchParams.get("view");
-    const taskParam = searchParams.get("task");
-    
-    if (viewParam === "staff") {
-      setViewMode("staff");
-      if (taskParam) {
-        setActiveTaskId(taskParam);
-        setStaffAppScreen("task");
-        setWizardStep(1); 
-      } else {
-        setStaffAppScreen("home");
-      }
-    }
-  }, [searchParams]);
+  // Estado del panel admin. El simulador "Simular App Staff" se eliminó
+  // 2026-05-01: la app real /staff/page.tsx ya cubre ese flujo con login
+  // propio, y mantener dos shells paralelos generaba bugs por divergencia
+  // (mock data viejo de "Laura Sánchez", links del WhatsApp apuntando al
+  // simulador en vez de al app real, etc).
+  // /dashboard?view=staff queda redirigido a /staff via middleware para
+  // no romper WhatsApps viejos en celulares.
 
   // Sync team & properties via apiServices. SIEMPRE seteamos lo que
   // devuelve la API, incluso array vacio (sin esto un tenant sin staff
@@ -794,9 +779,14 @@ export default function CleaningPanel() {
     setActiveMonth(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`);
   };
 
-  const handleSendMessage = (phone: string, property: string, taskId: string) => {
-    const link = `${window.location.origin}/dashboard?view=staff&task=${taskId}`;
-    const msg = encodeURIComponent(`Hola, tienes una limpieza en ${property}. ✨\nAccede aquí para ver detalles y reportar: ${link}`);
+  const handleSendMessage = (phone: string, property: string, taskId: string, memberName?: string) => {
+    // ANTES iba a /dashboard?view=staff&task=... — eso entra al simulador
+    // del owner (que aún tiene placeholder "Laura Sánchez" hardcoded del
+    // mock viejo). Ahora va a /staff que es la app móvil real con login
+    // por email/teléfono.
+    const link = `${window.location.origin}/staff?task=${taskId}`;
+    const greeting = memberName ? `Hola ${memberName}, ` : "Hola, ";
+    const msg = encodeURIComponent(`${greeting}tienes una limpieza en ${property}. ✨\nAccede aquí para ver detalles y reportar: ${link}`);
     window.open(`https://wa.me/${phone}?text=${msg}`, '_blank', 'noopener,noreferrer');
   };
 
@@ -880,85 +870,10 @@ export default function CleaningPanel() {
     }).catch(() => {});
   };
 
-  const currentActiveTask = tasks.find(t => t.id === activeTaskId);
-  const currentProperty = currentActiveTask ? properties.find(p => p.id === currentActiveTask.propertyId) : null;
-  const activeCriteria = currentProperty?.evidenceCriteria && currentProperty.evidenceCriteria.length > 0 
-    ? currentProperty.evidenceCriteria 
-    : ["Cocina", "Habitación", "Baño"];
-
-  // ─── Staff Wizard Logic ───────────────────────────────────────────────────
-  
-  const handleNextStep = () => setWizardStep(prev => prev + 1);
-  const handlePrevStep = () => setWizardStep(prev => prev - 1);
-
-  const toggleChecklistItem = (taskId: string, itemId: string) => {
-    setTasks(prev => {
-      const next = prev.map(t => {
-        if (t.id !== taskId) return t;
-        return { ...t, checklistItems: t.checklistItems?.map(i => i.id === itemId ? { ...i, done: !i.done } : i) };
-      });
-      const updated = next.find(t => t.id === taskId);
-      if (updated) patchTask(taskId, { checklistItems: updated.checklistItems });
-      return next;
-    });
-  };
-
-  const handleUploadPhoto = (category: string) => {
-    // Simulación de carga y compresión
-    const mockUrl = `https://images.unsplash.com/photo-1584622650111-993a426fbf0a?w=400&h=400&fit=crop&q=60`;
-    setTempPhotos(prev => {
-      const existing = prev.filter(p => p.category !== category);
-      return [...existing, { category, url: mockUrl }];
-    });
-  };
-
-  const handleSubmitTask = () => {
-    if (!activeTaskId) return;
-    setTasks(prev => prev.map(t =>
-      t.id === activeTaskId ? { ...t, status: "completed", isWaitingValidation: true, closurePhotos: tempPhotos } : t
-    ));
-    patchTask(activeTaskId, { status: "completed", isWaitingValidation: true, closurePhotos: tempPhotos });
-    syncTaskAccess(activeTaskId);
-    setViewMode("admin");
-    setActiveTaskId(null);
-    setWizardStep(1);
-    setTempPhotos([]);
-  };
-
-  const handleAcceptTask = (taskId: string) => {
-    setTasks(prev => prev.map(t =>
-      t.id === taskId ? { ...t, acceptanceStatus: "accepted", status: "accepted" } : t
-    ));
-    patchTask(taskId, { status: "accepted" });
-  };
-
-  const handleDeclineTask = (taskId: string, reason?: string) => {
-    const task = tasks.find(t => t.id === taskId);
-    if (!task) return;
-
-    const newDeclinedIds = [...(task.declinedByIds || []), ...(task.assigneeId ? [task.assigneeId] : [])];
-    const nextAssignee = autoAssignFromProperty(task.propertyId, newDeclinedIds);
-
-    setTasks(prev => prev.map(t => {
-      if (t.id !== taskId) return t;
-      if (nextAssignee) {
-        patchTask(taskId, { status: "assigned", assigneeId: nextAssignee.id, assigneeName: nextAssignee.name, assigneeAvatar: nextAssignee.avatar, declinedByIds: newDeclinedIds, rejectionReason: reason ?? null });
-        return { ...t, declinedByIds: newDeclinedIds, rejectionReason: reason || t.rejectionReason, assigneeId: nextAssignee.id, assigneeName: nextAssignee.name, assigneeAvatar: nextAssignee.avatar, acceptanceStatus: "pending", status: "assigned" };
-      }
-      patchTask(taskId, { status: "rejected", declinedByIds: newDeclinedIds, rejectionReason: reason ?? null });
-      return { ...t, declinedByIds: newDeclinedIds, rejectionReason: reason || t.rejectionReason, acceptanceStatus: "declined", status: "rejected" };
-    }));
-  };
-
-  const handleStartCleaning = (taskId: string) => {
-    const now = new Date().toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' });
-    setTasks(prev => prev.map(t =>
-      t.id === taskId ? { ...t, status: "in_progress", startTime: now } : t
-    ));
-    patchTask(taskId, { status: "in_progress", startTime: now });
-    syncTaskAccess(taskId);
-    setWizardStep(1);
-  };
+  // Los handlers del wizard de limpieza (accept/decline/start/submit, upload
+  // de fotos, toggle de checklist) vivían acá para alimentar el simulador
+  // "Simular App Staff". El simulador se eliminó 2026-05-01 — esos handlers
+  // ahora son responsabilidad de la app real /staff/page.tsx.
 
   const handleValidateTask = (taskId: string) => {
     setTasks(prev => prev.map(t =>
@@ -1073,189 +988,6 @@ export default function CleaningPanel() {
     patchTask(taskId, { priority: "critical" });
   };
 
-  // ─── Staff Views Renderers ───────────────────────────────────────────────
-
-  const renderStaffHome = () => {
-    // Filter logic for staff
-    const myTasks = tasks.filter(t => t.assigneeId === "1"); // Hardcoded Laura for demo
-    
-    const staffSummary = {
-      urgent: myTasks.filter(t => t.dueDate === getDateStr(0) && parseInt(t.dueTime.split(":")[0]) < 6).length,
-      pending: myTasks.filter(t => t.acceptanceStatus === "pending").length,
-      today: myTasks.filter(t => t.dueDate === getDateStr(0)).length,
-      week: myTasks.length
-    };
-
-    const filteredTasksByTime = myTasks.filter(t => {
-      if (staffTimeFilter === "today") return t.dueDate === getDateStr(0);
-      if (staffTimeFilter === "tomorrow") return t.dueDate === getDateStr(1);
-      return true; // Week view
-    }).sort((a, b) => {
-      // Sort by urgency primarily, then time
-      const aInfo = getPriorityInfo(a);
-      const bInfo = getPriorityInfo(b);
-      if (aInfo.isUrgent && !bInfo.isUrgent) return -1;
-      if (!aInfo.isUrgent && bInfo.isUrgent) return 1;
-      return a.dueTime.localeCompare(b.dueTime);
-    });
-
-    return (
-      <div className="min-h-screen bg-[#F8F9FC] pb-24">
-        {/* Cabecera Operativa */}
-        <div className="bg-white px-6 pt-12 pb-6 shadow-sm sticky top-0 z-20">
-          <div className="flex justify-between items-start mb-6">
-            <div className="flex items-center gap-3">
-              <Avatar className="h-12 w-12 border-2 border-primary/10">
-                <AvatarImage src={team.find(m => m.id === "1")?.avatar} />
-                <AvatarFallback>LS</AvatarFallback>
-              </Avatar>
-              <div>
-                <h2 className="text-xl font-black text-slate-800">Laura Sánchez</h2>
-                <p className="text-xs font-bold text-slate-400">Personal de Limpieza</p>
-              </div>
-            </div>
-            <div className="h-10 w-10 flex items-center justify-center bg-primary/5 rounded-full">
-              <Sparkles className="h-5 w-5 text-primary" />
-            </div>
-          </div>
-
-          {/* Quick Stats Grid */}
-          <div className="grid grid-cols-3 gap-3 mb-6">
-            <div className={cn("p-3 rounded-2xl border text-center transition-all", staffSummary.urgent > 0 ? "bg-rose-50 border-rose-100 ring-1 ring-rose-200" : "bg-slate-50 border-slate-100")}>
-              <p className="text-[9px] font-bold text-slate-400 uppercase tracking-tighter">Urgentes</p>
-              <p className={cn("text-xl font-black", staffSummary.urgent > 0 ? "text-rose-600" : "text-slate-600")}>{staffSummary.urgent}</p>
-            </div>
-            <div className="p-3 bg-slate-50 border border-slate-100 rounded-2xl text-center">
-              <p className="text-[9px] font-bold text-slate-400 uppercase tracking-tighter">Pendientes</p>
-              <p className="text-xl font-black text-slate-600">{staffSummary.pending}</p>
-            </div>
-            <div className="p-3 bg-slate-50 border border-slate-100 rounded-2xl text-center">
-              <p className="text-[9px] font-bold text-slate-400 uppercase tracking-tighter">Total Hoy</p>
-              <p className="text-xl font-black text-slate-600">{staffSummary.today}</p>
-            </div>
-          </div>
-
-          {/* Time Tabs Filter */}
-          <div className="flex bg-slate-100 p-1 rounded-2xl">
-            {(["today", "tomorrow", "week"] as const).map((f) => (
-              <button
-                key={f}
-                onClick={() => setStaffTimeFilter(f)}
-                className={cn(
-                  "flex-1 py-2.5 text-[10px] uppercase tracking-widest font-black rounded-xl transition-all",
-                  staffTimeFilter === f ? "bg-white text-primary shadow-sm" : "text-slate-500 hover:text-slate-700"
-                )}
-              >
-                {f === "today" ? "Hoy" : f === "tomorrow" ? "Mañana" : "Semana"}
-              </button>
-            ))}
-          </div>
-        </div>
-
-        {/* Task List (Compact Mode) */}
-        <div className="px-6 mt-6 space-y-3">
-          {filteredTasksByTime.length > 0 ? (
-            filteredTasksByTime.map(task => {
-              const info = getPriorityInfo(task);
-              const isMaintenance = task.guestName.toLowerCase().includes("mantenimiento") || task.priority === "critical"; // Example logic
-              
-              return (
-                <div 
-                  key={task.id}
-                  onClick={() => {
-                    setActiveTaskId(task.id);
-                    setStaffAppScreen("task");
-                  }}
-                  className={cn(
-                    "relative bg-white rounded-2xl border flex items-stretch overflow-hidden active:scale-[0.98] transition-all cursor-pointer h-20 mb-3",
-                    info.isUrgent ? "border-rose-200 shadow-md shadow-rose-50" : "border-slate-100"
-                  )}
-                >
-                  <div className={cn("w-2", info.color.split(" ")[1])}></div>
-                  <div className="flex-1 px-4 flex items-center justify-between">
-                    <div className="flex items-center gap-3">
-                      <div className="h-12 w-12 rounded-xl overflow-hidden bg-slate-100 relative shadow-inner">
-                        <img src={task.propertyImage} className="h-full w-full object-cover" />
-                        {isMaintenance && (
-                          <div className="absolute inset-0 bg-primary/40 flex items-center justify-center">
-                             <Wrench className="h-5 w-5 text-white" />
-                          </div>
-                        )}
-                      </div>
-                      <div>
-                        <div className="flex items-center gap-1.5">
-                          <h4 className="font-bold text-slate-800 text-sm truncate max-w-[120px]">{task.propertyName}</h4>
-                          {task.status === "in_progress" && <span className="h-2 w-2 rounded-full bg-primary animate-pulse"></span>}
-                        </div>
-                        <div className="flex items-center gap-2 mt-0.5">
-                          <Badge variant="outline" className={cn("text-[9px] h-4 px-1 border-none", info.color)}>
-                            {info.label}
-                          </Badge>
-                          <span className="text-[10px] font-bold text-slate-500">Salida {task.dueTime}</span>
-                        </div>
-                      </div>
-                    </div>
-                    <div className="flex items-center gap-2 pl-2">
-                       <div className={cn("h-10 w-10 rounded-full flex items-center justify-center shadow-sm border", task.status === "completed" ? "bg-emerald-50 border-emerald-100 text-emerald-500" : "bg-white border-slate-100 text-slate-400")}>
-                         {task.status === "completed" ? <CheckCircle2 className="h-5 w-5" /> : <ChevronRight className="h-5 w-5" />}
-                       </div>
-                    </div>
-                  </div>
-                </div>
-              );
-            })
-          ) : (
-            <div className="text-center py-20 bg-white rounded-[2.5rem] border-2 border-dashed border-slate-100">
-              <div className="h-20 w-20 bg-slate-50 rounded-full flex items-center justify-center mx-auto mb-4 border border-slate-100">
-                <Box className="h-10 w-10 text-slate-200" />
-              </div>
-              <p className="text-slate-400 text-sm font-bold">No hay limpiezas programadas</p>
-            </div>
-          )}
-        </div>
-        {/* Floating Logout for Demo */}
-        <Button 
-          variant="outline" 
-          size="sm" 
-          className="fixed bottom-6 right-6 rounded-full shadow-2xl h-12 px-6 border-slate-200 bg-white"
-          onClick={() => { window.location.assign("/salir"); }}
-        >
-          <LogOut className="h-4 w-4 mr-2" /> Salir del Portal
-        </Button>
-      </div>
-    );
-  };
-
-  if (viewMode === "staff") {
-    if (staffAppScreen === "home") return renderStaffHome();
-
-    if (!currentActiveTask) return renderStaffHome();
-
-    // Screen: Task Detail / Start
-    if (["pending", "assigned", "accepted", "issue"].includes(currentActiveTask.status)) {
-       return (
-         <StaffTaskDetail 
-           task={currentActiveTask as any}
-           bedConfiguration={properties.find(p => p.id === currentActiveTask.propertyId)?.bedConfiguration}
-           onClose={() => setStaffAppScreen("home")}
-           onAccept={handleAcceptTask}
-           onDecline={handleDeclineTask}
-           onStartCleaning={handleStartCleaning}
-         />
-       );
-    }
-
-    // Screen: Wizard (Step 1, 2, 3) 
-    return (
-      <StaffWizard
-        task={currentActiveTask as any}
-        activeCriteria={activeCriteria}
-        onClose={() => setStaffAppScreen("home")}
-        onSubmit={(taskId, photos) => handleSubmitTask()}
-        onToggleChecklist={toggleChecklistItem}
-      />
-    );
-  }
 
   return (
     <div className="space-y-6 pb-10">
@@ -1533,19 +1265,6 @@ export default function CleaningPanel() {
               Cronograma de Actividades
             </h3>
             <div className="flex items-center gap-4">
-               {/* View Toggle Trigger (Simulando link de WhatsApp) */}
-               <Button 
-                variant="outline" 
-                size="sm" 
-                className="gap-2 text-[11px] font-bold h-8 border-primary/30 text-primary hover:bg-primary/5"
-                onClick={() => {
-                  setViewMode("staff");
-                  setStaffAppScreen("home");
-                  setActiveTaskId(null);
-                }}
-               >
-                 <ArrowRight className="h-3 w-3" /> Simular App Staff
-               </Button>
                <Select value={selectedStaff} onValueChange={setSelectedStaff}>
                   <SelectTrigger className="w-[180px] h-9 bg-white shadow-sm">
                     <SelectValue placeholder="Filtrar por staff" />
@@ -1747,7 +1466,10 @@ export default function CleaningPanel() {
                                     variant="ghost" 
                                     size="sm" 
                                     className="h-8 w-8 p-0 rounded-full text-emerald-600 hover:bg-emerald-50 transition-colors"
-                                    onClick={() => handleSendMessage(team.find(m => m.id === task.assigneeId)?.phone || "", task.propertyName, task.id)}
+                                    onClick={() => {
+                                      const m = team.find(mm => mm.id === task.assigneeId);
+                                      handleSendMessage(m?.phone || "", task.propertyName, task.id, m?.name);
+                                    }}
                                     title="Contactar por WhatsApp"
                                   >
                                     <MessageSquare className="h-4 w-4" />

@@ -7,10 +7,18 @@
  */
 import { NextRequest, NextResponse } from "next/server";
 import { getAuthenticatedTenant } from "@/lib/supabase/server";
+import { getSupabaseAdmin } from "@/lib/supabase/admin";
+import {
+  buildPseudoEmail,
+  isPseudoEmail,
+  looksLikeEmail,
+  normalizePhone,
+} from "@/lib/auth/identity";
 
 type TeamRow = {
   id: string;
   tenant_id: string;
+  auth_user_id: string | null;
   name: string;
   email: string;
   phone: string | null;
@@ -42,10 +50,17 @@ type TeamRow = {
 
 // Forma que espera el UI (espejo del interface TeamMember en TeamPanel.tsx).
 function rowToDto(row: TeamRow) {
+  // Si el email es uno de nuestros pseudo-emails (`+phone+tenant@stayhost.local`)
+  // no lo exponemos al UI — el owner debe ver solo el teléfono. El campo
+  // `loginIdentifier` da al UI el valor correcto para mostrar al staff
+  // como "username de login" (email real o teléfono normalizado).
+  const emailIsPseudo = isPseudoEmail(row.email);
   return {
     id: row.id,
+    authUserId: row.auth_user_id,
     name: row.name,
-    email: row.email,
+    email: emailIsPseudo ? "" : row.email,
+    loginIdentifier: emailIsPseudo ? (row.phone ?? "") : row.email,
     phone: row.phone ?? "",
     avatar: row.avatar_url ?? undefined,
     role: row.role,
@@ -167,21 +182,107 @@ export async function GET() {
 }
 
 // POST /api/team-members — crear
+//
+// Body extendido (además de los campos del UI):
+//   - password: string (requerido) — clave inicial para Auth
+//   - email?: string (opcional si phone)
+//   - phone?: string (opcional si email)
+//
+// Flujo:
+//   1. Valida que venga email o phone (al menos uno).
+//   2. Si solo phone → genera pseudo-email para satisfacer Supabase Auth.
+//   3. Crea cuenta en auth.users con email_confirm:true (no manda mail).
+//   4. Inserta row en team_members con auth_user_id linkeado.
+//   5. Si paso 4 falla → rollback del paso 3 (deleteUser) para no dejar
+//      huérfanos en Auth.
 export async function POST(req: NextRequest) {
-  const { tenantId, supabase } = await getAuthenticatedTenant();
+  const { tenantId, supabase, user } = await getAuthenticatedTenant();
   if (!tenantId) return NextResponse.json({ error: "No tenant" }, { status: 403 });
 
-  let body: InboundBody;
-  try { body = (await req.json()) as InboundBody; }
+  let body: InboundBody & { password?: string };
+  try { body = (await req.json()) as InboundBody & { password?: string }; }
   catch { return NextResponse.json({ error: "Invalid JSON" }, { status: 400 }); }
 
-  if (!body.name || !body.email) {
-    return NextResponse.json({ error: "name y email son requeridos" }, { status: 400 });
+  if (!body.name) {
+    return NextResponse.json({ error: "name es requerido" }, { status: 400 });
   }
 
-  const row = dtoToRow(body);
+  const hasEmail = body.email && looksLikeEmail(body.email);
+  const phoneNorm = body.phone ? normalizePhone(body.phone) : null;
+  if (!hasEmail && !phoneNorm) {
+    return NextResponse.json(
+      { error: "Se requiere email o teléfono válido" },
+      { status: 400 }
+    );
+  }
+
+  // Caso especial: SELF-SEED. El owner se está agregando a sí mismo al
+  // panel de equipo (auto-seed del Master). Su cuenta auth.users ya existe,
+  // no necesita password. Detectamos por email coincidente con el del
+  // user autenticado.
+  const callerEmail = (user?.email ?? "").trim().toLowerCase();
+  const isSelfSeed =
+    hasEmail &&
+    String(body.email).trim().toLowerCase() === callerEmail &&
+    !!user?.id;
+
+  if (!isSelfSeed && (!body.password || body.password.length < 6)) {
+    return NextResponse.json(
+      { error: "password requerida (mínimo 6 caracteres)" },
+      { status: 400 }
+    );
+  }
+
+  // Email para Supabase Auth: el real si vino, o el pseudo si solo phone.
+  const authEmail = hasEmail
+    ? String(body.email).trim().toLowerCase()
+    : buildPseudoEmail(phoneNorm as string, tenantId);
+
+  let authUserId: string;
+
+  if (isSelfSeed) {
+    // El owner ya tiene cuenta — solo linkeamos.
+    authUserId = user!.id;
+  } else {
+    // 1. Crear cuenta en Supabase Auth.
+    const admin = getSupabaseAdmin();
+    const { data: createdAuth, error: authError } =
+      await admin.auth.admin.createUser({
+        email: authEmail,
+        password: body.password,
+        email_confirm: true, // no manda mail de verificación
+        user_metadata: {
+          tenant_id: tenantId,
+          name: body.name,
+          created_via: "team-members-panel",
+        },
+      });
+
+    if (authError || !createdAuth?.user?.id) {
+      const msg = authError?.message ?? "No se pudo crear la cuenta de acceso";
+      // "already been registered" → 409 con mensaje claro.
+      if (msg.toLowerCase().includes("already")) {
+        return NextResponse.json(
+          { error: hasEmail
+              ? "Ya existe una cuenta con ese email"
+              : "Ya existe una cuenta con ese teléfono" },
+          { status: 409 }
+        );
+      }
+      return NextResponse.json({ error: msg }, { status: 500 });
+    }
+
+    authUserId = createdAuth.user.id;
+  }
+
+  // 2. Insertar row en team_members.
+  const row = dtoToRow({
+    ...body,
+    email: authEmail, // guardamos el mismo email (real o pseudo)
+    phone: phoneNorm ?? body.phone, // normalizado
+  });
   row.tenant_id = tenantId;
-  // Defaults si el cliente no los envía.
+  row.auth_user_id = authUserId;
   if (row.status === undefined) row.status = "pending";
   if (row.available === undefined) row.available = false;
 
@@ -192,15 +293,23 @@ export async function POST(req: NextRequest) {
     .single();
 
   if (error) {
-    // 23505 = duplicado (email+tenant único)
+    // Rollback: borrar el user de Auth si lo creamos recién (no self-seed,
+    // que solo linkea a un user preexistente).
+    if (!isSelfSeed) {
+      await getSupabaseAdmin()
+        .auth.admin.deleteUser(authUserId)
+        .catch(() => {});
+    }
+
     if ((error as { code?: string }).code === "23505") {
       return NextResponse.json(
-        { error: "Ya existe un miembro con ese email" },
+        { error: "Ya existe un miembro con ese email/teléfono en este tenant" },
         { status: 409 }
       );
     }
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
+
   return NextResponse.json({ member: rowToDto(data as TeamRow) });
 }
 
@@ -234,12 +343,25 @@ export async function PATCH(req: NextRequest) {
 }
 
 // DELETE /api/team-members?id=xxx
+//
+// Borra el row de team_members + la cuenta de auth.users vinculada.
+// Si auth_user_id es null (legacy), solo borra el row.
 export async function DELETE(req: NextRequest) {
   const { tenantId, supabase } = await getAuthenticatedTenant();
   if (!tenantId) return NextResponse.json({ error: "No tenant" }, { status: 403 });
 
   const id = req.nextUrl.searchParams.get("id");
   if (!id) return NextResponse.json({ error: "id required" }, { status: 400 });
+
+  // Lookup primero para tomar el auth_user_id antes de borrar.
+  const { data: existing, error: fetchErr } = await supabase
+    .from("team_members")
+    .select("auth_user_id")
+    .eq("id", id)
+    .maybeSingle();
+
+  if (fetchErr) return NextResponse.json({ error: fetchErr.message }, { status: 500 });
+  if (!existing) return NextResponse.json({ error: "Not found" }, { status: 404 });
 
   const { error, count } = await supabase
     .from("team_members")
@@ -248,5 +370,15 @@ export async function DELETE(req: NextRequest) {
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
   if (!count) return NextResponse.json({ error: "Not found" }, { status: 404 });
+
+  // Best-effort: borrar también de auth.users. Si falla, log y seguimos —
+  // el row de team_members ya se borró, no queremos romper el response.
+  if (existing.auth_user_id) {
+    const admin = getSupabaseAdmin();
+    await admin.auth.admin
+      .deleteUser(String(existing.auth_user_id))
+      .catch((e) => console.error("[team-members:delete] auth deleteUser failed", e));
+  }
+
   return NextResponse.json({ ok: true });
 }
