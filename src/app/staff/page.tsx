@@ -5,34 +5,17 @@ import { useRouter } from "next/navigation";
 import { cn } from "@/lib/utils";
 import { logoutAndRedirect } from "@/lib/auth/logout";
 import { Button } from "@/components/ui/button";
-import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
-import { Label } from "@/components/ui/label";
+import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import {
-  ArrowLeft,
-  ArrowRight,
   Sparkles,
-  Clock,
-  AlertTriangle,
-  AlertCircle,
   CheckCircle2,
   ChevronRight,
   Wrench,
-  Camera,
-  ClipboardList,
-  Check,
-  Tv,
-  Archive,
-  Wind,
   Box,
   LogOut,
-  FileText,
-  Bed,
   Eye,
   EyeOff,
-  ImageIcon,
-  X,
 } from "lucide-react";
 interface StaffSession {
   memberId: string;
@@ -44,43 +27,7 @@ interface StaffSession {
 import { StaffWizard } from "@/components/staff-ui/StaffWizard";
 import { StaffTaskDetail } from "@/components/staff-ui/StaffTaskDetail";
 import { useTableSync } from "@/lib/realtime/useTableSync";
-
-// ─── Types ────────────────────────────────────────────────────────────────────
-interface CleaningTask {
-  id: string;
-  propertyId: string;
-  propertyName: string;
-  address: string;
-  propertyImage?: string;
-  assigneeId?: string;
-  assigneeName?: string;
-  dueDate: string;
-  dueTime: string;
-  status:
-    | "pending"
-    | "in_progress"
-    | "completed"
-    | "issue"
-    | "unassigned"
-    | "assigned"
-    | "accepted"
-    | "rejected";
-  priority: "low" | "medium" | "high" | "critical";
-  isBackToBack: boolean;
-  isVacant?: boolean;
-  guestName: string;
-  guestCount?: number;
-  stayDuration?: number;
-  acceptanceStatus?: "pending" | "accepted" | "declined";
-  declinedByIds?: string[];
-  rejectionReason?: string;
-  standardInstructions?: string;
-  incidentReport?: string;
-  checklistItems?: { id: string; label: string; done: boolean; type: "general" | "appliance" }[];
-  closurePhotos?: { category: string; url: string }[];
-  isWaitingValidation?: boolean;
-  startTime?: string;
-}
+import { CleaningTask, getPriorityInfo } from "@/types/staff";
 
 interface Property {
   id: string;
@@ -102,71 +49,62 @@ const getDateStr = (offsetDays: number) => {
   return `${yyyy}-${mm}-${dd}`;
 };
 
-// Mapper de fila API → DTO de UI. Standalone para que la función de
-// refetch (que dispara realtime) no duplique la lógica.
+// Mapper de fila API → DTO de UI. La API devuelve todo en camelCase (ver
+// /api/cleaning-tasks GET). Mantenemos los fallbacks snake_case por si en
+// algún momento el contrato cambia.
+const pickStr = (...vals: unknown[]) => {
+  for (const v of vals) {
+    if (typeof v === "string" && v) return v;
+  }
+  return undefined;
+};
 const mapApiTask = (t: Record<string, unknown>): CleaningTask => ({
   id: t.id as string,
-  propertyId: (t.property_id ?? t.propertyId ?? "") as string,
-  propertyName: (t.property_name ?? t.propertyName ?? "Propiedad") as string,
+  propertyId: (t.propertyId ?? t.property_id ?? "") as string,
+  propertyName: (t.propertyName ?? t.property_name ?? "Propiedad") as string,
   address: (t.address ?? "") as string,
-  propertyImage: (t.property_image ?? t.propertyImage) as string | undefined,
-  assigneeId: (t.assignee_id ?? t.assigneeId) as string | undefined,
-  assigneeName: (t.assignee_name ?? t.assigneeName) as string | undefined,
-  dueDate: (t.due_date ?? t.dueDate ?? "") as string,
-  dueTime: (t.due_time ?? t.dueTime ?? "12:00") as string,
+  propertyImage: pickStr(t.propertyImage, t.property_image, t.cover_image),
+  assigneeId: pickStr(t.assigneeId, t.assignee_id),
+  assigneeName: pickStr(t.assigneeName, t.assignee_name),
+  dueDate: (t.dueDate ?? t.due_date ?? "") as string,
+  dueTime: (t.dueTime ?? t.due_time ?? "12:00") as string,
   status: (t.status ?? "pending") as CleaningTask["status"],
   priority: (t.priority ?? "medium") as CleaningTask["priority"],
-  isBackToBack: (t.is_back_to_back ?? t.isBackToBack ?? false) as boolean,
-  isVacant: (t.is_vacant ?? t.isVacant) as boolean | undefined,
-  guestName: (t.guest_name ?? t.guestName ?? "") as string,
-  guestCount: (t.guest_count ?? t.guestCount) as number | undefined,
-  stayDuration: (t.stay_duration ?? t.stayDuration) as number | undefined,
-  checklistItems: (t.checklist_items ?? t.checklistItems ?? []) as CleaningTask["checklistItems"],
-  closurePhotos: (t.closure_photos ?? t.closurePhotos ?? []) as CleaningTask["closurePhotos"],
-  isWaitingValidation: (t.is_waiting_validation ?? t.isWaitingValidation ?? false) as boolean,
-  startTime: (t.start_time ?? t.startTime) as string | undefined,
-  declinedByIds: (t.declined_by_ids ?? t.declinedByIds ?? []) as string[],
-  rejectionReason: (t.rejection_reason ?? t.rejectionReason) as string | undefined,
-  acceptanceStatus: (t.acceptance_status ?? t.acceptanceStatus ?? "pending") as CleaningTask["acceptanceStatus"],
+  isBackToBack: (t.isBackToBack ?? t.is_back_to_back ?? false) as boolean,
+  isVacant: (t.isVacant ?? t.is_vacant) as boolean | undefined,
+  guestName: (t.guestName ?? t.guest_name ?? "") as string,
+  guestCount: (t.guestCount ?? t.guest_count) as number | undefined,
+  guestPhone: pickStr(t.guestPhone, t.guest_phone),
+  stayDuration: (t.stayDuration ?? t.stay_duration) as number | undefined,
+  checklist: [],
+  checklistItems: (t.checklistItems ?? t.checklist_items ?? []) as CleaningTask["checklistItems"],
+  closurePhotos: (t.closurePhotos ?? t.closure_photos ?? []) as CleaningTask["closurePhotos"],
+  reportedIssues: (t.reportedIssues ?? t.reported_issues ?? []) as string[],
+  isWaitingValidation: (t.isWaitingValidation ?? t.is_waiting_validation ?? false) as boolean,
+  startTime: pickStr(t.startTime, t.start_time),
+  declinedByIds: (t.declinedByIds ?? t.declined_by_ids ?? []) as string[],
+  rejectionReason: pickStr(t.rejectionReason, t.rejection_reason),
+  acceptanceStatus: (t.acceptanceStatus ?? t.acceptance_status ?? "pending") as CleaningTask["acceptanceStatus"],
+  standardInstructions: pickStr(t.standardInstructions, t.standard_instructions),
+  // Campos extendidos — el API ya los devuelve, antes el mapper los tiraba.
+  arrivingGuestName: pickStr(t.arrivingGuestName, t.arriving_guest_name),
+  arrivingGuestCount: (t.arrivingGuestCount ?? t.arriving_guest_count) as number | undefined,
+  arrivingCheckInTime: (t.arrivingCheckInTime ?? null) as string | null,
+  bookingId: pickStr(t.bookingId, t.booking_id),
+  bookingChannel: pickStr(t.bookingChannel),
+  bookingChannelCode: pickStr(t.bookingChannelCode),
+  bookingCheckIn: pickStr(t.bookingCheckIn),
+  bookingCheckOut: pickStr(t.bookingCheckOut),
+  // Acceso
+  accessMethod: (t.accessMethod ?? null) as CleaningTask["accessMethod"],
+  accessPin: (t.accessPin ?? null) as string | null,
+  keyboxCode: (t.keyboxCode ?? null) as string | null,
+  keyboxLocation: (t.keyboxLocation ?? null) as string | null,
+  wifiName: (t.wifiName ?? null) as string | null,
+  wifiPassword: (t.wifiPassword ?? null) as string | null,
+  checkInTime: (t.checkInTime ?? null) as string | null,
+  checkOutTime: (t.checkOutTime ?? null) as string | null,
 });
-
-const getPriorityInfo = (task: CleaningTask) => {
-  const isToday = task.dueDate === getDateStr(0);
-  const isTomorrow = task.dueDate === getDateStr(1);
-  const [hoursStr] = task.dueTime.split(":");
-  const hours = parseInt(hoursStr);
-
-  if ((isToday && hours < 6) || task.priority === "critical") {
-    return {
-      label: "¡URGENTE!",
-      color: "text-white bg-rose-600 border-none animate-pulse",
-      isUrgent: true,
-      borderColor: "bg-rose-600",
-    };
-  }
-  if (isToday) {
-    return {
-      label: "PRIORIDAD ALTA",
-      color: "text-rose-600 bg-rose-50 border-rose-200",
-      isUrgent: false,
-      borderColor: "bg-rose-400",
-    };
-  }
-  if (isTomorrow) {
-    return {
-      label: "PRIORIDAD MEDIA",
-      color: "text-amber-600 bg-amber-50 border-amber-200",
-      isUrgent: false,
-      borderColor: "bg-amber-400",
-    };
-  }
-  return {
-    label: "BAJA",
-    color: "text-emerald-600 bg-emerald-50 border-emerald-200",
-    isUrgent: false,
-    borderColor: "bg-emerald-400",
-  };
-};
 
 const roleLabels: Record<string, string> = {
   admin: "Administrador",
@@ -188,6 +126,7 @@ export default function StaffPage() {
   const [tenantId, setTenantId] = useState<string | null>(null);
   const [tasks, setTasks] = useState<CleaningTask[]>([]);
   const [properties, setProperties] = useState<Property[]>([]);
+  const [ownerWhatsapp, setOwnerWhatsapp] = useState<string | null>(null);
   const [available, setAvailable] = useState(true);
   const [loading, setLoading] = useState(true);
 
@@ -267,10 +206,15 @@ export default function StaffPage() {
           const realTasks = (tasksData.tasks ?? tasksData ?? []).map(mapApiTask);
           setTasks(realTasks);
           localStorage.setItem("stayhost_tasks", JSON.stringify(realTasks));
+          if (typeof tasksData.ownerWhatsapp === "string") {
+            setOwnerWhatsapp(tasksData.ownerWhatsapp);
+          }
         }
 
-        // 4. Fetch properties
-        const propsRes = await fetch("/api/bookings");
+        // 4. Fetch properties — endpoint correcto es /api/properties (antes
+        // pegaba a /api/bookings, que casualmente devolvía un sub-array
+        // `properties` pero rompería el día que ese contrato cambie).
+        const propsRes = await fetch("/api/properties");
         if (propsRes.ok && !cancelled) {
           const propsData = await propsRes.json();
           const realProps = (propsData.properties ?? []).map((p: Record<string, unknown>) => ({
@@ -487,33 +431,6 @@ export default function StaffPage() {
     patchTask(taskId, { status: "in_progress", startTime: now });
   };
 
-  const handleUploadPhoto = (category: string) => {
-    const mockUrl = `https://images.unsplash.com/photo-1584622650111-993a426fbf0a?w=400&h=400&fit=crop&q=60`;
-    setTempPhotos(prev => [...prev.filter(p => p.category !== category), { category, url: mockUrl }]);
-  };
-
-  const handleSubmitTask = () => {
-    if (!activeTaskId) return;
-    const taskId = activeTaskId;
-    const photos = tempPhotos;
-    setTasks(prev =>
-      prev.map(t =>
-        t.id === taskId
-          ? { ...t, status: "completed", isWaitingValidation: true, closurePhotos: photos }
-          : t
-      )
-    );
-    setScreen("home");
-    setActiveTaskId(null);
-    setWizardStep(1);
-    setTempPhotos([]);
-    patchTask(taskId, {
-      status: "completed",
-      isWaitingValidation: true,
-      closurePhotos: photos,
-    });
-  };
-
   // ─── Loading / guard ───────────────────────────────────────────────────────
   if (loading) {
     return (
@@ -720,8 +637,9 @@ export default function StaffPage() {
   if (["pending", "assigned", "accepted", "issue"].includes(currentActiveTask.status)) {
     return (
       <StaffTaskDetail
-        task={currentActiveTask as any}
+        task={currentActiveTask}
         bedConfiguration={currentProperty?.bedConfiguration}
+        ownerWhatsapp={ownerWhatsapp}
         onClose={() => setScreen("home")}
         onAccept={handleAcceptTask}
         onDecline={(taskId, reason) => {

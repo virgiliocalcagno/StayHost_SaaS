@@ -12,11 +12,19 @@ type Property = {
   id: string;
   name: string | null;
   address: string | null;
+  cover_image: string | null;
   auto_assign_cleaner: boolean | null;
   cleaner_priorities: unknown;
   bed_configuration: unknown;
   standard_instructions: string | null;
   evidence_criteria: unknown;
+  access_method: string | null;
+  keybox_code: string | null;
+  keybox_location: string | null;
+  wifi_name: string | null;
+  wifi_password: string | null;
+  check_in_time: string | null;
+  check_out_time: string | null;
 };
 
 type CleaningTaskRow = {
@@ -42,11 +50,8 @@ type CleaningTaskRow = {
   is_waiting_validation: boolean | null;
   rejection_reason: string | null;
   declined_by_ids: unknown;
-  stay_duration: number | null;
-  arriving_guest_name: string | null;
-  arriving_guest_count: number | null;
+  note: string | null;
   created_at: string | null;
-  updated_at: string | null;
 };
 
 // GET /api/cleaning-tasks
@@ -57,10 +62,14 @@ export async function GET() {
     return NextResponse.json({ error: "No tenant linked to this user" }, { status: 403 });
   }
 
-  // Load properties
+  // Load properties — selecciona también los campos que el panel /staff
+  // necesita para que la limpiadora pueda llegar y entrar (acceso, wifi,
+  // check-in time del próximo huésped en B2B).
   const { data: props } = await supabase
     .from("properties")
-    .select("id, name, address, auto_assign_cleaner, cleaner_priorities, bed_configuration, standard_instructions, evidence_criteria")
+    .select(
+      "id, name, address, cover_image, auto_assign_cleaner, cleaner_priorities, bed_configuration, standard_instructions, evidence_criteria, access_method, keybox_code, keybox_location, wifi_name, wifi_password, check_in_time, check_out_time"
+    )
     .eq("tenant_id", tenantId);
 
   const propList = (props ?? []) as Property[];
@@ -90,6 +99,75 @@ export async function GET() {
     .order("due_date", { ascending: true });
 
   const taskRows = (allTasks ?? []) as CleaningTaskRow[];
+
+  // ── Owner WhatsApp del tenant — el staff lo necesita visible en cada
+  // tarjeta para poder llamar/escribir si algo se rompe en la propiedad.
+  let ownerWhatsapp: string | null = null;
+  {
+    const { data: tenantRow } = await supabase
+      .from("tenants")
+      .select("owner_whatsapp")
+      .eq("id", tenantId)
+      .maybeSingle<{ owner_whatsapp: string | null }>();
+    ownerWhatsapp = tenantRow?.owner_whatsapp ?? null;
+  }
+
+  // ── PINs de acceso por (assignee, property). Una query batch — evita
+  // N+1. Se mapea por la clave compuesta `memberId|propertyId`.
+  const assigneeIds = Array.from(
+    new Set(taskRows.map((t) => t.assignee_id).filter((v): v is string => !!v)),
+  );
+  const accessPinMap = new Map<string, string>();
+  if (assigneeIds.length) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const { data: spaRows } = await (supabase.from("staff_property_access") as any)
+      .select("team_member_id, property_id, pin_code")
+      .eq("tenant_id", tenantId)
+      .eq("is_active", true)
+      .in("team_member_id", assigneeIds);
+    for (const r of (spaRows ?? []) as Array<{
+      team_member_id: string;
+      property_id: string;
+      pin_code: string | null;
+    }>) {
+      if (r.pin_code) {
+        accessPinMap.set(`${r.team_member_id}|${r.property_id}`, r.pin_code);
+      }
+    }
+  }
+
+  // ── Información del huésped que llega (back-to-back). Para cada tarea
+  // B2B, buscamos la reserva cuya check_in cae el día de la limpieza en
+  // la misma propiedad. Una sola query por (property_id, due_date) que
+  // tocan tareas B2B.
+  const arrivingMap = new Map<
+    string,
+    { guest_name: string | null; num_guests: number | null }
+  >();
+  const b2bPropIds = Array.from(
+    new Set(taskRows.filter((t) => t.is_back_to_back).map((t) => t.property_id)),
+  );
+  const b2bDates = Array.from(
+    new Set(taskRows.filter((t) => t.is_back_to_back).map((t) => t.due_date)),
+  );
+  if (b2bPropIds.length && b2bDates.length) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const { data: arrRows } = await (supabase.from("bookings") as any)
+      .select("property_id, check_in, guest_name, num_guests")
+      .in("property_id", b2bPropIds)
+      .in("check_in", b2bDates);
+    for (const r of (arrRows ?? []) as Array<{
+      property_id: string;
+      check_in: string;
+      guest_name: string | null;
+      num_guests: number | null;
+    }>) {
+      arrivingMap.set(`${r.property_id}|${r.check_in}`, {
+        guest_name: r.guest_name,
+        num_guests: r.num_guests,
+      });
+    }
+  }
 
   // Enriquecer con datos de la reserva (channel_code, source, check_in)
   // para que la tarjeta del cronograma muestre el numero de reserva y la
@@ -142,11 +220,27 @@ export async function GET() {
   const result = taskRows.map((t) => {
     const prop = propMap[t.property_id] ?? ({} as Partial<Property>);
     const booking = t.booking_id ? bookingMap[t.booking_id] : null;
+    const arriving = t.is_back_to_back
+      ? arrivingMap.get(`${t.property_id}|${t.due_date}`) ?? null
+      : null;
+    // Stay duration: noches entre check_in y check_out de la reserva del
+    // huésped que sale. Default 2 si la reserva no está disponible.
+    let stayDuration = 2;
+    if (booking?.check_in && booking?.check_out) {
+      const ci = new Date(booking.check_in).getTime();
+      const co = new Date(booking.check_out).getTime();
+      const nights = Math.round((co - ci) / 86_400_000);
+      if (nights > 0) stayDuration = nights;
+    }
+    const accessPin = t.assignee_id
+      ? accessPinMap.get(`${t.assignee_id}|${t.property_id}`) ?? null
+      : null;
     return {
       id: t.id,
       propertyId: t.property_id,
       propertyName: prop.name ?? "Propiedad",
       address: prop.address ?? "",
+      propertyImage: prop.cover_image ?? undefined,
       assigneeId: t.assignee_id ?? undefined,
       assigneeName: t.assignee_name ?? undefined,
       assigneeAvatar: t.assignee_avatar ?? undefined,
@@ -169,9 +263,14 @@ export async function GET() {
       acceptanceStatus:
         t.status === "accepted" ? "accepted" : t.status === "rejected" ? "declined" : "pending",
       standardInstructions: prop.standard_instructions ?? undefined,
-      stayDuration: t.stay_duration ?? 2,
-      arrivingGuestName: t.arriving_guest_name ?? undefined,
-      arrivingGuestCount: t.arriving_guest_count ?? undefined,
+      stayDuration,
+      // Próximo huésped (back-to-back): viene de la reserva cuyo check_in
+      // cae justo el día de esta limpieza. No es columna persistida.
+      arrivingGuestName: arriving?.guest_name ?? undefined,
+      arrivingGuestCount: arriving?.num_guests ?? undefined,
+      // Hora de check-in del próximo huésped — heredada de la propiedad
+      // (hoy no la guardamos por reserva, viene del default de la prop).
+      arrivingCheckInTime: arriving ? prop.check_in_time ?? null : null,
       // Datos de la reserva asociada — alimentan el header de la tarjeta.
       bookingId: t.booking_id ?? undefined,
       bookingChannel: booking?.source ?? undefined,
@@ -179,13 +278,23 @@ export async function GET() {
       bookingCheckIn: booking?.check_in ?? undefined,
       bookingCheckOut: booking?.check_out ?? undefined,
       guestPhone: booking?.guest_phone ?? undefined,
-      // Timestamps para el audit log del modal de detalle
+      // ── Acceso a la propiedad — info crítica para que la limpiadora
+      // sepa cómo entrar. Si access_method='ttlock', accessPin es el PIN
+      // del staff_property_access (válido 8am-6pm el día de la tarea).
+      accessMethod: prop.access_method ?? null,
+      accessPin: accessPin,
+      keyboxCode: prop.keybox_code ?? null,
+      keyboxLocation: prop.keybox_location ?? null,
+      wifiName: prop.wifi_name ?? null,
+      wifiPassword: prop.wifi_password ?? null,
+      checkInTime: prop.check_in_time ?? null,
+      checkOutTime: prop.check_out_time ?? null,
+      // Timestamp para el audit log del modal de detalle
       createdAt: t.created_at ?? undefined,
-      updatedAt: t.updated_at ?? undefined,
     };
   });
 
-  return NextResponse.json({ tasks: result });
+  return NextResponse.json({ tasks: result, ownerWhatsapp });
 }
 
 // POST /api/cleaning-tasks — create manual task

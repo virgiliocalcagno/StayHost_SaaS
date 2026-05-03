@@ -15,6 +15,7 @@ export interface CleaningTask {
   isVacant?: boolean;
   guestCount?: number;
   guestName: string;
+  guestPhone?: string;
   checklist: { id: number; task: string; done: boolean }[];
   incidentReport?: string;
   rejectionReason?: string;
@@ -26,11 +27,27 @@ export interface CleaningTask {
   startTime?: string;
   arrivingGuestName?: string;
   arrivingGuestCount?: number;
+  arrivingCheckInTime?: string | null;
   isWaitingValidation?: boolean;
   closurePhotos?: { category: string; url: string }[];
   reportedIssues?: string[];
   suppliesReport?: { item: string; needed: number; status: "ok" | "missing" | "replenished" }[];
   checklistItems?: { id: string; label: string; done: boolean; type: "general" | "appliance" }[];
+  // Acceso a la propiedad — el staff lo necesita para entrar.
+  accessMethod?: "ttlock" | "keybox" | "in_person" | "doorman" | string | null;
+  accessPin?: string | null;
+  keyboxCode?: string | null;
+  keyboxLocation?: string | null;
+  wifiName?: string | null;
+  wifiPassword?: string | null;
+  checkInTime?: string | null;
+  checkOutTime?: string | null;
+  // Datos de la reserva asociada
+  bookingId?: string;
+  bookingChannel?: string;
+  bookingChannelCode?: string;
+  bookingCheckIn?: string;
+  bookingCheckOut?: string;
 }
 
 // Local date YYYY-MM-DD, NOT UTC — otherwise "today" rolls forward after 8pm
@@ -42,7 +59,14 @@ const toLocalDateStr = (d: Date) => {
   return `${yyyy}-${mm}-${dd}`;
 };
 
-export const getPriorityInfo = (task: CleaningTask) => {
+export interface PriorityInfo {
+  label: string;
+  color: string;
+  borderColor: string;
+  isUrgent: boolean;
+}
+
+export const getPriorityInfo = (task: CleaningTask): PriorityInfo => {
   const d = new Date();
   const todayStr = toLocalDateStr(d);
   d.setDate(d.getDate() + 1);
@@ -57,26 +81,30 @@ export const getPriorityInfo = (task: CleaningTask) => {
     return {
       label: "¡URGENTE!",
       color: "text-white bg-rose-600 border-none animate-pulse",
+      borderColor: "bg-rose-600",
       isUrgent: true,
     };
   }
   if (isToday) {
     return {
-      label: "HOY",
-      color: "text-emerald-700 bg-emerald-100/50 border-emerald-200",
+      label: "PRIORIDAD ALTA",
+      color: "text-rose-600 bg-rose-50 border-rose-200",
+      borderColor: "bg-rose-400",
       isUrgent: false,
     };
   }
   if (isTomorrow) {
     return {
-      label: "MAÑANA",
-      color: "text-amber-700 bg-amber-100/50 border-amber-200",
+      label: "PRIORIDAD MEDIA",
+      color: "text-amber-600 bg-amber-50 border-amber-200",
+      borderColor: "bg-amber-400",
       isUrgent: false,
     };
   }
   return {
-    label: "PROGRAMADA",
-    color: "text-slate-600 bg-slate-100 border-slate-200",
+    label: "BAJA",
+    color: "text-emerald-600 bg-emerald-50 border-emerald-200",
+    borderColor: "bg-emerald-400",
     isUrgent: false,
   };
 };

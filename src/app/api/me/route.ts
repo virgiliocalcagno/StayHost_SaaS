@@ -97,7 +97,7 @@ export async function GET() {
     }
   }
 
-  return NextResponse.json({
+  const res = NextResponse.json({
     email: email || null,
     tenantId: tenantId ?? null,
     isMaster: email === MASTER_EMAIL,
@@ -110,4 +110,34 @@ export async function GET() {
     trialExpired,
     moduleOverrides,
   });
+
+  // Cookie httpOnly con el rol del usuario actual. La consume el middleware
+  // para bloquear que cleaner/maintenance entre a /dashboard sin tener que
+  // pegarle a la BD en cada request. No es seguridad — la auth real vive en
+  // RLS y getUser() — es UX/separación de superficies. Si el cookie se
+  // manipula a "owner", el limpiador igual no ve datos del owner porque las
+  // /api/* van por sesión Supabase.
+  if (role) {
+    res.cookies.set({
+      name: "sh_role",
+      value: role,
+      path: "/",
+      httpOnly: true,
+      sameSite: "lax",
+      secure: process.env.NODE_ENV === "production",
+      maxAge: 60 * 60 * 24 * 7, // 7 días
+    });
+  } else {
+    // Owner directo (sin team_member) o no tenant — borramos cookie por si
+    // quedó de un login previo de otro user en el mismo browser.
+    res.cookies.set({
+      name: "sh_role",
+      value: "",
+      path: "/",
+      maxAge: 0,
+      expires: new Date(0),
+    });
+  }
+
+  return res;
 }
