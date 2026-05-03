@@ -19,6 +19,9 @@ export interface CleaningTask {
   checklist: { id: number; task: string; done: boolean }[];
   incidentReport?: string;
   rejectionReason?: string;
+  rejectionNote?: string | null;
+  validatedAt?: string | null;
+  validatedBy?: string | null;
   declinedByIds?: string[];
   standardInstructions?: string;
   arrivalDate?: string;

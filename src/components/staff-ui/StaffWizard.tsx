@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useState, useRef } from "react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -23,8 +23,13 @@ import {
   Plus,
   Trash2,
   Wrench,
+  Loader2,
+  RotateCw,
+  MessageCircle,
 } from "lucide-react";
 import { CleaningTask, getPriorityInfo } from "@/types/staff";
+import { capturePhoto } from "@/lib/photos/capturePhoto";
+import { buildHelpWhatsappHref } from "@/lib/staff-help/buildHelpMessage";
 import {
   MAINTENANCE_CATEGORY_LABELS,
   MAINTENANCE_SEVERITY_LABELS,
@@ -44,6 +49,8 @@ export interface IssueDraft {
 export interface StaffWizardProps {
   task: CleaningTask;
   activeCriteria: string[];
+  ownerWhatsapp?: string | null;
+  staffName?: string | null;
   onClose: () => void;
   onSubmit: (
     taskId: string,
@@ -61,9 +68,18 @@ const SEVERITY_COLORS: Record<MaintenanceSeverity, string> = {
   critical: "bg-rose-100 text-rose-800 border-rose-200",
 };
 
-export function StaffWizard({ task, activeCriteria, onClose, onSubmit, onToggleChecklist }: StaffWizardProps) {
+export function StaffWizard({ task, activeCriteria, ownerWhatsapp, staffName, onClose, onSubmit, onToggleChecklist }: StaffWizardProps) {
+  const helpHref = buildHelpWhatsappHref(ownerWhatsapp, {
+    staffName,
+    propertyName: task.propertyName,
+    dueTime: task.dueTime,
+  });
   const [wizardStep, setWizardStep] = useState(1);
   const [tempPhotos, setTempPhotos] = useState<{ category: string; url: string }[]>([]);
+  const [uploadStatus, setUploadStatus] = useState<Record<string, "idle" | "uploading" | "done" | "error">>({});
+  const [uploadErrors, setUploadErrors] = useState<Record<string, string>>({});
+  const [activeUploadCategory, setActiveUploadCategory] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [notes, setNotes] = useState("");
   const [issues, setIssues] = useState<IssueDraft[]>([]);
   const [showIssueForm, setShowIssueForm] = useState(false);
@@ -91,13 +107,47 @@ export function StaffWizard({ task, activeCriteria, onClose, onSubmit, onToggleC
   const currentChecklist = onToggleChecklist ? (task.checklistItems || []) : localChecklist;
 
   const handleUploadPhoto = (category: string) => {
-    // Simula subida de foto
-    const mockUrl = "https://images.unsplash.com/photo-1584622650111-993a426fbf0a?w=400&h=300&fit=crop";
-    setTempPhotos(prev => {
-      const exists = prev.find(p => p.category === category);
-      if (exists) return prev;
-      return [...prev, { category, url: mockUrl }];
-    });
+    setActiveUploadCategory(category);
+    setUploadErrors(prev => ({ ...prev, [category]: "" }));
+    fileInputRef.current?.click();
+  };
+
+  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    const cat = activeUploadCategory;
+    if (!file || !cat) return;
+
+    setUploadStatus(prev => ({ ...prev, [cat]: "uploading" }));
+    try {
+      const { blob } = await capturePhoto(file, {
+        watermarkLabel: task.propertyName,
+      });
+      const fd = new FormData();
+      fd.append("file", new File([blob], `${cat}.jpg`, { type: "image/jpeg" }));
+      fd.append("category", cat);
+
+      const res = await fetch(`/api/cleaning-tasks/${task.id}/photos`, {
+        method: "POST",
+        body: fd,
+        credentials: "include",
+      });
+      if (!res.ok) {
+        const msg = (await res.json().catch(() => ({}))).error || `Error ${res.status}`;
+        throw new Error(msg);
+      }
+      const data: { category: string; path: string; url: string | null } = await res.json();
+
+      setTempPhotos(prev => {
+        const filtered = prev.filter(p => p.category !== cat);
+        return [...filtered, { category: cat, url: data.url ?? "" }];
+      });
+      setUploadStatus(prev => ({ ...prev, [cat]: "done" }));
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Error desconocido";
+      setUploadErrors(prev => ({ ...prev, [cat]: message }));
+      setUploadStatus(prev => ({ ...prev, [cat]: "error" }));
+    }
   };
 
   const handleSubmitTask = () => {
@@ -164,9 +214,22 @@ export function StaffWizard({ task, activeCriteria, onClose, onSubmit, onToggleC
           </div>
         </div>
 
-        <div className="h-10 w-10 flex items-center justify-center bg-primary/10 rounded-full">
-          <Sparkles className="h-5 w-5 text-primary" />
-        </div>
+        {helpHref ? (
+          <a
+            href={helpHref}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="h-10 px-3 flex items-center justify-center gap-1.5 bg-emerald-500 hover:bg-emerald-600 text-white rounded-full shadow-md active:scale-95 transition-all"
+            aria-label="Pedir ayuda al supervisor"
+          >
+            <MessageCircle className="h-4 w-4" />
+            <span className="text-xs font-bold">Ayuda</span>
+          </a>
+        ) : (
+          <div className="h-10 w-10 flex items-center justify-center bg-primary/10 rounded-full">
+            <Sparkles className="h-5 w-5 text-primary" />
+          </div>
+        )}
       </div>
 
       <div className="max-w-md mx-auto px-4 pt-6 space-y-6">
@@ -482,13 +545,21 @@ export function StaffWizard({ task, activeCriteria, onClose, onSubmit, onToggleC
                   <div className="space-y-4">
                     {activeCriteria.map((cat) => {
                       const photo = tempPhotos.find(p => p.category === cat);
+                      const status = uploadStatus[cat] ?? "idle";
+                      const error = uploadErrors[cat];
+                      const isUploading = status === "uploading";
+                      const isError = status === "error";
                       return (
                         <div key={cat} className="group relative">
                           <div className={cn(
                             "p-4 rounded-2xl border-2 border-dashed transition-all flex items-center justify-between",
-                            photo ? "bg-emerald-50 border-emerald-500" : "bg-slate-50 border-slate-200 hover:border-primary/50"
+                            isError
+                              ? "bg-rose-50 border-rose-400"
+                              : photo
+                                ? "bg-emerald-50 border-emerald-500"
+                                : "bg-slate-50 border-slate-200 hover:border-primary/50"
                           )}>
-                            <div className="flex items-center gap-3">
+                            <div className="flex items-center gap-3 min-w-0 flex-1">
                                {photo ? (
                                  <img src={photo.url} className="h-12 w-12 rounded-xl object-cover shadow-md border-2 border-white" alt={`Evidencia ${cat}`}/>
                                ) : (
@@ -496,28 +567,60 @@ export function StaffWizard({ task, activeCriteria, onClose, onSubmit, onToggleC
                                     <ImageIcon className="h-5 w-5 text-slate-300" />
                                  </div>
                                )}
-                               <div>
+                               <div className="min-w-0 flex-1">
                                   <p className="font-bold text-slate-700 text-sm">{cat}</p>
-                                  <p className="text-[10px] items-center flex gap-1 text-slate-400 font-bold">
-                                    {photo ? <span className="text-emerald-600 flex items-center gap-1"><Check className="h-2 w-2" /> LISTO</span> : "OBLIGATORIO"}
+                                  <p className="text-xs items-center flex gap-1 font-bold">
+                                    {isUploading ? (
+                                      <span className="text-slate-500 flex items-center gap-1">
+                                        <Loader2 className="h-3 w-3 animate-spin" /> SUBIENDO…
+                                      </span>
+                                    ) : isError ? (
+                                      <span className="text-rose-600 truncate">{error || "ERROR"}</span>
+                                    ) : photo ? (
+                                      <span className="text-emerald-600 flex items-center gap-1">
+                                        <Check className="h-3 w-3" /> LISTO
+                                      </span>
+                                    ) : (
+                                      <span className="text-slate-400">OBLIGATORIO</span>
+                                    )}
                                   </p>
                                </div>
                             </div>
-                            <Button 
+                            <Button
                               size="icon"
+                              disabled={isUploading}
                               onClick={() => handleUploadPhoto(cat)}
                               className={cn(
-                                "h-10 w-10 rounded-full shadow-lg",
-                                photo ? "bg-emerald-500 hover:bg-emerald-600" : "gradient-gold shadow-primary/20"
+                                "h-10 w-10 rounded-full shadow-lg flex-shrink-0",
+                                isError
+                                  ? "bg-rose-500 hover:bg-rose-600"
+                                  : photo
+                                    ? "bg-emerald-500 hover:bg-emerald-600"
+                                    : "gradient-gold shadow-primary/20"
                               )}
                             >
-                              {photo ? <Check className="h-5 w-5 text-white" /> : <Camera className="h-5 w-5 text-primary-foreground" />}
+                              {isUploading ? (
+                                <Loader2 className="h-5 w-5 text-white animate-spin" />
+                              ) : isError ? (
+                                <RotateCw className="h-5 w-5 text-white" />
+                              ) : photo ? (
+                                <Check className="h-5 w-5 text-white" />
+                              ) : (
+                                <Camera className="h-5 w-5 text-primary-foreground" />
+                              )}
                             </Button>
                           </div>
                         </div>
                       );
                     })}
                   </div>
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    accept="image/*"
+                    className="hidden"
+                    onChange={handleFileChange}
+                  />
               </div>
 
               <div className="bg-primary/5 p-4 rounded-2xl text-center border border-primary/10">

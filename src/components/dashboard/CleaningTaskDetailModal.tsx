@@ -118,7 +118,7 @@ export interface CleaningTaskDetailModalProps {
   onClose: () => void;
   onReassign: (taskId: string, memberId: string | null) => void;
   onValidate: (taskId: string) => void;
-  onReopen: (taskId: string) => void;
+  onReopen: (taskId: string, note?: string) => void;
   onMarkUrgent?: (taskId: string) => void;
 }
 
@@ -372,6 +372,37 @@ export function CleaningTaskDetailModal({
     username: string | null;
     who: { kind: "staff" | "guest" | "owner" | "unknown"; name: string };
   };
+  // Fotos firmadas via /api/cleaning-tasks/:id/photos. Refresca cuando se
+  // abre/cambia la tarea: necesitamos signed URLs frescas (TTL 1h) y no
+  // confiar en task.closurePhotos[].url (que podría ser un mock unsplash
+  // legacy o una URL firmada vencida).
+  type SignedPhoto = { category: string; url: string | null; uploaded_at: string | null; legacy: boolean };
+  const [signedPhotos, setSignedPhotos] = useState<SignedPhoto[]>([]);
+  useEffect(() => {
+    if (!task) { setSignedPhotos([]); return; }
+    let cancelled = false;
+    fetch(`/api/cleaning-tasks/${encodeURIComponent(task.id)}/photos`, {
+      credentials: "same-origin",
+    })
+      .then((r) => (r.ok ? r.json() : { photos: [] }))
+      .then((data: { photos?: SignedPhoto[] }) => {
+        if (!cancelled) setSignedPhotos(data.photos ?? []);
+      })
+      .catch(() => { if (!cancelled) setSignedPhotos([]); });
+    return () => { cancelled = true; };
+  }, [task?.id, task?.closurePhotos?.length]);
+
+  // Modo "pedir re-foto" — cuando el supervisor toca Reabrir, abre un campo
+  // de nota opcional que se envía al cleaner como rejection_note. La nota
+  // aparece en /staff cuando la tarea vuelve.
+  const [reopenMode, setReopenMode] = useState(false);
+  const [reopenNote, setReopenNote] = useState("");
+  const REOPEN_PRESETS = [
+    "Falta foto de la cocina",
+    "No se distinguen los detalles",
+    "Falta limpiar mejor el baño",
+  ];
+
   const [openings, setOpenings] = useState<LockOpening[]>([]);
   const [openingsLoading, setOpeningsLoading] = useState(false);
   useEffect(() => {
@@ -652,6 +683,9 @@ export function CleaningTaskDetailModal({
               un checklist visual de cobertura para que el owner sepa
               de un vistazo si el staff fotografio todo lo pedido. */}
           {(() => {
+            // Para el conteo por categoría usamos task.closurePhotos (lo que
+            // está persistido); para mostrar miniaturas usamos signedPhotos
+            // (URLs firmadas frescas vía endpoint).
             const photos = task.closurePhotos ?? [];
             const criteria = property?.evidenceCriteria ?? [];
             const hasCriteria = criteria.length > 0;
@@ -725,19 +759,24 @@ export function CleaningTaskDetailModal({
 
                 {hasPhotos ? (
                   <div className="grid grid-cols-3 gap-2">
-                    {photos.map((photo, idx) => (
+                    {signedPhotos.filter((p) => p.url).map((photo, idx) => (
                       <a
                         key={idx}
-                        href={photo.url}
+                        href={photo.url!}
                         target="_blank"
                         rel="noopener noreferrer"
                         className="aspect-square rounded-lg overflow-hidden bg-slate-100 border border-slate-200 hover:opacity-80 transition-opacity relative group"
                       >
                         <img
-                          src={photo.url}
+                          src={photo.url!}
                           alt={photo.category}
                           className="w-full h-full object-cover"
                         />
+                        {photo.legacy && (
+                          <div className="absolute top-1 right-1 px-1.5 py-0.5 rounded bg-amber-500 text-white text-[8px] font-bold uppercase">
+                            Mock
+                          </div>
+                        )}
                         <div className="absolute inset-x-0 bottom-0 p-1.5 bg-gradient-to-t from-black/80 to-transparent">
                           <p className="text-white text-[9px] font-bold uppercase truncate">
                             {photo.category}
@@ -745,6 +784,11 @@ export function CleaningTaskDetailModal({
                         </div>
                       </a>
                     ))}
+                    {signedPhotos.length === 0 && photos.length > 0 && (
+                      <div className="col-span-3 text-center py-3 bg-slate-50 rounded-lg text-xs text-slate-500">
+                        Cargando vista previa…
+                      </div>
+                    )}
                   </div>
                 ) : (
                   <div className="text-center py-6 bg-slate-50 rounded-xl border border-dashed border-slate-200">
@@ -912,23 +956,69 @@ export function CleaningTaskDetailModal({
           )}
         <div className="flex flex-col sm:flex-row gap-3">
           {task.isWaitingValidation && task.status !== "completed" ? (
-            <>
-              <Button
-                variant="outline"
-                className="flex-1 border-rose-200 text-rose-700 hover:bg-rose-50"
-                onClick={() => onReopen(task.id)}
-              >
-                <X className="h-4 w-4 mr-2" />
-                Reabrir tarea
-              </Button>
-              <Button
-                className="flex-1 bg-emerald-600 hover:bg-emerald-700 text-white font-bold"
-                onClick={() => onValidate(task.id)}
-              >
-                <ClipboardCheck className="h-4 w-4 mr-2" />
-                Validar y cerrar
-              </Button>
-            </>
+            reopenMode ? (
+              <div className="w-full space-y-3">
+                <p className="text-xs font-bold text-slate-500 uppercase tracking-widest">
+                  Motivo (opcional, se le envía al staff)
+                </p>
+                <textarea
+                  value={reopenNote}
+                  onChange={(e) => setReopenNote(e.target.value)}
+                  placeholder="¿Qué falta o se ve mal?"
+                  rows={2}
+                  className="w-full text-sm rounded-lg border border-slate-200 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-rose-200"
+                />
+                <div className="flex flex-wrap gap-1.5">
+                  {REOPEN_PRESETS.map((p) => (
+                    <button
+                      key={p}
+                      type="button"
+                      onClick={() => setReopenNote((prev) => (prev ? `${prev} · ${p}` : p))}
+                      className="text-[11px] px-2 py-1 rounded-full bg-slate-100 hover:bg-slate-200 text-slate-700 font-medium"
+                    >
+                      + {p}
+                    </button>
+                  ))}
+                </div>
+                <div className="flex gap-2">
+                  <Button
+                    variant="outline"
+                    className="flex-1"
+                    onClick={() => { setReopenMode(false); setReopenNote(""); }}
+                  >
+                    Cancelar
+                  </Button>
+                  <Button
+                    className="flex-1 bg-rose-600 hover:bg-rose-700 text-white font-bold"
+                    onClick={() => {
+                      onReopen(task.id, reopenNote.trim() || undefined);
+                      setReopenMode(false);
+                      setReopenNote("");
+                    }}
+                  >
+                    Pedir re-foto
+                  </Button>
+                </div>
+              </div>
+            ) : (
+              <>
+                <Button
+                  variant="outline"
+                  className="flex-1 border-rose-200 text-rose-700 hover:bg-rose-50"
+                  onClick={() => setReopenMode(true)}
+                >
+                  <X className="h-4 w-4 mr-2" />
+                  Pedir re-foto
+                </Button>
+                <Button
+                  className="flex-1 bg-emerald-600 hover:bg-emerald-700 text-white font-bold"
+                  onClick={() => onValidate(task.id)}
+                >
+                  <ClipboardCheck className="h-4 w-4 mr-2" />
+                  Validar y cerrar
+                </Button>
+              </>
+            )
           ) : task.status === "completed" ? (
             <Button
               variant="outline"

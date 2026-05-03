@@ -84,6 +84,9 @@ const mapApiTask = (t: Record<string, unknown>): CleaningTask => ({
   startTime: pickStr(t.startTime, t.start_time),
   declinedByIds: (t.declinedByIds ?? t.declined_by_ids ?? []) as string[],
   rejectionReason: pickStr(t.rejectionReason, t.rejection_reason),
+  rejectionNote: pickStr(t.rejectionNote, t.rejection_note),
+  validatedAt: pickStr(t.validatedAt, t.validated_at),
+  validatedBy: pickStr(t.validatedBy, t.validated_by),
   acceptanceStatus: (t.acceptanceStatus ?? t.acceptance_status ?? "pending") as CleaningTask["acceptanceStatus"],
   standardInstructions: pickStr(t.standardInstructions, t.standard_instructions),
   // Campos extendidos — el API ya los devuelve, antes el mapper los tiraba.
@@ -640,6 +643,7 @@ export default function StaffPage() {
         task={currentActiveTask}
         bedConfiguration={currentProperty?.bedConfiguration}
         ownerWhatsapp={ownerWhatsapp}
+        staffName={session?.name}
         onClose={() => setScreen("home")}
         onAccept={handleAcceptTask}
         onDecline={(taskId, reason) => {
@@ -656,6 +660,8 @@ export default function StaffPage() {
     <StaffWizard
       task={currentActiveTask as any}
       activeCriteria={activeCriteria}
+      ownerWhatsapp={ownerWhatsapp}
+      staffName={session?.name}
       onClose={() => setScreen("home")}
       onToggleChecklist={toggleChecklistItem}
       onSubmit={(taskId, photos, notes, issues) => {

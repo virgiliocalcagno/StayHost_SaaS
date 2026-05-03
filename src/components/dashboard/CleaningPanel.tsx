@@ -876,10 +876,16 @@ export default function CleaningPanel() {
   // ahora son responsabilidad de la app real /staff/page.tsx.
 
   const handleValidateTask = (taskId: string) => {
+    const validatedAt = new Date().toISOString();
     setTasks(prev => prev.map(t =>
       t.id === taskId ? { ...t, isWaitingValidation: false, status: "completed" } : t
     ));
-    patchTask(taskId, { status: "completed", isWaitingValidation: false });
+    patchTask(taskId, {
+      status: "completed",
+      isWaitingValidation: false,
+      validatedAt,
+      rejectionNote: null,
+    });
     syncTaskAccess(taskId);
     const task = tasks.find(t => t.id === taskId);
     if (task?.assigneeId) {
@@ -966,16 +972,23 @@ export default function CleaningPanel() {
     syncTaskAccess(taskId);
   };
 
-  const handleReopenFromDetail = (taskId: string) => {
+  const handleReopenFromDetail = (taskId: string, note?: string) => {
+    const t = tasks.find(x => x.id === taskId);
+    // Si el supervisor pasa una nota → es "pedir re-foto", devolvemos al
+    // cleaner en in_progress con el motivo visible. Sin nota → reapertura
+    // genérica al último estado activo.
+    const nextStatus = note
+      ? (t?.assigneeId ? "in_progress" : "unassigned")
+      : (t?.assigneeId ? "assigned" : "unassigned");
     setTasks(prev => prev.map(t =>
       t.id === taskId
-        ? { ...t, status: t.assigneeId ? "assigned" : "unassigned", isWaitingValidation: false }
+        ? { ...t, status: nextStatus, isWaitingValidation: false }
         : t,
     ));
-    const t = tasks.find(x => x.id === taskId);
     patchTask(taskId, {
-      status: t?.assigneeId ? "assigned" : "unassigned",
+      status: nextStatus,
       isWaitingValidation: false,
+      rejectionNote: note ?? null,
     });
     // Reabierta vuelve a estado activo → reactivar PIN si corresponde.
     syncTaskAccess(taskId);
@@ -1994,7 +2007,7 @@ export default function CleaningPanel() {
         onClose={() => setDetailTaskId(null)}
         onReassign={handleReassignFromDetail}
         onValidate={(taskId) => { handleValidateTask(taskId); setDetailTaskId(null); }}
-        onReopen={(taskId) => { handleReopenFromDetail(taskId); setDetailTaskId(null); }}
+        onReopen={(taskId, note) => { handleReopenFromDetail(taskId, note); setDetailTaskId(null); }}
         onMarkUrgent={handleMarkUrgentFromDetail}
       />
     </div>
