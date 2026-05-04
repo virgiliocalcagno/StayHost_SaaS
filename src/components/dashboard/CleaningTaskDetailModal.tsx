@@ -41,6 +41,7 @@ import {
   History,
   KeyRound,
   DoorOpen,
+  Star,
   X,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -374,6 +375,55 @@ export function CleaningTaskDetailModal({
   };
   const [openings, setOpenings] = useState<LockOpening[]>([]);
   const [openingsLoading, setOpeningsLoading] = useState(false);
+  const [myRating, setMyRating] = useState<number | null>(null);
+  const [ratingHover, setRatingHover] = useState<number | null>(null);
+  const [ratingSaving, setRatingSaving] = useState(false);
+  const [ratingError, setRatingError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!task) {
+      setMyRating(null);
+      return;
+    }
+    let cancelled = false;
+    fetch(`/api/cleaning-tasks/${encodeURIComponent(task.id)}/rating`, {
+      credentials: "same-origin",
+      cache: "no-store",
+    })
+      .then((r) => (r.ok ? r.json() : { ratings: [] }))
+      .then((data: { ratings?: { stars: number; rated_by: string | null }[] }) => {
+        if (cancelled) return;
+        const first = data.ratings?.[0];
+        setMyRating(first ? first.stars : null);
+      })
+      .catch(() => { if (!cancelled) setMyRating(null); });
+    return () => { cancelled = true; };
+  }, [task?.id]);
+
+  const submitRating = async (stars: number) => {
+    if (!task) return;
+    setRatingSaving(true);
+    setRatingError(null);
+    const previous = myRating;
+    setMyRating(stars);
+    try {
+      const res = await fetch(`/api/cleaning-tasks/${encodeURIComponent(task.id)}/rating`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "same-origin",
+        body: JSON.stringify({ stars }),
+      });
+      if (!res.ok) {
+        const msg = (await res.json().catch(() => ({}))).error || `Error ${res.status}`;
+        throw new Error(msg);
+      }
+    } catch (err) {
+      setMyRating(previous);
+      setRatingError(err instanceof Error ? err.message : "No se pudo guardar");
+    } finally {
+      setRatingSaving(false);
+    }
+  };
   useEffect(() => {
     if (!task || !property?.ttlockLockId) {
       setOpenings([]);
@@ -910,6 +960,48 @@ export function CleaningTaskDetailModal({
                 : "Compartir acceso por WhatsApp"}
             </Button>
           )}
+        {(task.status === "completed" || task.isWaitingValidation) && task.assigneeId && (
+          <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4">
+            <div className="flex items-center justify-between mb-2">
+              <p className="text-sm font-bold text-amber-900">
+                Calificar trabajo de {task.assigneeName ?? "la cleaner"}
+              </p>
+              {myRating != null && (
+                <span className="text-xs text-amber-800">{myRating} / 5</span>
+              )}
+            </div>
+            <div className="flex gap-1.5" onMouseLeave={() => setRatingHover(null)}>
+              {[1, 2, 3, 4, 5].map((n) => {
+                const filled = (ratingHover ?? myRating ?? 0) >= n;
+                return (
+                  <button
+                    key={n}
+                    disabled={ratingSaving}
+                    onClick={() => submitRating(n)}
+                    onMouseEnter={() => setRatingHover(n)}
+                    className="p-1 rounded-lg hover:bg-amber-100 transition-colors disabled:opacity-50"
+                    aria-label={`${n} estrella${n > 1 ? "s" : ""}`}
+                  >
+                    <Star
+                      className={cn(
+                        "h-6 w-6 transition-colors",
+                        filled ? "text-amber-500 fill-amber-500" : "text-amber-300"
+                      )}
+                    />
+                  </button>
+                );
+              })}
+            </div>
+            {ratingError && (
+              <p className="mt-2 text-xs text-rose-700">{ratingError}</p>
+            )}
+            {myRating == null && !ratingSaving && (
+              <p className="mt-2 text-xs text-amber-800/70">
+                Tocá una estrella para calificar. Podés cambiar tu calificación luego.
+              </p>
+            )}
+          </div>
+        )}
         <div className="flex flex-col sm:flex-row gap-3">
           {task.isWaitingValidation && task.status !== "completed" ? (
             <>
