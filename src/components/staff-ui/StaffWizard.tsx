@@ -26,6 +26,12 @@ import {
   Loader2,
   RotateCw,
   MessageCircle,
+  KeyRound,
+  Wifi,
+  Copy,
+  ChevronDown,
+  ChevronUp,
+  Lock,
 } from "lucide-react";
 import { CleaningTask, getPriorityInfo } from "@/types/staff";
 import { capturePhoto } from "@/lib/photos/capturePhoto";
@@ -121,6 +127,22 @@ export function StaffWizard({ task, activeCriteria, ownerWhatsapp, staffName, on
   const [draftPhotos, setDraftPhotos] = useState<string[]>([]);
   // Estado local para checklist (si no se pasa handler externo, maneja el estado internamente)
   const [localChecklist, setLocalChecklist] = useState(task.checklistItems || []);
+  // Acceso a la unidad — visible durante todo el wizard. Bug que reportó
+  // Virgilio: al iniciar la limpieza el cleaner perdía el PIN/wifi/keybox
+  // y no podía consultarlo sin salir y perder el state. Default abierto
+  // los primeros pasos (cuando entra), después la cleaner puede colapsar.
+  const [accessOpen, setAccessOpen] = useState(true);
+  const [copiedKey, setCopiedKey] = useState<string | null>(null);
+  const copyToClipboard = (value: string, key: string) => {
+    if (!value) return;
+    navigator.clipboard?.writeText(value).catch(() => {});
+    setCopiedKey(key);
+    setTimeout(() => setCopiedKey((k) => (k === key ? null : k)), 1500);
+  };
+  // Tarea ya validada por supervisor → modo solo-lectura. El cleaner no
+  // debe poder modificar fotos, checklist ni reenviar. Si el supervisor
+  // necesita cambios, debe reabrir la tarea desde el dashboard.
+  const isValidated = !!task.validatedAt;
 
   const handleNextStep = () => setWizardStep(prev => Math.min(prev + 1, 3));
   const handlePrevStep = () => setWizardStep(prev => Math.max(prev - 1, 1));
@@ -183,6 +205,10 @@ export function StaffWizard({ task, activeCriteria, ownerWhatsapp, staffName, on
   };
 
   const handleSubmitTask = () => {
+    // Tarea ya validada: no se puede reenviar. Esto NUNCA debería dispararse
+    // porque el botón está disabled, pero protegemos por si llegara por
+    // teclado/atajo.
+    if (isValidated) return;
     // Nudge UX (no bloqueo): si el cleaner no marcó todos los items del
     // checklist, le advertimos antes de enviar. La realidad LATAM es que
     // a veces hace la limpieza completa pero olvida tildar — preferimos
@@ -311,8 +337,119 @@ export function StaffWizard({ task, activeCriteria, ownerWhatsapp, staffName, on
           </div>
         </Card>
 
+        {/* Tarea validada — banner de solo lectura. */}
+        {isValidated && (
+          <div className="bg-emerald-50 border border-emerald-200 rounded-2xl p-4 flex items-start gap-3">
+            <Lock className="h-5 w-5 text-emerald-600 mt-0.5 flex-shrink-0" />
+            <div>
+              <p className="font-bold text-emerald-800 text-sm">Tarea validada — solo lectura</p>
+              <p className="text-emerald-700 text-xs mt-1">
+                El supervisor ya aprobó esta limpieza. Si necesitás corregir algo, pedile que la reabra.
+              </p>
+            </div>
+          </div>
+        )}
+
+        {/* Acceso a la unidad — siempre visible durante el wizard. */}
+        {(task.accessMethod || task.wifiName || task.wifiPassword || task.keyboxCode || task.accessPin) && (
+          <Card className="border border-slate-200 rounded-[2rem] p-4 bg-white shadow-soft">
+            <button
+              onClick={() => setAccessOpen((o) => !o)}
+              className="w-full flex items-center justify-between"
+            >
+              <h4 className="text-sm font-bold text-slate-800 flex items-center gap-2">
+                <KeyRound className="h-4 w-4 text-primary" /> Acceso a la unidad
+              </h4>
+              {accessOpen ? (
+                <ChevronUp className="h-4 w-4 text-slate-400" />
+              ) : (
+                <ChevronDown className="h-4 w-4 text-slate-400" />
+              )}
+            </button>
+            {accessOpen && (
+              <div className="mt-3 space-y-2">
+                {task.accessMethod === "ttlock" && task.accessPin && (
+                  <button
+                    onClick={() => copyToClipboard(task.accessPin!, "pin")}
+                    className="w-full flex items-center justify-between bg-primary/5 border border-primary/20 rounded-xl p-3 active:scale-[0.98] transition-transform"
+                  >
+                    <div className="text-left">
+                      <p className="text-[10px] uppercase text-slate-500 font-bold tracking-wider">PIN puerta</p>
+                      <p className="font-mono font-bold text-lg tracking-widest text-slate-800">{task.accessPin}</p>
+                    </div>
+                    <span className="text-[10px] text-slate-500 flex items-center gap-1">
+                      {copiedKey === "pin" ? <Check className="h-3 w-3 text-emerald-600" /> : <Copy className="h-3 w-3" />}
+                      {copiedKey === "pin" ? "Copiado" : "Tocar para copiar"}
+                    </span>
+                  </button>
+                )}
+                {task.accessMethod === "keybox" && task.keyboxCode && (
+                  <button
+                    onClick={() => copyToClipboard(task.keyboxCode!, "keybox")}
+                    className="w-full flex items-center justify-between bg-amber-50 border border-amber-200 rounded-xl p-3 active:scale-[0.98] transition-transform"
+                  >
+                    <div className="text-left">
+                      <p className="text-[10px] uppercase text-amber-700 font-bold tracking-wider">Caja de llave</p>
+                      <p className="font-mono font-bold text-lg tracking-widest text-slate-800">{task.keyboxCode}</p>
+                      {task.keyboxLocation && (
+                        <p className="text-[11px] text-amber-700 mt-1">📍 {task.keyboxLocation}</p>
+                      )}
+                    </div>
+                    <span className="text-[10px] text-slate-500 flex items-center gap-1">
+                      {copiedKey === "keybox" ? <Check className="h-3 w-3 text-emerald-600" /> : <Copy className="h-3 w-3" />}
+                      {copiedKey === "keybox" ? "Copiado" : "Copiar"}
+                    </span>
+                  </button>
+                )}
+                {task.accessMethod === "in_person" && (
+                  <div className="bg-slate-50 border border-slate-200 rounded-xl p-3 text-xs text-slate-600">
+                    Esperá contacto del huésped o dueño para entrar.
+                  </div>
+                )}
+                {task.wifiName && (
+                  <button
+                    onClick={() => copyToClipboard(task.wifiName!, "wifi-name")}
+                    className="w-full flex items-center justify-between bg-slate-50 border border-slate-200 rounded-xl p-3 active:scale-[0.98] transition-transform"
+                  >
+                    <div className="text-left flex items-center gap-2">
+                      <Wifi className="h-3.5 w-3.5 text-slate-500" />
+                      <div>
+                        <p className="text-[10px] uppercase text-slate-500 font-bold tracking-wider">Red WiFi</p>
+                        <p className="font-mono text-sm font-semibold text-slate-800">{task.wifiName}</p>
+                      </div>
+                    </div>
+                    <span className="text-[10px] text-slate-500 flex items-center gap-1">
+                      {copiedKey === "wifi-name" ? <Check className="h-3 w-3 text-emerald-600" /> : <Copy className="h-3 w-3" />}
+                    </span>
+                  </button>
+                )}
+                {task.wifiPassword && (
+                  <button
+                    onClick={() => copyToClipboard(task.wifiPassword!, "wifi-pwd")}
+                    className="w-full flex items-center justify-between bg-slate-50 border border-slate-200 rounded-xl p-3 active:scale-[0.98] transition-transform"
+                  >
+                    <div className="text-left flex items-center gap-2">
+                      <Wifi className="h-3.5 w-3.5 text-slate-500" />
+                      <div>
+                        <p className="text-[10px] uppercase text-slate-500 font-bold tracking-wider">Contraseña WiFi</p>
+                        <p className="font-mono text-sm font-semibold text-slate-800">{task.wifiPassword}</p>
+                      </div>
+                    </div>
+                    <span className="text-[10px] text-slate-500 flex items-center gap-1">
+                      {copiedKey === "wifi-pwd" ? <Check className="h-3 w-3 text-emerald-600" /> : <Copy className="h-3 w-3" />}
+                    </span>
+                  </button>
+                )}
+              </div>
+            )}
+          </Card>
+        )}
+
         {/* Wizard Step Content */}
-        <div className="animate-in slide-in-from-right-4 duration-500">
+        <div className={cn(
+          "animate-in slide-in-from-right-4 duration-500",
+          isValidated && "pointer-events-none opacity-60"
+        )}>
           {wizardStep === 1 && (
             <div className="space-y-4">
               <div className="bg-white p-6 rounded-[2rem] shadow-soft border border-slate-100">
@@ -700,12 +837,12 @@ export function StaffWizard({ task, activeCriteria, ownerWhatsapp, staffName, on
 
               <div className="flex gap-4">
                  <Button variant="outline" className="flex-1 h-14 rounded-2xl border-slate-200 text-slate-600 font-bold" onClick={handlePrevStep}>Anterior</Button>
-                 <Button 
-                    disabled={tempPhotos.length < activeCriteria.length}
-                    className="flex-[2] h-14 rounded-2xl bg-slate-900 hover:bg-black text-white font-bold shadow-xl shadow-black/20 disabled:opacity-50" 
+                 <Button
+                    disabled={isValidated || tempPhotos.length < activeCriteria.length}
+                    className="flex-[2] h-14 rounded-2xl bg-slate-900 hover:bg-black text-white font-bold shadow-xl shadow-black/20 disabled:opacity-50"
                     onClick={handleSubmitTask}
                  >
-                   Enviar y Terminar
+                   {isValidated ? "Validada" : "Enviar y Terminar"}
                  </Button>
               </div>
             </div>

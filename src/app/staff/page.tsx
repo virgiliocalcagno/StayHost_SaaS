@@ -16,6 +16,7 @@ import {
   LogOut,
   Eye,
   EyeOff,
+  Clock,
 } from "lucide-react";
 interface StaffSession {
   memberId: string;
@@ -571,6 +572,18 @@ export default function StaffPage() {
               const isMaintenance =
                 task.guestName.toLowerCase().includes("mantenimiento") ||
                 task.priority === "critical";
+              // Estado derivado para que el cleaner sepa en qué etapa está la
+              // tarea sin tener que abrirla. Bug que reportó Virgilio: una vez
+              // enviada la limpieza no había feedback de "esperando validación".
+              const isValidated = !!task.validatedAt;
+              const isWaitingVal = task.status === "completed" && task.isWaitingValidation && !isValidated;
+              const stateBadge = isValidated
+                ? { label: "Validada", cls: "bg-emerald-100 text-emerald-700" }
+                : isWaitingVal
+                ? { label: "Esperando supervisor", cls: "bg-amber-100 text-amber-800" }
+                : task.status === "in_progress"
+                ? { label: "En progreso", cls: "bg-blue-100 text-blue-700" }
+                : null;
 
               return (
                 <div
@@ -581,12 +594,13 @@ export default function StaffPage() {
                   }}
                   className={cn(
                     "relative bg-white rounded-2xl border flex items-stretch overflow-hidden active:scale-[0.98] transition-all cursor-pointer h-20",
-                    info.isUrgent ? "border-rose-200 shadow-md shadow-rose-50" : "border-slate-100"
+                    info.isUrgent ? "border-rose-200 shadow-md shadow-rose-50" : "border-slate-100",
+                    isValidated && "opacity-70"
                   )}
                 >
                   <div className={cn("w-2", info.borderColor)} />
                   <div className="flex-1 px-4 flex items-center justify-between">
-                    <div className="flex items-center gap-3">
+                    <div className="flex items-center gap-3 min-w-0">
                       <div className="h-12 w-12 rounded-xl overflow-hidden bg-slate-100 relative shadow-inner shrink-0">
                         {task.propertyImage ? (
                           <img src={task.propertyImage} className="h-full w-full object-cover" alt="" />
@@ -601,7 +615,7 @@ export default function StaffPage() {
                           </div>
                         )}
                       </div>
-                      <div>
+                      <div className="min-w-0">
                         <div className="flex items-center gap-1.5">
                           <h4 className="font-bold text-slate-800 text-sm truncate max-w-[140px]">
                             {task.propertyName}
@@ -610,13 +624,19 @@ export default function StaffPage() {
                             <span className="h-2 w-2 rounded-full bg-primary animate-pulse" />
                           )}
                         </div>
-                        <div className="flex items-center gap-2 mt-0.5">
-                          <Badge
-                            variant="outline"
-                            className={cn("text-[9px] h-4 px-1 border-none", info.color)}
-                          >
-                            {info.label}
-                          </Badge>
+                        <div className="flex items-center gap-1.5 mt-0.5 flex-wrap">
+                          {stateBadge ? (
+                            <Badge variant="outline" className={cn("text-[9px] h-4 px-1.5 border-none font-bold", stateBadge.cls)}>
+                              {stateBadge.label}
+                            </Badge>
+                          ) : (
+                            <Badge
+                              variant="outline"
+                              className={cn("text-[9px] h-4 px-1 border-none", info.color)}
+                            >
+                              {info.label}
+                            </Badge>
+                          )}
                           <span className="text-[10px] font-bold text-slate-500">
                             Salida {task.dueTime}
                           </span>
@@ -624,7 +644,11 @@ export default function StaffPage() {
                       </div>
                     </div>
                     <div className="h-10 w-10 rounded-full flex items-center justify-center shadow-sm border shrink-0 ml-2">
-                      {task.status === "completed" ? (
+                      {isValidated ? (
+                        <CheckCircle2 className="h-5 w-5 text-emerald-600" />
+                      ) : isWaitingVal ? (
+                        <Clock className="h-5 w-5 text-amber-500" />
+                      ) : task.status === "completed" ? (
                         <CheckCircle2 className="h-5 w-5 text-emerald-500" />
                       ) : (
                         <ChevronRight className="h-5 w-5 text-slate-400" />

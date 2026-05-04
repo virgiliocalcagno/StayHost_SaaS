@@ -92,6 +92,7 @@ export interface TeamMemberLite {
   name: string;
   avatar?: string;
   phone?: string;
+  available?: boolean;
 }
 
 export interface PropertyLite {
@@ -591,7 +592,21 @@ export function CleaningTaskDetailModal({
                   <SelectContent>
                     <SelectItem value="none">Sin asignar</SelectItem>
                     {team.map((m) => (
-                      <SelectItem key={m.id} value={m.id}>{m.name}</SelectItem>
+                      <SelectItem key={m.id} value={m.id}>
+                        <span className="inline-flex items-center gap-2">
+                          <span
+                            className={cn(
+                              "h-2 w-2 rounded-full",
+                              m.available === false ? "bg-slate-300" : "bg-emerald-500"
+                            )}
+                            aria-label={m.available === false ? "Ocupado" : "Disponible"}
+                          />
+                          {m.name}
+                          {m.available === false && (
+                            <span className="text-[10px] text-slate-500 ml-1">(ocupado)</span>
+                          )}
+                        </span>
+                      </SelectItem>
                     ))}
                   </SelectContent>
                 </Select>

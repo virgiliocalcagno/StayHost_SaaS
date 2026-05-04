@@ -923,7 +923,13 @@ export default function CleaningPanel() {
   // Memoizamos la proyeccion ligera de team y properties para que el modal
   // no re-renderice por arrays nuevos en cada render del Panel.
   const detailTeam = useMemo(
-    () => team.map(m => ({ id: m.id, name: m.name, avatar: m.avatar, phone: m.phone })),
+    () => team.map(m => ({
+      id: m.id,
+      name: m.name,
+      avatar: m.avatar,
+      phone: m.phone,
+      available: m.available,
+    })),
     [team],
   );
   const detailProperties = useMemo(
