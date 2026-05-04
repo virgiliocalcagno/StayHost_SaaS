@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useRef } from "react";
+import React, { useState, useRef, useEffect } from "react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -78,6 +78,33 @@ export function StaffWizard({ task, activeCriteria, ownerWhatsapp, staffName, on
   const [tempPhotos, setTempPhotos] = useState<{ category: string; url: string }[]>([]);
   const [uploadStatus, setUploadStatus] = useState<Record<string, "idle" | "uploading" | "done" | "error">>({});
   const [uploadErrors, setUploadErrors] = useState<Record<string, string>>({});
+
+  // Pre-cargar fotos ya subidas. Si la cleaner se cortó la red, cerró el
+  // wizard, o vuelve después, las fotos que ya subió aparecen marcadas como
+  // "LISTO" en lugar de pedirle que las re-suba. Bug que reportó Virgilio:
+  // cargaba la tarea, salía, volvía a entrar y le pedía las 3 fotos otra vez
+  // aunque ya estaban en BD.
+  useEffect(() => {
+    let cancelled = false;
+    fetch(`/api/cleaning-tasks/${encodeURIComponent(task.id)}/photos`, {
+      credentials: "same-origin",
+      cache: "no-store",
+    })
+      .then((r) => (r.ok ? r.json() : { photos: [] }))
+      .then((data: { photos?: { category: string; url: string | null }[] }) => {
+        if (cancelled) return;
+        const seeded = (data.photos ?? [])
+          .filter((p) => p.url)
+          .map((p) => ({ category: p.category, url: p.url! }));
+        if (seeded.length === 0) return;
+        setTempPhotos(seeded);
+        const statusSeed: Record<string, "done"> = {};
+        for (const p of seeded) statusSeed[p.category] = "done";
+        setUploadStatus(statusSeed);
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [task.id]);
   const [activeUploadCategory, setActiveUploadCategory] = useState<string | null>(null);
   // Dos inputs separados: uno con capture="environment" abre cámara directa;
   // el otro sin capture muestra galería. Sin esta separación el browser

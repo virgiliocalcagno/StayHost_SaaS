@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { cn } from "@/lib/utils";
 import { logoutAndRedirect } from "@/lib/auth/logout";
@@ -353,20 +353,48 @@ export default function StaffPage() {
     window.location.assign("/salir");
   };
 
+  // Debounce de los PATCH del checklist. Antes mandábamos un PATCH por cada
+  // toggle, lo cual cuando la cleaner marcaba 5 items rápido producía 5
+  // requests en paralelo cuyo orden de llegada al server era no determinístico
+  // — el último en ganar podía ser uno con estado viejo, perdiendo marcas.
+  // Con debounce mandamos solo 1 PATCH con el estado final 500ms después del
+  // último toggle. Cierre del wizard también flushea (ver onClose).
+  const checklistDebounceRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
+  const checklistLatestRef = useRef<Record<string, { id: string; label: string; done: boolean; type: "general" | "appliance" }[]>>({});
+
+  const flushChecklistPatch = (taskId: string) => {
+    const pending = checklistDebounceRef.current[taskId];
+    if (pending) {
+      clearTimeout(pending);
+      delete checklistDebounceRef.current[taskId];
+    }
+    const items = checklistLatestRef.current[taskId];
+    if (items) {
+      patchTask(taskId, { checklistItems: items });
+      delete checklistLatestRef.current[taskId];
+    }
+  };
+
   const toggleChecklistItem = (taskId: string, itemId: string) => {
-    let updatedItems: { id: string; label: string; done: boolean; type: "general" | "appliance" }[] | undefined;
-    setTasks(prev =>
-      prev.map(t => {
+    setTasks(prev => {
+      const next = prev.map(t => {
         if (t.id !== taskId) return t;
-        updatedItems = t.checklistItems?.map(i =>
+        const updatedItems = t.checklistItems?.map(i =>
           i.id === itemId ? { ...i, done: !i.done } : i
         );
+        if (updatedItems) {
+          checklistLatestRef.current[taskId] = updatedItems;
+        }
         return { ...t, checklistItems: updatedItems };
-      })
-    );
-    if (updatedItems) {
-      patchTask(taskId, { checklistItems: updatedItems });
-    }
+      });
+      return next;
+    });
+    // Cancelar PATCH pendiente y reprogramarlo. El último estado siempre gana.
+    const existing = checklistDebounceRef.current[taskId];
+    if (existing) clearTimeout(existing);
+    checklistDebounceRef.current[taskId] = setTimeout(() => {
+      flushChecklistPatch(taskId);
+    }, 500);
   };
 
   // Helper: PATCH a /api/cleaning-tasks. Best-effort en errores de red —
@@ -662,9 +690,18 @@ export default function StaffPage() {
       activeCriteria={activeCriteria}
       ownerWhatsapp={ownerWhatsapp}
       staffName={session?.name}
-      onClose={() => setScreen("home")}
+      onClose={() => {
+        // Si la cleaner cierra antes de que pase el debounce de 500ms,
+        // forzamos el flush para no perder marcas. Mismo motivo en submit.
+        if (currentActiveTask?.id) flushChecklistPatch(currentActiveTask.id);
+        setScreen("home");
+      }}
       onToggleChecklist={toggleChecklistItem}
       onSubmit={(taskId, photos, notes, issues) => {
+        // Flush del debounce de checklist ANTES del PATCH de status para
+        // evitar race: si llegara después, el supervisor podría ver
+        // "completada" pero con marcas viejas.
+        flushChecklistPatch(taskId);
         setTasks(prev =>
           prev.map(t =>
             t.id === taskId
