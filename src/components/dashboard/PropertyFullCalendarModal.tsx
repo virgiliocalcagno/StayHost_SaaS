@@ -437,11 +437,15 @@ export default function PropertyFullCalendarModal({
 
   const handleSaveBlock = async () => {
     if (!property || !rangeStart) return;
-    // end exclusive en check_out: si el usuario selecciono 10..12, el bloqueo
-    // dura 10 y 11. Si selecciono solo 10, el bloqueo dura 10.
+    // Convencion hotelera: el ultimo dia seleccionado es la SALIDA, no un dia
+    // mas bloqueado. "27 → 28" = 1 noche (la del 27), salida el 28. Si solo
+    // hay un dia (click unico), interpretamos como 1 noche → salida al dia
+    // siguiente. Coherente con como se piensan las reservas y con el
+    // check_out exclusive de la BD.
     const startIso = rangeStart;
-    const endInclusive = rangeEnd ?? rangeStart;
-    const endIso = toLocalDateStr(addDays(parseLocalDate(endInclusive), 1));
+    const endIso = rangeEnd && rangeEnd !== rangeStart
+      ? rangeEnd
+      : toLocalDateStr(addDays(parseLocalDate(rangeStart), 1));
     setSaving(true);
     try {
       const res = await fetch("/api/bookings", {
@@ -483,8 +487,9 @@ export default function PropertyFullCalendarModal({
 
   const handleCreateBookingClick = () => {
     if (!property || !rangeStart || !onCreateBookingForRange) return;
-    const endInclusive = rangeEnd ?? rangeStart;
-    const checkOutIso = toLocalDateStr(addDays(parseLocalDate(endInclusive), 1));
+    const checkOutIso = rangeEnd && rangeEnd !== rangeStart
+      ? rangeEnd
+      : toLocalDateStr(addDays(parseLocalDate(rangeStart), 1));
     onCreateBookingForRange(property.id, rangeStart, checkOutIso);
     onOpenChange(false);
   };
@@ -1369,6 +1374,19 @@ function RangeActionPanel({
   onClear: () => void;
 }) {
   const single = start === end;
+  // Convencion estilo Airbnb: el ultimo dia seleccionado es la SALIDA. Si solo
+  // hay un dia (single), salida es el dia siguiente. Mostramos noches reales
+  // para que el usuario vea exactamente que se va a guardar antes de confirmar.
+  const checkInDate = parseLocalDate(start);
+  const checkOutDate = single
+    ? addDays(checkInDate, 1)
+    : parseLocalDate(end);
+  const nights = Math.max(
+    1,
+    Math.round((checkOutDate.getTime() - checkInDate.getTime()) / 86400000),
+  );
+  const fmt = (d: Date) =>
+    d.toLocaleDateString("es", { day: "numeric", month: "short" });
   return (
     <div className="p-5 space-y-4">
       <div className="flex items-center justify-between">
@@ -1380,22 +1398,28 @@ function RangeActionPanel({
         </Button>
       </div>
 
-      <div className="rounded-xl bg-background p-3 border flex items-center gap-3">
-        <CalendarIcon className="h-4 w-4 text-muted-foreground" />
-        <div className="flex-1">
-          {single ? (
-            <p className="text-sm font-bold">{start}</p>
-          ) : (
-            <p className="text-sm font-bold">
-              {start} <span className="text-muted-foreground font-normal">→</span> {end}
-            </p>
-          )}
-          <p className="text-[10px] text-muted-foreground">
-            {single
-              ? "Click en otro dia para extender el rango"
-              : "Click en otro dia libre para cambiar el inicio"}
+      <div className="rounded-xl bg-background p-3 border space-y-2">
+        <div className="flex items-baseline justify-between gap-2">
+          <p className="text-2xl font-black leading-none">
+            {nights} <span className="text-sm font-bold text-muted-foreground">{nights === 1 ? "noche" : "noches"}</span>
           </p>
+          <CalendarIcon className="h-4 w-4 text-muted-foreground" />
         </div>
+        <div className="grid grid-cols-2 gap-2 pt-1">
+          <div>
+            <p className="text-[9px] uppercase tracking-wider font-black text-muted-foreground">Entrada</p>
+            <p className="text-xs font-bold capitalize">{fmt(checkInDate)}</p>
+          </div>
+          <div>
+            <p className="text-[9px] uppercase tracking-wider font-black text-muted-foreground">Salida</p>
+            <p className="text-xs font-bold capitalize">{fmt(checkOutDate)}</p>
+          </div>
+        </div>
+        <p className="text-[10px] text-muted-foreground pt-1 border-t">
+          {single
+            ? "Click en otro dia para extender. El ultimo dia es la salida (libre desde ese dia)."
+            : "El ultimo dia seleccionado es la salida — queda libre para otra reserva."}
+        </p>
       </div>
 
       <div className="space-y-2">
