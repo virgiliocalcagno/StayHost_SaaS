@@ -119,6 +119,7 @@ interface Property {
   price: number;
   cleaningFeeOneDay?: number;
   cleaningFeeMoreDays?: number;
+  cleanerPayout?: number;
   weeklyDiscountPercent?: number;
   energyFeePerDay?: number;
   additionalServicesFee?: number;
@@ -660,6 +661,7 @@ export default function PropertiesPanel() {
           amenities: p.amenities ?? [],
           cleaningFeeOneDay: p.cleaning_fee_one_day ?? 0,
           cleaningFeeMoreDays: p.cleaning_fee_more_days ?? 0,
+          cleanerPayout: p.cleaner_payout ?? 0,
           weeklyDiscountPercent: p.weekly_discount_percent ?? 0,
           energyFeePerDay: p.energy_fee_per_day ?? 0,
           additionalServicesFee: p.additional_services_fee ?? 0,
@@ -753,6 +755,7 @@ export default function PropertiesPanel() {
     directaEnabled: false,
     cleaningFeeOneDay: "",
     cleaningFeeMoreDays: "",
+    cleanerPayout: "",
     weeklyDiscountPercent: "",
     energyFeePerDay: "",
     additionalServicesFee: "",
@@ -943,7 +946,7 @@ export default function PropertiesPanel() {
     setModalTab("propiedad");
     setCreationStep("options");
     setAirbnbImportLink("");
-    setFormData({ name: "", address: "", addressUnit: "", neighborhood: "", city: "", postalCode: "", type: "apartment", price: "", beds: "", baths: "", maxGuests: "", airbnbUrl: "", airbnbIcal: "", bookingUrl: "", bookingIcal: "", vrboUrl: "", vrboIcal: "", directaEnabled: false, cleaningFeeOneDay: "", cleaningFeeMoreDays: "", weeklyDiscountPercent: "", energyFeePerDay: "", additionalServicesFee: "", recurringSupplies: [], autoAssignCleaner: false, cleanerPriorities: [], bedConfiguration: "", standardInstructions: "", evidenceCriteria: ["Cocina", "Habitación", "Baño"], descriptionEN: "", descriptionES: "", photoTour: [], amenitiesConfig: { popular: [], bathroom: [], bedroom: [], kitchen: [], outdoor: [] }, wifiSsid: "", wifiPassword: "", electricityEnabled: false, electricityRate: "", checkInTime: "14:00", checkOutTime: "12:00", ttlockLockId: "", accessMethod: "in_person", hasKeybox: false, keyboxCode: "", keyboxLocation: "", keyboxPhotoUrl: "", keyboxShareWithGuest: true });
+    setFormData({ name: "", address: "", addressUnit: "", neighborhood: "", city: "", postalCode: "", type: "apartment", price: "", beds: "", baths: "", maxGuests: "", airbnbUrl: "", airbnbIcal: "", bookingUrl: "", bookingIcal: "", vrboUrl: "", vrboIcal: "", directaEnabled: false, cleaningFeeOneDay: "", cleaningFeeMoreDays: "", cleanerPayout: "", weeklyDiscountPercent: "", energyFeePerDay: "", additionalServicesFee: "", recurringSupplies: [], autoAssignCleaner: false, cleanerPriorities: [], bedConfiguration: "", standardInstructions: "", evidenceCriteria: ["Cocina", "Habitación", "Baño"], descriptionEN: "", descriptionES: "", photoTour: [], amenitiesConfig: { popular: [], bathroom: [], bedroom: [], kitchen: [], outdoor: [] }, wifiSsid: "", wifiPassword: "", electricityEnabled: false, electricityRate: "", checkInTime: "14:00", checkOutTime: "12:00", ttlockLockId: "", accessMethod: "in_person", hasKeybox: false, keyboxCode: "", keyboxLocation: "", keyboxPhotoUrl: "", keyboxShareWithGuest: true });
     setShowModal(true);
   };
 
@@ -972,6 +975,7 @@ export default function PropertiesPanel() {
       directaEnabled: p.channels.find(c => c.name === "Directa")?.connected || false,
       cleaningFeeOneDay: p.cleaningFeeOneDay?.toString() || "",
       cleaningFeeMoreDays: p.cleaningFeeMoreDays?.toString() || "",
+      cleanerPayout: p.cleanerPayout?.toString() || "",
       weeklyDiscountPercent: p.weeklyDiscountPercent?.toString() || "",
       energyFeePerDay: p.energyFeePerDay?.toString() || "",
       additionalServicesFee: p.additionalServicesFee?.toString() || "",
@@ -1053,6 +1057,7 @@ export default function PropertiesPanel() {
         currency: "USD",
         cleaningFeeOneDay: Number(formData.cleaningFeeOneDay) || 0,
         cleaningFeeMoreDays: Number(formData.cleaningFeeMoreDays) || 0,
+        cleanerPayout: formData.cleanerPayout === "" ? undefined : Number(formData.cleanerPayout) || 0,
         weeklyDiscountPercent: Number(formData.weeklyDiscountPercent) || 0,
         energyFeePerDay: Number(formData.energyFeePerDay) || 0,
         additionalServicesFee: Number(formData.additionalServicesFee) || 0,
@@ -2210,6 +2215,15 @@ export default function PropertiesPanel() {
                         <div className="space-y-2">
                           <Label>Tarifa limpieza +1 noche</Label>
                           <Input type="number" placeholder="Ej: 50" value={formData.cleaningFeeMoreDays} onChange={(e) => setFormData((p) => ({ ...p, cleaningFeeMoreDays: e.target.value }))} />
+                        </div>
+                      </div>
+                      <div className="grid grid-cols-2 gap-4">
+                        <div className="space-y-2">
+                          <Label className="flex items-center justify-between">
+                            Pago al cleaner por limpieza
+                            <span className="text-[10px] text-muted-foreground font-normal">se muestra en su billetera</span>
+                          </Label>
+                          <Input type="number" placeholder="Ej: 600" value={formData.cleanerPayout} onChange={(e) => setFormData((p) => ({ ...p, cleanerPayout: e.target.value }))} />
                         </div>
                       </div>
                       <div className="grid grid-cols-2 gap-4">

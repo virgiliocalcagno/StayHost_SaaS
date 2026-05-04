@@ -21,7 +21,7 @@ export async function GET() {
       check_in_time, check_out_time, direct_enabled,
       ttlock_lock_id, ttlock_account_id,
       property_type, price, currency,
-      cleaning_fee_one_day, cleaning_fee_more_days,
+      cleaning_fee_one_day, cleaning_fee_more_days, cleaner_payout,
       weekly_discount_percent, energy_fee_per_day, additional_services_fee,
       beds, baths, max_guests, prop_status,
       amenities, owner_payout, staff_pay,
