@@ -16,6 +16,7 @@ import {
   LogOut,
   Eye,
   EyeOff,
+  Wallet,
 } from "lucide-react";
 interface StaffSession {
   memberId: string;
@@ -613,16 +614,26 @@ export default function StaffPage() {
           )}
         </div>
 
-        {/* Logout FAB */}
-        <Button
-          variant="outline"
-          size="sm"
-          className="fixed bottom-6 right-6 rounded-full shadow-2xl h-12 px-6 border-slate-200 bg-white"
-          onClick={handleLogout}
-        >
-          <LogOut className="h-4 w-4 mr-2" />
-          Cerrar sesión
-        </Button>
+        {/* FABs: Billetera + Logout */}
+        <div className="fixed bottom-6 right-6 flex flex-col gap-2 items-end">
+          <Button
+            size="sm"
+            className="rounded-full shadow-2xl h-12 px-6 bg-emerald-600 hover:bg-emerald-700 text-white"
+            onClick={() => router.push("/staff/wallet")}
+          >
+            <Wallet className="h-4 w-4 mr-2" />
+            Mi billetera
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            className="rounded-full shadow-2xl h-12 px-6 border-slate-200 bg-white"
+            onClick={handleLogout}
+          >
+            <LogOut className="h-4 w-4 mr-2" />
+            Cerrar sesión
+          </Button>
+        </div>
       </div>
     );
   }
