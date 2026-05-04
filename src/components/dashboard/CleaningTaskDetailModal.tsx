@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useEffect, useMemo, useState } from "react";
+import { formatTenantDate } from "@/lib/datetime/tenant-time";
 import {
   Sheet,
   SheetContent,
@@ -147,10 +148,7 @@ function getReservationCode(task: CleaningTaskDetailData): string {
 }
 
 function formatLongDate(iso?: string): string {
-  if (!iso) return "—";
-  const d = new Date(iso);
-  if (isNaN(d.getTime())) return iso;
-  return d.toLocaleDateString("es", {
+  return formatTenantDate(iso, undefined, {
     weekday: "short",
     day: "2-digit",
     month: "short",

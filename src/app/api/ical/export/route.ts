@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabase/admin";
+import { addDaysInTenant, DEFAULT_TENANT_TZ } from "@/lib/datetime/tenant-time";
 
 // GET /api/ical/export?id=[propertyId]&type=[bookings|tasks]
 // Returns an iCal feed with enriched data.
@@ -102,10 +103,10 @@ export async function GET(req: NextRequest) {
           `Checklist:\\n${checklist}`,
         ];
 
-        // iCal DATE duration: DTEND is exclusive, so for a 1-day event, add 1 day
-        const d = new Date(t.due_date);
-        d.setDate(d.getDate() + 1);
-        const nextDay = d.toISOString().split("T")[0].replace(/-/g, "");
+        // iCal DATE duration: DTEND es exclusive, sumamos 1 día en zona del
+        // tenant (no del servidor) para evitar el clásico off-by-one en cron
+        // nocturno o servidores en otra zona.
+        const nextDay = toIcalDate(addDaysInTenant(t.due_date, 1, DEFAULT_TENANT_TZ));
 
         return [
           "BEGIN:VEVENT",
