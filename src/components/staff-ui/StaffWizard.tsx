@@ -79,7 +79,11 @@ export function StaffWizard({ task, activeCriteria, ownerWhatsapp, staffName, on
   const [uploadStatus, setUploadStatus] = useState<Record<string, "idle" | "uploading" | "done" | "error">>({});
   const [uploadErrors, setUploadErrors] = useState<Record<string, string>>({});
   const [activeUploadCategory, setActiveUploadCategory] = useState<string | null>(null);
-  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  // Dos inputs separados: uno con capture="environment" abre cámara directa;
+  // el otro sin capture muestra galería. Sin esta separación el browser
+  // (especialmente Safari iOS y Chrome Android) muestra solo galería.
+  const cameraInputRef = useRef<HTMLInputElement | null>(null);
+  const galleryInputRef = useRef<HTMLInputElement | null>(null);
   const [notes, setNotes] = useState("");
   const [issues, setIssues] = useState<IssueDraft[]>([]);
   const [showIssueForm, setShowIssueForm] = useState(false);
@@ -106,10 +110,11 @@ export function StaffWizard({ task, activeCriteria, ownerWhatsapp, staffName, on
 
   const currentChecklist = onToggleChecklist ? (task.checklistItems || []) : localChecklist;
 
-  const handleUploadPhoto = (category: string) => {
+  const handleUploadPhoto = (category: string, source: "camera" | "gallery") => {
     setActiveUploadCategory(category);
     setUploadErrors(prev => ({ ...prev, [category]: "" }));
-    fileInputRef.current?.click();
+    const ref = source === "camera" ? cameraInputRef : galleryInputRef;
+    ref.current?.click();
   };
 
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -552,70 +557,92 @@ export function StaffWizard({ task, activeCriteria, ownerWhatsapp, staffName, on
                       return (
                         <div key={cat} className="group relative">
                           <div className={cn(
-                            "p-4 rounded-2xl border-2 border-dashed transition-all flex items-center justify-between",
+                            "p-4 rounded-2xl border-2 border-dashed transition-all space-y-3",
                             isError
                               ? "bg-rose-50 border-rose-400"
                               : photo
                                 ? "bg-emerald-50 border-emerald-500"
                                 : "bg-slate-50 border-slate-200 hover:border-primary/50"
                           )}>
-                            <div className="flex items-center gap-3 min-w-0 flex-1">
-                               {photo ? (
-                                 <img src={photo.url} className="h-12 w-12 rounded-xl object-cover shadow-md border-2 border-white" alt={`Evidencia ${cat}`}/>
-                               ) : (
-                                 <div className="h-12 w-12 bg-white rounded-xl flex items-center justify-center shadow-sm">
-                                    <ImageIcon className="h-5 w-5 text-slate-300" />
-                                 </div>
-                               )}
-                               <div className="min-w-0 flex-1">
-                                  <p className="font-bold text-slate-700 text-sm">{cat}</p>
-                                  <p className="text-xs items-center flex gap-1 font-bold">
-                                    {isUploading ? (
-                                      <span className="text-slate-500 flex items-center gap-1">
-                                        <Loader2 className="h-3 w-3 animate-spin" /> SUBIENDO…
-                                      </span>
-                                    ) : isError ? (
-                                      <span className="text-rose-600 truncate">{error || "ERROR"}</span>
-                                    ) : photo ? (
-                                      <span className="text-emerald-600 flex items-center gap-1">
-                                        <Check className="h-3 w-3" /> LISTO
-                                      </span>
-                                    ) : (
-                                      <span className="text-slate-400">OBLIGATORIO</span>
-                                    )}
-                                  </p>
-                               </div>
-                            </div>
-                            <Button
-                              size="icon"
-                              disabled={isUploading}
-                              onClick={() => handleUploadPhoto(cat)}
-                              className={cn(
-                                "h-10 w-10 rounded-full shadow-lg flex-shrink-0",
-                                isError
-                                  ? "bg-rose-500 hover:bg-rose-600"
-                                  : photo
-                                    ? "bg-emerald-500 hover:bg-emerald-600"
-                                    : "gradient-gold shadow-primary/20"
-                              )}
-                            >
-                              {isUploading ? (
-                                <Loader2 className="h-5 w-5 text-white animate-spin" />
-                              ) : isError ? (
-                                <RotateCw className="h-5 w-5 text-white" />
-                              ) : photo ? (
-                                <Check className="h-5 w-5 text-white" />
+                            <div className="flex items-center gap-3 min-w-0">
+                              {photo ? (
+                                <img src={photo.url} className="h-12 w-12 rounded-xl object-cover shadow-md border-2 border-white" alt={`Evidencia ${cat}`}/>
                               ) : (
-                                <Camera className="h-5 w-5 text-primary-foreground" />
+                                <div className="h-12 w-12 bg-white rounded-xl flex items-center justify-center shadow-sm">
+                                  <ImageIcon className="h-5 w-5 text-slate-300" />
+                                </div>
                               )}
-                            </Button>
+                              <div className="min-w-0 flex-1">
+                                <p className="font-bold text-slate-700 text-sm">{cat}</p>
+                                <p className="text-xs items-center flex gap-1 font-bold">
+                                  {isUploading ? (
+                                    <span className="text-slate-500 flex items-center gap-1">
+                                      <Loader2 className="h-3 w-3 animate-spin" /> SUBIENDO…
+                                    </span>
+                                  ) : isError ? (
+                                    <span className="text-rose-600 truncate">{error || "ERROR"}</span>
+                                  ) : photo ? (
+                                    <span className="text-emerald-600 flex items-center gap-1">
+                                      <Check className="h-3 w-3" /> LISTO
+                                    </span>
+                                  ) : (
+                                    <span className="text-slate-400">OBLIGATORIO</span>
+                                  )}
+                                </p>
+                              </div>
+                              {photo && !isUploading && (
+                                <div className="h-9 w-9 rounded-full bg-emerald-500 flex items-center justify-center shadow-md flex-shrink-0">
+                                  <Check className="h-5 w-5 text-white" />
+                                </div>
+                              )}
+                            </div>
+                            <div className="flex gap-2">
+                              <Button
+                                disabled={isUploading}
+                                onClick={() => handleUploadPhoto(cat, "camera")}
+                                className={cn(
+                                  "flex-1 h-11 rounded-xl font-bold text-xs flex items-center justify-center gap-1.5 shadow-md",
+                                  isError
+                                    ? "bg-rose-500 hover:bg-rose-600 text-white"
+                                    : photo
+                                      ? "bg-emerald-500/90 hover:bg-emerald-600 text-white"
+                                      : "gradient-gold text-primary-foreground shadow-primary/20"
+                                )}
+                              >
+                                {isUploading ? (
+                                  <Loader2 className="h-4 w-4 animate-spin" />
+                                ) : (
+                                  <>
+                                    <Camera className="h-4 w-4" />
+                                    {photo ? "Re-tomar" : "Cámara"}
+                                  </>
+                                )}
+                              </Button>
+                              <Button
+                                disabled={isUploading}
+                                variant="outline"
+                                onClick={() => handleUploadPhoto(cat, "gallery")}
+                                className="flex-1 h-11 rounded-xl font-bold text-xs flex items-center justify-center gap-1.5 border-slate-300 bg-white text-slate-700 shadow-sm"
+                              >
+                                <ImageIcon className="h-4 w-4" />
+                                Galería
+                              </Button>
+                            </div>
                           </div>
                         </div>
                       );
                     })}
                   </div>
                   <input
-                    ref={fileInputRef}
+                    ref={cameraInputRef}
+                    type="file"
+                    accept="image/*"
+                    capture="environment"
+                    className="hidden"
+                    onChange={handleFileChange}
+                  />
+                  <input
+                    ref={galleryInputRef}
                     type="file"
                     accept="image/*"
                     className="hidden"

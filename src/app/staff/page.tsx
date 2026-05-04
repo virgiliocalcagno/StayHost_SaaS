@@ -672,13 +672,31 @@ export default function StaffPage() {
                   ...t,
                   status: "completed",
                   isWaitingValidation: true,
-                  closurePhotos: photos,
+                  // No pisamos closure_photos: las fotos ya están persistidas
+                  // en BD por el endpoint POST /photos. El state local sigue
+                  // con las URLs firmadas que se vencen en 1h — pero como el
+                  // GET de cleaning-tasks revuelve a recargar, no es un
+                  // problema (CleaningPanel pide signed URLs frescas vía el
+                  // endpoint GET /photos).
                   incidentReport: notes,
                   reportedIssues: issues.map(i => i.title),
                 }
               : t
           )
         );
+        // Persistir el cierre en BD: sin esto, el supervisor nunca ve la
+        // tarea en su cola "A validar". El bug previo era que el handler
+        // sólo tocaba el state local del cleaner.
+        fetch(`/api/cleaning-tasks?id=${encodeURIComponent(taskId)}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          credentials: "include",
+          body: JSON.stringify({
+            status: "completed",
+            isWaitingValidation: true,
+            reportedIssues: issues.map(i => i.title),
+          }),
+        }).catch((e) => console.warn("[/staff] cleanup PATCH failed", e));
         // Crear tickets de mantenimiento en background. No bloquea el cierre
         // de la tarea — si la red falla, el limpiador puede volver a reportar
         // desde el panel admin. El `propertyId` viene del CleaningTask.
