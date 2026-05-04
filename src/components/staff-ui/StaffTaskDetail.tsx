@@ -2,6 +2,7 @@
 
 import React, { useState } from "react";
 import { cn } from "@/lib/utils";
+import { useCopyFeedback } from "@/lib/hooks/useCopyFeedback";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -55,7 +56,7 @@ export function StaffTaskDetail({
 }: StaffTaskDetailProps) {
   const [rejectMode, setRejectMode] = useState(false);
   const [rejectReason, setRejectReason] = useState("");
-  const [copied, setCopied] = useState<string | null>(null);
+  const { copiedKey: copied, copy } = useCopyFeedback();
 
   const priority = getPriorityInfo(task);
   // Por privacidad del huésped, el staff sólo ve el primer nombre, sin
@@ -63,12 +64,6 @@ export function StaffTaskDetail({
   // supervisor — botón "Pedir ayuda" más abajo.
   const guestFirstName = (task.guestName || "").trim().split(/\s+/)[0] || null;
   const ownerDigits = ownerWhatsapp ? toDigits(ownerWhatsapp) : null;
-
-  const copy = (label: string, text: string) => {
-    navigator.clipboard?.writeText(text).catch(() => {});
-    setCopied(label);
-    setTimeout(() => setCopied(null), 1500);
-  };
 
   return (
     <div className="min-h-screen bg-[#F8F9FC] pb-20 animate-in slide-in-from-bottom duration-500">
@@ -357,7 +352,7 @@ export function StaffTaskDetail({
             <div className="bg-white p-4 rounded-[1.75rem] border border-slate-100 grid grid-cols-2 gap-3">
               {task.wifiName && (
                 <button
-                  onClick={() => copy("wifi-name", task.wifiName!)}
+                  onClick={() => copy(task.wifiName!, "wifi-name")}
                   className="text-left p-3 rounded-xl bg-slate-50 hover:bg-slate-100 active:scale-[0.98] transition-all"
                 >
                   <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-0.5">
@@ -374,7 +369,7 @@ export function StaffTaskDetail({
               )}
               {task.wifiPassword && (
                 <button
-                  onClick={() => copy("wifi-pwd", task.wifiPassword!)}
+                  onClick={() => copy(task.wifiPassword!, "wifi-pwd")}
                   className="text-left p-3 rounded-xl bg-slate-50 hover:bg-slate-100 active:scale-[0.98] transition-all"
                 >
                   <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-0.5">
@@ -427,7 +422,7 @@ function AccessBlock({
   copiedLabel,
 }: {
   task: CleaningTask;
-  onCopy: (label: string, text: string) => void;
+  onCopy: (value: string, key: string) => void;
   copiedLabel: string | null;
 }) {
   const accepted = task.acceptanceStatus !== "pending";
@@ -448,7 +443,7 @@ function AccessBlock({
             </p>
             {accepted && task.accessPin ? (
               <button
-                onClick={() => onCopy("pin", task.accessPin!)}
+                onClick={() => onCopy(task.accessPin!, "pin")}
                 className="text-left w-full"
               >
                 <p className="text-3xl font-black tracking-[0.2em] text-violet-900 font-mono">
@@ -487,7 +482,7 @@ function AccessBlock({
             </p>
             {task.keyboxCode ? (
               <button
-                onClick={() => onCopy("keybox", task.keyboxCode!)}
+                onClick={() => onCopy(task.keyboxCode!, "keybox")}
                 className="text-left w-full"
               >
                 <p className="text-3xl font-black tracking-[0.2em] text-amber-900 font-mono">

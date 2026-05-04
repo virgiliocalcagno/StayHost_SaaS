@@ -36,6 +36,7 @@ import {
 import { CleaningTask, getPriorityInfo } from "@/types/staff";
 import { capturePhoto } from "@/lib/photos/capturePhoto";
 import { buildHelpWhatsappHref } from "@/lib/staff-help/buildHelpMessage";
+import { useCopyFeedback } from "@/lib/hooks/useCopyFeedback";
 import {
   MAINTENANCE_CATEGORY_LABELS,
   MAINTENANCE_SEVERITY_LABELS,
@@ -85,11 +86,8 @@ export function StaffWizard({ task, activeCriteria, ownerWhatsapp, staffName, on
   const [uploadStatus, setUploadStatus] = useState<Record<string, "idle" | "uploading" | "done" | "error">>({});
   const [uploadErrors, setUploadErrors] = useState<Record<string, string>>({});
 
-  // Pre-cargar fotos ya subidas. Si la cleaner se cortó la red, cerró el
-  // wizard, o vuelve después, las fotos que ya subió aparecen marcadas como
-  // "LISTO" en lugar de pedirle que las re-suba. Bug que reportó Virgilio:
-  // cargaba la tarea, salía, volvía a entrar y le pedía las 3 fotos otra vez
-  // aunque ya estaban en BD.
+  // Pre-carga fotos ya subidas para no pedirlas otra vez si la cleaner
+  // cierra y vuelve.
   useEffect(() => {
     let cancelled = false;
     fetch(`/api/cleaning-tasks/${encodeURIComponent(task.id)}/photos`, {
@@ -127,21 +125,8 @@ export function StaffWizard({ task, activeCriteria, ownerWhatsapp, staffName, on
   const [draftPhotos, setDraftPhotos] = useState<string[]>([]);
   // Estado local para checklist (si no se pasa handler externo, maneja el estado internamente)
   const [localChecklist, setLocalChecklist] = useState(task.checklistItems || []);
-  // Acceso a la unidad — visible durante todo el wizard. Bug que reportó
-  // Virgilio: al iniciar la limpieza el cleaner perdía el PIN/wifi/keybox
-  // y no podía consultarlo sin salir y perder el state. Default abierto
-  // los primeros pasos (cuando entra), después la cleaner puede colapsar.
   const [accessOpen, setAccessOpen] = useState(true);
-  const [copiedKey, setCopiedKey] = useState<string | null>(null);
-  const copyToClipboard = (value: string, key: string) => {
-    if (!value) return;
-    navigator.clipboard?.writeText(value).catch(() => {});
-    setCopiedKey(key);
-    setTimeout(() => setCopiedKey((k) => (k === key ? null : k)), 1500);
-  };
-  // Tarea ya validada por supervisor → modo solo-lectura. El cleaner no
-  // debe poder modificar fotos, checklist ni reenviar. Si el supervisor
-  // necesita cambios, debe reabrir la tarea desde el dashboard.
+  const { copiedKey, copy } = useCopyFeedback();
   const isValidated = !!task.validatedAt;
 
   const handleNextStep = () => setWizardStep(prev => Math.min(prev + 1, 3));
@@ -370,7 +355,7 @@ export function StaffWizard({ task, activeCriteria, ownerWhatsapp, staffName, on
               <div className="mt-3 space-y-2">
                 {task.accessMethod === "ttlock" && task.accessPin && (
                   <button
-                    onClick={() => copyToClipboard(task.accessPin!, "pin")}
+                    onClick={() => copy(task.accessPin!, "pin")}
                     className="w-full flex items-center justify-between bg-primary/5 border border-primary/20 rounded-xl p-3 active:scale-[0.98] transition-transform"
                   >
                     <div className="text-left">
@@ -385,7 +370,7 @@ export function StaffWizard({ task, activeCriteria, ownerWhatsapp, staffName, on
                 )}
                 {task.accessMethod === "keybox" && task.keyboxCode && (
                   <button
-                    onClick={() => copyToClipboard(task.keyboxCode!, "keybox")}
+                    onClick={() => copy(task.keyboxCode!, "keybox")}
                     className="w-full flex items-center justify-between bg-amber-50 border border-amber-200 rounded-xl p-3 active:scale-[0.98] transition-transform"
                   >
                     <div className="text-left">
@@ -408,7 +393,7 @@ export function StaffWizard({ task, activeCriteria, ownerWhatsapp, staffName, on
                 )}
                 {task.wifiName && (
                   <button
-                    onClick={() => copyToClipboard(task.wifiName!, "wifi-name")}
+                    onClick={() => copy(task.wifiName!, "wifi-name")}
                     className="w-full flex items-center justify-between bg-slate-50 border border-slate-200 rounded-xl p-3 active:scale-[0.98] transition-transform"
                   >
                     <div className="text-left flex items-center gap-2">
@@ -425,7 +410,7 @@ export function StaffWizard({ task, activeCriteria, ownerWhatsapp, staffName, on
                 )}
                 {task.wifiPassword && (
                   <button
-                    onClick={() => copyToClipboard(task.wifiPassword!, "wifi-pwd")}
+                    onClick={() => copy(task.wifiPassword!, "wifi-pwd")}
                     className="w-full flex items-center justify-between bg-slate-50 border border-slate-200 rounded-xl p-3 active:scale-[0.98] transition-transform"
                   >
                     <div className="text-left flex items-center gap-2">

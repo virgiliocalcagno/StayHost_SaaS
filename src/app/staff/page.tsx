@@ -30,6 +30,12 @@ import { StaffTaskDetail } from "@/components/staff-ui/StaffTaskDetail";
 import { useTableSync } from "@/lib/realtime/useTableSync";
 import { CleaningTask, getPriorityInfo } from "@/types/staff";
 
+const STATE_BADGES = {
+  validated: { label: "Validada", cls: "bg-emerald-100 text-emerald-700" },
+  waiting: { label: "Esperando supervisor", cls: "bg-amber-100 text-amber-800" },
+  inProgress: { label: "En progreso", cls: "bg-blue-100 text-blue-700" },
+} as const;
+
 interface Property {
   id: string;
   name: string;
@@ -572,17 +578,14 @@ export default function StaffPage() {
               const isMaintenance =
                 task.guestName.toLowerCase().includes("mantenimiento") ||
                 task.priority === "critical";
-              // Estado derivado para que el cleaner sepa en qué etapa está la
-              // tarea sin tener que abrirla. Bug que reportó Virgilio: una vez
-              // enviada la limpieza no había feedback de "esperando validación".
               const isValidated = !!task.validatedAt;
               const isWaitingVal = task.status === "completed" && task.isWaitingValidation && !isValidated;
               const stateBadge = isValidated
-                ? { label: "Validada", cls: "bg-emerald-100 text-emerald-700" }
+                ? STATE_BADGES.validated
                 : isWaitingVal
-                ? { label: "Esperando supervisor", cls: "bg-amber-100 text-amber-800" }
+                ? STATE_BADGES.waiting
                 : task.status === "in_progress"
-                ? { label: "En progreso", cls: "bg-blue-100 text-blue-700" }
+                ? STATE_BADGES.inProgress
                 : null;
 
               return (
