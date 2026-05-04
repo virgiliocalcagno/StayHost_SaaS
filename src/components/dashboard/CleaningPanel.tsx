@@ -982,13 +982,18 @@ export default function CleaningPanel() {
       : (t?.assigneeId ? "assigned" : "unassigned");
     setTasks(prev => prev.map(t =>
       t.id === taskId
-        ? { ...t, status: nextStatus, isWaitingValidation: false }
+        ? { ...t, status: nextStatus, isWaitingValidation: false, validatedAt: null, validatedBy: null }
         : t,
     ));
+    // Limpiar también validated_at/validated_by: si la tarea ya había sido
+    // aprobada y luego se reabre, dejar el sello de validación previa la
+    // deja en estado incoherente ("validada pero in_progress de nuevo").
     patchTask(taskId, {
       status: nextStatus,
       isWaitingValidation: false,
       rejectionNote: note ?? null,
+      validatedAt: null,
+      validatedBy: null,
     });
     // Reabierta vuelve a estado activo → reactivar PIN si corresponde.
     syncTaskAccess(taskId);
@@ -1507,7 +1512,7 @@ export default function CleaningPanel() {
                                     {task.isBackToBack && task.arrivingGuestName && (
                                        <div className="pt-2 sm:pt-0 sm:pl-4 sm:border-l border-slate-200 min-w-0">
                                           <p className="text-[9px] uppercase text-emerald-600 font-bold leading-none mb-1">
-                                            Entrada hoy {task.arrivingGuestCount ? `· ${task.arrivingGuestCount} pax` : ""}
+                                            Entra el {formatLongDate(task.dueDate)} {task.arrivingGuestCount ? `· ${task.arrivingGuestCount} pax` : ""}
                                           </p>
                                           <p className="text-sm font-bold text-slate-700 truncate">{task.arrivingGuestName}</p>
                                        </div>

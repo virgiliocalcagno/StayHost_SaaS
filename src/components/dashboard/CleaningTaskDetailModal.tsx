@@ -148,7 +148,10 @@ function getReservationCode(task: CleaningTaskDetailData): string {
 
 function formatLongDate(iso?: string): string {
   if (!iso) return "—";
-  const d = new Date(iso);
+  // Forzamos T00:00:00 local para que `"2026-04-28"` no se parsee como UTC
+  // midnight (que en DR/UTC-4 muestra 27 abr local). Sin esto, esta función
+  // y la del CleaningPanel mostraban fechas distintas para la misma reserva.
+  const d = new Date(iso + (iso.includes("T") ? "" : "T00:00:00"));
   if (isNaN(d.getTime())) return iso;
   return d.toLocaleDateString("es", {
     weekday: "short",
@@ -557,7 +560,7 @@ export function CleaningTaskDetailModal({
                 <AlertTriangle className="h-4 w-4 text-rose-500 flex-shrink-0 mt-0.5" />
                 <div className="flex-1">
                   <p className="text-[10px] font-black text-rose-700 uppercase tracking-wider">
-                    Entra hoy
+                    Entra el {formatLongDate(task.dueDate)}
                   </p>
                   <p className="text-sm font-bold text-rose-900">
                     {task.arrivingGuestName}
