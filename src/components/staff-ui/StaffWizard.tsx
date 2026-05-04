@@ -156,6 +156,20 @@ export function StaffWizard({ task, activeCriteria, ownerWhatsapp, staffName, on
   };
 
   const handleSubmitTask = () => {
+    // Nudge UX (no bloqueo): si el cleaner no marcó todos los items del
+    // checklist, le advertimos antes de enviar. La realidad LATAM es que
+    // a veces hace la limpieza completa pero olvida tildar — preferimos
+    // recordarle a obligarla. Si confirma, sigue. Si no, vuelve al wizard
+    // a marcarlos. Si no hay checklist (propiedad sin items configurados),
+    // el chequeo no aplica.
+    const total = currentChecklist.length;
+    const done = currentChecklist.filter(i => i.done).length;
+    if (total > 0 && done < total) {
+      const ok = window.confirm(
+        `Vas a enviar la limpieza con ${done} de ${total} tareas del checklist marcadas.\n\n¿Estás segura?`
+      );
+      if (!ok) return;
+    }
     onSubmit(task.id, tempPhotos, notes, issues);
   };
 
