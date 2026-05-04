@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { cn } from "@/lib/utils";
 import { logoutAndRedirect } from "@/lib/auth/logout";
@@ -16,6 +16,7 @@ import {
   LogOut,
   Eye,
   EyeOff,
+  Clock,
 } from "lucide-react";
 interface StaffSession {
   memberId: string;
@@ -28,6 +29,12 @@ import { StaffWizard } from "@/components/staff-ui/StaffWizard";
 import { StaffTaskDetail } from "@/components/staff-ui/StaffTaskDetail";
 import { useTableSync } from "@/lib/realtime/useTableSync";
 import { CleaningTask, getPriorityInfo } from "@/types/staff";
+
+const STATE_BADGES = {
+  validated: { label: "Validada", cls: "bg-emerald-100 text-emerald-700" },
+  waiting: { label: "Esperando supervisor", cls: "bg-amber-100 text-amber-800" },
+  inProgress: { label: "En progreso", cls: "bg-blue-100 text-blue-700" },
+} as const;
 
 interface Property {
   id: string;
@@ -84,6 +91,9 @@ const mapApiTask = (t: Record<string, unknown>): CleaningTask => ({
   startTime: pickStr(t.startTime, t.start_time),
   declinedByIds: (t.declinedByIds ?? t.declined_by_ids ?? []) as string[],
   rejectionReason: pickStr(t.rejectionReason, t.rejection_reason),
+  rejectionNote: pickStr(t.rejectionNote, t.rejection_note),
+  validatedAt: pickStr(t.validatedAt, t.validated_at),
+  validatedBy: pickStr(t.validatedBy, t.validated_by),
   acceptanceStatus: (t.acceptanceStatus ?? t.acceptance_status ?? "pending") as CleaningTask["acceptanceStatus"],
   standardInstructions: pickStr(t.standardInstructions, t.standard_instructions),
   // Campos extendidos — el API ya los devuelve, antes el mapper los tiraba.
@@ -350,20 +360,48 @@ export default function StaffPage() {
     window.location.assign("/salir");
   };
 
+  // Debounce de los PATCH del checklist. Antes mandábamos un PATCH por cada
+  // toggle, lo cual cuando la cleaner marcaba 5 items rápido producía 5
+  // requests en paralelo cuyo orden de llegada al server era no determinístico
+  // — el último en ganar podía ser uno con estado viejo, perdiendo marcas.
+  // Con debounce mandamos solo 1 PATCH con el estado final 500ms después del
+  // último toggle. Cierre del wizard también flushea (ver onClose).
+  const checklistDebounceRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
+  const checklistLatestRef = useRef<Record<string, { id: string; label: string; done: boolean; type: "general" | "appliance" }[]>>({});
+
+  const flushChecklistPatch = (taskId: string) => {
+    const pending = checklistDebounceRef.current[taskId];
+    if (pending) {
+      clearTimeout(pending);
+      delete checklistDebounceRef.current[taskId];
+    }
+    const items = checklistLatestRef.current[taskId];
+    if (items) {
+      patchTask(taskId, { checklistItems: items });
+      delete checklistLatestRef.current[taskId];
+    }
+  };
+
   const toggleChecklistItem = (taskId: string, itemId: string) => {
-    let updatedItems: { id: string; label: string; done: boolean; type: "general" | "appliance" }[] | undefined;
-    setTasks(prev =>
-      prev.map(t => {
+    setTasks(prev => {
+      const next = prev.map(t => {
         if (t.id !== taskId) return t;
-        updatedItems = t.checklistItems?.map(i =>
+        const updatedItems = t.checklistItems?.map(i =>
           i.id === itemId ? { ...i, done: !i.done } : i
         );
+        if (updatedItems) {
+          checklistLatestRef.current[taskId] = updatedItems;
+        }
         return { ...t, checklistItems: updatedItems };
-      })
-    );
-    if (updatedItems) {
-      patchTask(taskId, { checklistItems: updatedItems });
-    }
+      });
+      return next;
+    });
+    // Cancelar PATCH pendiente y reprogramarlo. El último estado siempre gana.
+    const existing = checklistDebounceRef.current[taskId];
+    if (existing) clearTimeout(existing);
+    checklistDebounceRef.current[taskId] = setTimeout(() => {
+      flushChecklistPatch(taskId);
+    }, 500);
   };
 
   // Helper: PATCH a /api/cleaning-tasks. Best-effort en errores de red —
@@ -540,6 +578,15 @@ export default function StaffPage() {
               const isMaintenance =
                 task.guestName.toLowerCase().includes("mantenimiento") ||
                 task.priority === "critical";
+              const isValidated = !!task.validatedAt;
+              const isWaitingVal = task.status === "completed" && task.isWaitingValidation && !isValidated;
+              const stateBadge = isValidated
+                ? STATE_BADGES.validated
+                : isWaitingVal
+                ? STATE_BADGES.waiting
+                : task.status === "in_progress"
+                ? STATE_BADGES.inProgress
+                : null;
 
               return (
                 <div
@@ -550,12 +597,13 @@ export default function StaffPage() {
                   }}
                   className={cn(
                     "relative bg-white rounded-2xl border flex items-stretch overflow-hidden active:scale-[0.98] transition-all cursor-pointer h-20",
-                    info.isUrgent ? "border-rose-200 shadow-md shadow-rose-50" : "border-slate-100"
+                    info.isUrgent ? "border-rose-200 shadow-md shadow-rose-50" : "border-slate-100",
+                    isValidated && "opacity-70"
                   )}
                 >
                   <div className={cn("w-2", info.borderColor)} />
                   <div className="flex-1 px-4 flex items-center justify-between">
-                    <div className="flex items-center gap-3">
+                    <div className="flex items-center gap-3 min-w-0">
                       <div className="h-12 w-12 rounded-xl overflow-hidden bg-slate-100 relative shadow-inner shrink-0">
                         {task.propertyImage ? (
                           <img src={task.propertyImage} className="h-full w-full object-cover" alt="" />
@@ -570,7 +618,7 @@ export default function StaffPage() {
                           </div>
                         )}
                       </div>
-                      <div>
+                      <div className="min-w-0">
                         <div className="flex items-center gap-1.5">
                           <h4 className="font-bold text-slate-800 text-sm truncate max-w-[140px]">
                             {task.propertyName}
@@ -579,13 +627,19 @@ export default function StaffPage() {
                             <span className="h-2 w-2 rounded-full bg-primary animate-pulse" />
                           )}
                         </div>
-                        <div className="flex items-center gap-2 mt-0.5">
-                          <Badge
-                            variant="outline"
-                            className={cn("text-[9px] h-4 px-1 border-none", info.color)}
-                          >
-                            {info.label}
-                          </Badge>
+                        <div className="flex items-center gap-1.5 mt-0.5 flex-wrap">
+                          {stateBadge ? (
+                            <Badge variant="outline" className={cn("text-[9px] h-4 px-1.5 border-none font-bold", stateBadge.cls)}>
+                              {stateBadge.label}
+                            </Badge>
+                          ) : (
+                            <Badge
+                              variant="outline"
+                              className={cn("text-[9px] h-4 px-1 border-none", info.color)}
+                            >
+                              {info.label}
+                            </Badge>
+                          )}
                           <span className="text-[10px] font-bold text-slate-500">
                             Salida {task.dueTime}
                           </span>
@@ -593,7 +647,11 @@ export default function StaffPage() {
                       </div>
                     </div>
                     <div className="h-10 w-10 rounded-full flex items-center justify-center shadow-sm border shrink-0 ml-2">
-                      {task.status === "completed" ? (
+                      {isValidated ? (
+                        <CheckCircle2 className="h-5 w-5 text-emerald-600" />
+                      ) : isWaitingVal ? (
+                        <Clock className="h-5 w-5 text-amber-500" />
+                      ) : task.status === "completed" ? (
                         <CheckCircle2 className="h-5 w-5 text-emerald-500" />
                       ) : (
                         <ChevronRight className="h-5 w-5 text-slate-400" />
@@ -640,6 +698,7 @@ export default function StaffPage() {
         task={currentActiveTask}
         bedConfiguration={currentProperty?.bedConfiguration}
         ownerWhatsapp={ownerWhatsapp}
+        staffName={session?.name}
         onClose={() => setScreen("home")}
         onAccept={handleAcceptTask}
         onDecline={(taskId, reason) => {
@@ -656,9 +715,20 @@ export default function StaffPage() {
     <StaffWizard
       task={currentActiveTask as any}
       activeCriteria={activeCriteria}
-      onClose={() => setScreen("home")}
+      ownerWhatsapp={ownerWhatsapp}
+      staffName={session?.name}
+      onClose={() => {
+        // Si la cleaner cierra antes de que pase el debounce de 500ms,
+        // forzamos el flush para no perder marcas. Mismo motivo en submit.
+        if (currentActiveTask?.id) flushChecklistPatch(currentActiveTask.id);
+        setScreen("home");
+      }}
       onToggleChecklist={toggleChecklistItem}
       onSubmit={(taskId, photos, notes, issues) => {
+        // Flush del debounce de checklist ANTES del PATCH de status para
+        // evitar race: si llegara después, el supervisor podría ver
+        // "completada" pero con marcas viejas.
+        flushChecklistPatch(taskId);
         setTasks(prev =>
           prev.map(t =>
             t.id === taskId
@@ -666,13 +736,31 @@ export default function StaffPage() {
                   ...t,
                   status: "completed",
                   isWaitingValidation: true,
-                  closurePhotos: photos,
+                  // No pisamos closure_photos: las fotos ya están persistidas
+                  // en BD por el endpoint POST /photos. El state local sigue
+                  // con las URLs firmadas que se vencen en 1h — pero como el
+                  // GET de cleaning-tasks revuelve a recargar, no es un
+                  // problema (CleaningPanel pide signed URLs frescas vía el
+                  // endpoint GET /photos).
                   incidentReport: notes,
                   reportedIssues: issues.map(i => i.title),
                 }
               : t
           )
         );
+        // Persistir el cierre en BD: sin esto, el supervisor nunca ve la
+        // tarea en su cola "A validar". El bug previo era que el handler
+        // sólo tocaba el state local del cleaner.
+        fetch(`/api/cleaning-tasks?id=${encodeURIComponent(taskId)}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          credentials: "include",
+          body: JSON.stringify({
+            status: "completed",
+            isWaitingValidation: true,
+            reportedIssues: issues.map(i => i.title),
+          }),
+        }).catch((e) => console.warn("[/staff] cleanup PATCH failed", e));
         // Crear tickets de mantenimiento en background. No bloquea el cierre
         // de la tarea — si la red falla, el limpiador puede volver a reportar
         // desde el panel admin. El `propertyId` viene del CleaningTask.

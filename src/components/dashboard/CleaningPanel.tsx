@@ -876,10 +876,16 @@ export default function CleaningPanel() {
   // ahora son responsabilidad de la app real /staff/page.tsx.
 
   const handleValidateTask = (taskId: string) => {
+    const validatedAt = new Date().toISOString();
     setTasks(prev => prev.map(t =>
       t.id === taskId ? { ...t, isWaitingValidation: false, status: "completed" } : t
     ));
-    patchTask(taskId, { status: "completed", isWaitingValidation: false });
+    patchTask(taskId, {
+      status: "completed",
+      isWaitingValidation: false,
+      validatedAt,
+      rejectionNote: null,
+    });
     syncTaskAccess(taskId);
     const task = tasks.find(t => t.id === taskId);
     if (task?.assigneeId) {
@@ -917,7 +923,13 @@ export default function CleaningPanel() {
   // Memoizamos la proyeccion ligera de team y properties para que el modal
   // no re-renderice por arrays nuevos en cada render del Panel.
   const detailTeam = useMemo(
-    () => team.map(m => ({ id: m.id, name: m.name, avatar: m.avatar, phone: m.phone })),
+    () => team.map(m => ({
+      id: m.id,
+      name: m.name,
+      avatar: m.avatar,
+      phone: m.phone,
+      available: m.available,
+    })),
     [team],
   );
   const detailProperties = useMemo(
@@ -966,16 +978,28 @@ export default function CleaningPanel() {
     syncTaskAccess(taskId);
   };
 
-  const handleReopenFromDetail = (taskId: string) => {
+  const handleReopenFromDetail = (taskId: string, note?: string) => {
+    const t = tasks.find(x => x.id === taskId);
+    // Si el supervisor pasa una nota → es "pedir re-foto", devolvemos al
+    // cleaner en in_progress con el motivo visible. Sin nota → reapertura
+    // genérica al último estado activo.
+    const nextStatus = note
+      ? (t?.assigneeId ? "in_progress" : "unassigned")
+      : (t?.assigneeId ? "assigned" : "unassigned");
     setTasks(prev => prev.map(t =>
       t.id === taskId
-        ? { ...t, status: t.assigneeId ? "assigned" : "unassigned", isWaitingValidation: false }
+        ? { ...t, status: nextStatus, isWaitingValidation: false, validatedAt: null, validatedBy: null }
         : t,
     ));
-    const t = tasks.find(x => x.id === taskId);
+    // Limpiar también validated_at/validated_by: si la tarea ya había sido
+    // aprobada y luego se reabre, dejar el sello de validación previa la
+    // deja en estado incoherente ("validada pero in_progress de nuevo").
     patchTask(taskId, {
-      status: t?.assigneeId ? "assigned" : "unassigned",
+      status: nextStatus,
       isWaitingValidation: false,
+      rejectionNote: note ?? null,
+      validatedAt: null,
+      validatedBy: null,
     });
     // Reabierta vuelve a estado activo → reactivar PIN si corresponde.
     syncTaskAccess(taskId);
@@ -1494,7 +1518,7 @@ export default function CleaningPanel() {
                                     {task.isBackToBack && task.arrivingGuestName && (
                                        <div className="pt-2 sm:pt-0 sm:pl-4 sm:border-l border-slate-200 min-w-0">
                                           <p className="text-[9px] uppercase text-emerald-600 font-bold leading-none mb-1">
-                                            Entrada hoy {task.arrivingGuestCount ? `· ${task.arrivingGuestCount} pax` : ""}
+                                            Entra el {formatLongDate(task.dueDate)} {task.arrivingGuestCount ? `· ${task.arrivingGuestCount} pax` : ""}
                                           </p>
                                           <p className="text-sm font-bold text-slate-700 truncate">{task.arrivingGuestName}</p>
                                        </div>
@@ -1994,7 +2018,7 @@ export default function CleaningPanel() {
         onClose={() => setDetailTaskId(null)}
         onReassign={handleReassignFromDetail}
         onValidate={(taskId) => { handleValidateTask(taskId); setDetailTaskId(null); }}
-        onReopen={(taskId) => { handleReopenFromDetail(taskId); setDetailTaskId(null); }}
+        onReopen={(taskId, note) => { handleReopenFromDetail(taskId, note); setDetailTaskId(null); }}
         onMarkUrgent={handleMarkUrgentFromDetail}
       />
     </div>

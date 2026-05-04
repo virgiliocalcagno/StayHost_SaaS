@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useState, useRef, useEffect } from "react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -23,8 +23,20 @@ import {
   Plus,
   Trash2,
   Wrench,
+  Loader2,
+  RotateCw,
+  MessageCircle,
+  KeyRound,
+  Wifi,
+  Copy,
+  ChevronDown,
+  ChevronUp,
+  Lock,
 } from "lucide-react";
 import { CleaningTask, getPriorityInfo } from "@/types/staff";
+import { capturePhoto } from "@/lib/photos/capturePhoto";
+import { buildHelpWhatsappHref } from "@/lib/staff-help/buildHelpMessage";
+import { useCopyFeedback } from "@/lib/hooks/useCopyFeedback";
 import {
   MAINTENANCE_CATEGORY_LABELS,
   MAINTENANCE_SEVERITY_LABELS,
@@ -44,6 +56,8 @@ export interface IssueDraft {
 export interface StaffWizardProps {
   task: CleaningTask;
   activeCriteria: string[];
+  ownerWhatsapp?: string | null;
+  staffName?: string | null;
   onClose: () => void;
   onSubmit: (
     taskId: string,
@@ -61,9 +75,46 @@ const SEVERITY_COLORS: Record<MaintenanceSeverity, string> = {
   critical: "bg-rose-100 text-rose-800 border-rose-200",
 };
 
-export function StaffWizard({ task, activeCriteria, onClose, onSubmit, onToggleChecklist }: StaffWizardProps) {
+export function StaffWizard({ task, activeCriteria, ownerWhatsapp, staffName, onClose, onSubmit, onToggleChecklist }: StaffWizardProps) {
+  const helpHref = buildHelpWhatsappHref(ownerWhatsapp, {
+    staffName,
+    propertyName: task.propertyName,
+    dueTime: task.dueTime,
+  });
   const [wizardStep, setWizardStep] = useState(1);
   const [tempPhotos, setTempPhotos] = useState<{ category: string; url: string }[]>([]);
+  const [uploadStatus, setUploadStatus] = useState<Record<string, "idle" | "uploading" | "done" | "error">>({});
+  const [uploadErrors, setUploadErrors] = useState<Record<string, string>>({});
+
+  // Pre-carga fotos ya subidas para no pedirlas otra vez si la cleaner
+  // cierra y vuelve.
+  useEffect(() => {
+    let cancelled = false;
+    fetch(`/api/cleaning-tasks/${encodeURIComponent(task.id)}/photos`, {
+      credentials: "same-origin",
+      cache: "no-store",
+    })
+      .then((r) => (r.ok ? r.json() : { photos: [] }))
+      .then((data: { photos?: { category: string; url: string | null }[] }) => {
+        if (cancelled) return;
+        const seeded = (data.photos ?? [])
+          .filter((p) => p.url)
+          .map((p) => ({ category: p.category, url: p.url! }));
+        if (seeded.length === 0) return;
+        setTempPhotos(seeded);
+        const statusSeed: Record<string, "done"> = {};
+        for (const p of seeded) statusSeed[p.category] = "done";
+        setUploadStatus(statusSeed);
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [task.id]);
+  const [activeUploadCategory, setActiveUploadCategory] = useState<string | null>(null);
+  // Dos inputs separados: uno con capture="environment" abre cámara directa;
+  // el otro sin capture muestra galería. Sin esta separación el browser
+  // (especialmente Safari iOS y Chrome Android) muestra solo galería.
+  const cameraInputRef = useRef<HTMLInputElement | null>(null);
+  const galleryInputRef = useRef<HTMLInputElement | null>(null);
   const [notes, setNotes] = useState("");
   const [issues, setIssues] = useState<IssueDraft[]>([]);
   const [showIssueForm, setShowIssueForm] = useState(false);
@@ -74,6 +125,9 @@ export function StaffWizard({ task, activeCriteria, onClose, onSubmit, onToggleC
   const [draftPhotos, setDraftPhotos] = useState<string[]>([]);
   // Estado local para checklist (si no se pasa handler externo, maneja el estado internamente)
   const [localChecklist, setLocalChecklist] = useState(task.checklistItems || []);
+  const [accessOpen, setAccessOpen] = useState(true);
+  const { copiedKey, copy } = useCopyFeedback();
+  const isValidated = !!task.validatedAt;
 
   const handleNextStep = () => setWizardStep(prev => Math.min(prev + 1, 3));
   const handlePrevStep = () => setWizardStep(prev => Math.max(prev - 1, 1));
@@ -90,17 +144,70 @@ export function StaffWizard({ task, activeCriteria, onClose, onSubmit, onToggleC
 
   const currentChecklist = onToggleChecklist ? (task.checklistItems || []) : localChecklist;
 
-  const handleUploadPhoto = (category: string) => {
-    // Simula subida de foto
-    const mockUrl = "https://images.unsplash.com/photo-1584622650111-993a426fbf0a?w=400&h=300&fit=crop";
-    setTempPhotos(prev => {
-      const exists = prev.find(p => p.category === category);
-      if (exists) return prev;
-      return [...prev, { category, url: mockUrl }];
-    });
+  const handleUploadPhoto = (category: string, source: "camera" | "gallery") => {
+    setActiveUploadCategory(category);
+    setUploadErrors(prev => ({ ...prev, [category]: "" }));
+    const ref = source === "camera" ? cameraInputRef : galleryInputRef;
+    ref.current?.click();
+  };
+
+  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    const cat = activeUploadCategory;
+    if (!file || !cat) return;
+
+    setUploadStatus(prev => ({ ...prev, [cat]: "uploading" }));
+    try {
+      const { blob } = await capturePhoto(file, {
+        watermarkLabel: task.propertyName,
+      });
+      const fd = new FormData();
+      fd.append("file", new File([blob], `${cat}.jpg`, { type: "image/jpeg" }));
+      fd.append("category", cat);
+
+      const res = await fetch(`/api/cleaning-tasks/${task.id}/photos`, {
+        method: "POST",
+        body: fd,
+        credentials: "include",
+      });
+      if (!res.ok) {
+        const msg = (await res.json().catch(() => ({}))).error || `Error ${res.status}`;
+        throw new Error(msg);
+      }
+      const data: { category: string; path: string; url: string | null } = await res.json();
+
+      setTempPhotos(prev => {
+        const filtered = prev.filter(p => p.category !== cat);
+        return [...filtered, { category: cat, url: data.url ?? "" }];
+      });
+      setUploadStatus(prev => ({ ...prev, [cat]: "done" }));
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Error desconocido";
+      setUploadErrors(prev => ({ ...prev, [cat]: message }));
+      setUploadStatus(prev => ({ ...prev, [cat]: "error" }));
+    }
   };
 
   const handleSubmitTask = () => {
+    // Tarea ya validada: no se puede reenviar. Esto NUNCA debería dispararse
+    // porque el botón está disabled, pero protegemos por si llegara por
+    // teclado/atajo.
+    if (isValidated) return;
+    // Nudge UX (no bloqueo): si el cleaner no marcó todos los items del
+    // checklist, le advertimos antes de enviar. La realidad LATAM es que
+    // a veces hace la limpieza completa pero olvida tildar — preferimos
+    // recordarle a obligarla. Si confirma, sigue. Si no, vuelve al wizard
+    // a marcarlos. Si no hay checklist (propiedad sin items configurados),
+    // el chequeo no aplica.
+    const total = currentChecklist.length;
+    const done = currentChecklist.filter(i => i.done).length;
+    if (total > 0 && done < total) {
+      const ok = window.confirm(
+        `Vas a enviar la limpieza con ${done} de ${total} tareas del checklist marcadas.\n\n¿Estás segura?`
+      );
+      if (!ok) return;
+    }
     onSubmit(task.id, tempPhotos, notes, issues);
   };
 
@@ -164,9 +271,22 @@ export function StaffWizard({ task, activeCriteria, onClose, onSubmit, onToggleC
           </div>
         </div>
 
-        <div className="h-10 w-10 flex items-center justify-center bg-primary/10 rounded-full">
-          <Sparkles className="h-5 w-5 text-primary" />
-        </div>
+        {helpHref ? (
+          <a
+            href={helpHref}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="h-10 px-3 flex items-center justify-center gap-1.5 bg-emerald-500 hover:bg-emerald-600 text-white rounded-full shadow-md active:scale-95 transition-all"
+            aria-label="Pedir ayuda al supervisor"
+          >
+            <MessageCircle className="h-4 w-4" />
+            <span className="text-xs font-bold">Ayuda</span>
+          </a>
+        ) : (
+          <div className="h-10 w-10 flex items-center justify-center bg-primary/10 rounded-full">
+            <Sparkles className="h-5 w-5 text-primary" />
+          </div>
+        )}
       </div>
 
       <div className="max-w-md mx-auto px-4 pt-6 space-y-6">
@@ -202,8 +322,119 @@ export function StaffWizard({ task, activeCriteria, onClose, onSubmit, onToggleC
           </div>
         </Card>
 
+        {/* Tarea validada — banner de solo lectura. */}
+        {isValidated && (
+          <div className="bg-emerald-50 border border-emerald-200 rounded-2xl p-4 flex items-start gap-3">
+            <Lock className="h-5 w-5 text-emerald-600 mt-0.5 flex-shrink-0" />
+            <div>
+              <p className="font-bold text-emerald-800 text-sm">Tarea validada — solo lectura</p>
+              <p className="text-emerald-700 text-xs mt-1">
+                El supervisor ya aprobó esta limpieza. Si necesitás corregir algo, pedile que la reabra.
+              </p>
+            </div>
+          </div>
+        )}
+
+        {/* Acceso a la unidad — siempre visible durante el wizard. */}
+        {(task.accessMethod || task.wifiName || task.wifiPassword || task.keyboxCode || task.accessPin) && (
+          <Card className="border border-slate-200 rounded-[2rem] p-4 bg-white shadow-soft">
+            <button
+              onClick={() => setAccessOpen((o) => !o)}
+              className="w-full flex items-center justify-between"
+            >
+              <h4 className="text-sm font-bold text-slate-800 flex items-center gap-2">
+                <KeyRound className="h-4 w-4 text-primary" /> Acceso a la unidad
+              </h4>
+              {accessOpen ? (
+                <ChevronUp className="h-4 w-4 text-slate-400" />
+              ) : (
+                <ChevronDown className="h-4 w-4 text-slate-400" />
+              )}
+            </button>
+            {accessOpen && (
+              <div className="mt-3 space-y-2">
+                {task.accessMethod === "ttlock" && task.accessPin && (
+                  <button
+                    onClick={() => copy(task.accessPin!, "pin")}
+                    className="w-full flex items-center justify-between bg-primary/5 border border-primary/20 rounded-xl p-3 active:scale-[0.98] transition-transform"
+                  >
+                    <div className="text-left">
+                      <p className="text-[10px] uppercase text-slate-500 font-bold tracking-wider">PIN puerta</p>
+                      <p className="font-mono font-bold text-lg tracking-widest text-slate-800">{task.accessPin}</p>
+                    </div>
+                    <span className="text-[10px] text-slate-500 flex items-center gap-1">
+                      {copiedKey === "pin" ? <Check className="h-3 w-3 text-emerald-600" /> : <Copy className="h-3 w-3" />}
+                      {copiedKey === "pin" ? "Copiado" : "Tocar para copiar"}
+                    </span>
+                  </button>
+                )}
+                {task.accessMethod === "keybox" && task.keyboxCode && (
+                  <button
+                    onClick={() => copy(task.keyboxCode!, "keybox")}
+                    className="w-full flex items-center justify-between bg-amber-50 border border-amber-200 rounded-xl p-3 active:scale-[0.98] transition-transform"
+                  >
+                    <div className="text-left">
+                      <p className="text-[10px] uppercase text-amber-700 font-bold tracking-wider">Caja de llave</p>
+                      <p className="font-mono font-bold text-lg tracking-widest text-slate-800">{task.keyboxCode}</p>
+                      {task.keyboxLocation && (
+                        <p className="text-[11px] text-amber-700 mt-1">📍 {task.keyboxLocation}</p>
+                      )}
+                    </div>
+                    <span className="text-[10px] text-slate-500 flex items-center gap-1">
+                      {copiedKey === "keybox" ? <Check className="h-3 w-3 text-emerald-600" /> : <Copy className="h-3 w-3" />}
+                      {copiedKey === "keybox" ? "Copiado" : "Copiar"}
+                    </span>
+                  </button>
+                )}
+                {task.accessMethod === "in_person" && (
+                  <div className="bg-slate-50 border border-slate-200 rounded-xl p-3 text-xs text-slate-600">
+                    Esperá contacto del huésped o dueño para entrar.
+                  </div>
+                )}
+                {task.wifiName && (
+                  <button
+                    onClick={() => copy(task.wifiName!, "wifi-name")}
+                    className="w-full flex items-center justify-between bg-slate-50 border border-slate-200 rounded-xl p-3 active:scale-[0.98] transition-transform"
+                  >
+                    <div className="text-left flex items-center gap-2">
+                      <Wifi className="h-3.5 w-3.5 text-slate-500" />
+                      <div>
+                        <p className="text-[10px] uppercase text-slate-500 font-bold tracking-wider">Red WiFi</p>
+                        <p className="font-mono text-sm font-semibold text-slate-800">{task.wifiName}</p>
+                      </div>
+                    </div>
+                    <span className="text-[10px] text-slate-500 flex items-center gap-1">
+                      {copiedKey === "wifi-name" ? <Check className="h-3 w-3 text-emerald-600" /> : <Copy className="h-3 w-3" />}
+                    </span>
+                  </button>
+                )}
+                {task.wifiPassword && (
+                  <button
+                    onClick={() => copy(task.wifiPassword!, "wifi-pwd")}
+                    className="w-full flex items-center justify-between bg-slate-50 border border-slate-200 rounded-xl p-3 active:scale-[0.98] transition-transform"
+                  >
+                    <div className="text-left flex items-center gap-2">
+                      <Wifi className="h-3.5 w-3.5 text-slate-500" />
+                      <div>
+                        <p className="text-[10px] uppercase text-slate-500 font-bold tracking-wider">Contraseña WiFi</p>
+                        <p className="font-mono text-sm font-semibold text-slate-800">{task.wifiPassword}</p>
+                      </div>
+                    </div>
+                    <span className="text-[10px] text-slate-500 flex items-center gap-1">
+                      {copiedKey === "wifi-pwd" ? <Check className="h-3 w-3 text-emerald-600" /> : <Copy className="h-3 w-3" />}
+                    </span>
+                  </button>
+                )}
+              </div>
+            )}
+          </Card>
+        )}
+
         {/* Wizard Step Content */}
-        <div className="animate-in slide-in-from-right-4 duration-500">
+        <div className={cn(
+          "animate-in slide-in-from-right-4 duration-500",
+          isValidated && "pointer-events-none opacity-60"
+        )}>
           {wizardStep === 1 && (
             <div className="space-y-4">
               <div className="bg-white p-6 rounded-[2rem] shadow-soft border border-slate-100">
@@ -482,42 +713,104 @@ export function StaffWizard({ task, activeCriteria, onClose, onSubmit, onToggleC
                   <div className="space-y-4">
                     {activeCriteria.map((cat) => {
                       const photo = tempPhotos.find(p => p.category === cat);
+                      const status = uploadStatus[cat] ?? "idle";
+                      const error = uploadErrors[cat];
+                      const isUploading = status === "uploading";
+                      const isError = status === "error";
                       return (
                         <div key={cat} className="group relative">
                           <div className={cn(
-                            "p-4 rounded-2xl border-2 border-dashed transition-all flex items-center justify-between",
-                            photo ? "bg-emerald-50 border-emerald-500" : "bg-slate-50 border-slate-200 hover:border-primary/50"
+                            "p-4 rounded-2xl border-2 border-dashed transition-all space-y-3",
+                            isError
+                              ? "bg-rose-50 border-rose-400"
+                              : photo
+                                ? "bg-emerald-50 border-emerald-500"
+                                : "bg-slate-50 border-slate-200 hover:border-primary/50"
                           )}>
-                            <div className="flex items-center gap-3">
-                               {photo ? (
-                                 <img src={photo.url} className="h-12 w-12 rounded-xl object-cover shadow-md border-2 border-white" alt={`Evidencia ${cat}`}/>
-                               ) : (
-                                 <div className="h-12 w-12 bg-white rounded-xl flex items-center justify-center shadow-sm">
-                                    <ImageIcon className="h-5 w-5 text-slate-300" />
-                                 </div>
-                               )}
-                               <div>
-                                  <p className="font-bold text-slate-700 text-sm">{cat}</p>
-                                  <p className="text-[10px] items-center flex gap-1 text-slate-400 font-bold">
-                                    {photo ? <span className="text-emerald-600 flex items-center gap-1"><Check className="h-2 w-2" /> LISTO</span> : "OBLIGATORIO"}
-                                  </p>
-                               </div>
-                            </div>
-                            <Button 
-                              size="icon"
-                              onClick={() => handleUploadPhoto(cat)}
-                              className={cn(
-                                "h-10 w-10 rounded-full shadow-lg",
-                                photo ? "bg-emerald-500 hover:bg-emerald-600" : "gradient-gold shadow-primary/20"
+                            <div className="flex items-center gap-3 min-w-0">
+                              {photo ? (
+                                <img src={photo.url} className="h-12 w-12 rounded-xl object-cover shadow-md border-2 border-white" alt={`Evidencia ${cat}`}/>
+                              ) : (
+                                <div className="h-12 w-12 bg-white rounded-xl flex items-center justify-center shadow-sm">
+                                  <ImageIcon className="h-5 w-5 text-slate-300" />
+                                </div>
                               )}
-                            >
-                              {photo ? <Check className="h-5 w-5 text-white" /> : <Camera className="h-5 w-5 text-primary-foreground" />}
-                            </Button>
+                              <div className="min-w-0 flex-1">
+                                <p className="font-bold text-slate-700 text-sm">{cat}</p>
+                                <p className="text-xs items-center flex gap-1 font-bold">
+                                  {isUploading ? (
+                                    <span className="text-slate-500 flex items-center gap-1">
+                                      <Loader2 className="h-3 w-3 animate-spin" /> SUBIENDO…
+                                    </span>
+                                  ) : isError ? (
+                                    <span className="text-rose-600 truncate">{error || "ERROR"}</span>
+                                  ) : photo ? (
+                                    <span className="text-emerald-600 flex items-center gap-1">
+                                      <Check className="h-3 w-3" /> LISTO
+                                    </span>
+                                  ) : (
+                                    <span className="text-slate-400">OBLIGATORIO</span>
+                                  )}
+                                </p>
+                              </div>
+                              {photo && !isUploading && (
+                                <div className="h-9 w-9 rounded-full bg-emerald-500 flex items-center justify-center shadow-md flex-shrink-0">
+                                  <Check className="h-5 w-5 text-white" />
+                                </div>
+                              )}
+                            </div>
+                            <div className="flex gap-2">
+                              <Button
+                                disabled={isUploading}
+                                onClick={() => handleUploadPhoto(cat, "camera")}
+                                className={cn(
+                                  "flex-1 h-11 rounded-xl font-bold text-xs flex items-center justify-center gap-1.5 shadow-md",
+                                  isError
+                                    ? "bg-rose-500 hover:bg-rose-600 text-white"
+                                    : photo
+                                      ? "bg-emerald-500/90 hover:bg-emerald-600 text-white"
+                                      : "gradient-gold text-primary-foreground shadow-primary/20"
+                                )}
+                              >
+                                {isUploading ? (
+                                  <Loader2 className="h-4 w-4 animate-spin" />
+                                ) : (
+                                  <>
+                                    <Camera className="h-4 w-4" />
+                                    {photo ? "Re-tomar" : "Cámara"}
+                                  </>
+                                )}
+                              </Button>
+                              <Button
+                                disabled={isUploading}
+                                variant="outline"
+                                onClick={() => handleUploadPhoto(cat, "gallery")}
+                                className="flex-1 h-11 rounded-xl font-bold text-xs flex items-center justify-center gap-1.5 border-slate-300 bg-white text-slate-700 shadow-sm"
+                              >
+                                <ImageIcon className="h-4 w-4" />
+                                Galería
+                              </Button>
+                            </div>
                           </div>
                         </div>
                       );
                     })}
                   </div>
+                  <input
+                    ref={cameraInputRef}
+                    type="file"
+                    accept="image/*"
+                    capture="environment"
+                    className="hidden"
+                    onChange={handleFileChange}
+                  />
+                  <input
+                    ref={galleryInputRef}
+                    type="file"
+                    accept="image/*"
+                    className="hidden"
+                    onChange={handleFileChange}
+                  />
               </div>
 
               <div className="bg-primary/5 p-4 rounded-2xl text-center border border-primary/10">
@@ -529,12 +822,12 @@ export function StaffWizard({ task, activeCriteria, onClose, onSubmit, onToggleC
 
               <div className="flex gap-4">
                  <Button variant="outline" className="flex-1 h-14 rounded-2xl border-slate-200 text-slate-600 font-bold" onClick={handlePrevStep}>Anterior</Button>
-                 <Button 
-                    disabled={tempPhotos.length < activeCriteria.length}
-                    className="flex-[2] h-14 rounded-2xl bg-slate-900 hover:bg-black text-white font-bold shadow-xl shadow-black/20 disabled:opacity-50" 
+                 <Button
+                    disabled={isValidated || tempPhotos.length < activeCriteria.length}
+                    className="flex-[2] h-14 rounded-2xl bg-slate-900 hover:bg-black text-white font-bold shadow-xl shadow-black/20 disabled:opacity-50"
                     onClick={handleSubmitTask}
                  >
-                   Enviar y Terminar
+                   {isValidated ? "Validada" : "Enviar y Terminar"}
                  </Button>
               </div>
             </div>

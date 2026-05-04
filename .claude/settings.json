@@ -1,0 +1,14 @@
+{
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node -e \"try { const { execSync } = require('child_process'); const changed = execSync('git diff --name-only HEAD').toString().trim().split('\\n').filter(Boolean); const sensitive = changed.filter(f => /^(src\\/(app|components|lib)\\/(staff|cleaning|checkin|api|hub)|supabase\\/migrations)/.test(f)); if (changed.length === 0) { process.exit(0); } const lines = ['CHECKLIST PRE-CIERRE — no respondas al usuario sin invocar estos agentes:']; lines.push(''); lines.push('Archivos tocados desde el último commit: ' + (changed.length ? changed.length : 0)); if (sensitive.length > 0) { lines.push('Áreas sensibles tocadas: ' + sensitive.length + ' archivos en staff/cleaning/checkin/api/hub/migrations'); lines.push(''); lines.push('OBLIGATORIO antes de cerrar turno:'); lines.push('1. Invocá el subagente auditor-cabos-sueltos sobre el área tocada (Agent tool, subagent_type: auditor-cabos-sueltos)'); lines.push('2. Invocá el subagente revisor-seguridad-privacidad sobre los mismos cambios (Agent tool, subagent_type: revisor-seguridad-privacidad)'); lines.push('3. Aplicá los fixes críticos que encuentren ANTES de devolver el turno al usuario.'); lines.push(''); lines.push('Si los hallazgos son menores, reportalos y dejá que el usuario decida. Si los críticos te bloquean, fixea y volvé a correr.'); } else { lines.push('Cambios fuera de áreas sensibles — auditoría opcional, podés cerrar.'); } console.error(lines.join('\\n')); process.exit(2); } catch (e) { process.exit(0); }\""
+          }
+        ]
+      }
+    ]
+  }
+}
