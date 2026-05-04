@@ -1,6 +1,7 @@
 ﻿"use client";
 
 import { useState, useMemo, useEffect, useCallback } from "react";
+import { formatTenantDate } from "@/lib/datetime/tenant-time";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -628,15 +629,12 @@ export default function CleaningPanel() {
     return "MANUAL";
   };
 
-  const formatLongDate = (iso: string) => {
-    if (!iso) return "—";
-    const d = new Date(iso + (iso.includes("T") ? "" : "T00:00:00"));
-    return d.toLocaleDateString("es-ES", {
+  const formatLongDate = (iso: string) =>
+    formatTenantDate(iso, undefined, {
       weekday: "short",
       day: "2-digit",
       month: "short",
     });
-  };
 
   const formatTime12 = (time: string) => {
     if (!time) return "";

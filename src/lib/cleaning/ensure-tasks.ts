@@ -13,6 +13,7 @@
  *  - GET /api/cleaning-tasks como fallback (reservas manuales viejas).
  */
 import type { SupabaseClient } from "@supabase/supabase-js";
+import { addDaysInTenant, getTodayInTenant, DEFAULT_TENANT_TZ } from "@/lib/datetime/tenant-time";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnySupabase = SupabaseClient<any, any, any>;
@@ -48,11 +49,11 @@ export async function ensureCleaningTasksForProperty(args: {
 }): Promise<EnsureTasksResult> {
   const { supabase, tenantId, propertyId } = args;
 
-  const cutoff = args.cutoffDate ?? (() => {
-    const d = new Date();
-    d.setDate(d.getDate() - 14);
-    return d.toISOString().split("T")[0];
-  })();
+  // Cutoff = hace 14 días en zona del tenant (no del servidor). Si el cron
+  // corre 3am UTC desde Vercel iad1, sin esto el día calculado podía
+  // adelantarse o atrasarse según DST.
+  const cutoff =
+    args.cutoffDate ?? addDaysInTenant(getTodayInTenant(DEFAULT_TENANT_TZ), -14, DEFAULT_TENANT_TZ);
 
   // Bookings reales de la propiedad (no bloqueos) desde cutoff.
   // CRITICO: la columna real es `num_guests`, no `guests_count` — el bug
