@@ -181,10 +181,23 @@ export async function POST(req: NextRequest) {
     .eq("tenant_id", tenantId);
   if (updErr) return NextResponse.json({ error: updErr.message }, { status: 500 });
 
+  // Recalcular cleaner_payout/supervisor_payout porque el trigger inherit
+  // sólo corre BEFORE INSERT. Sin esto, reasignar de Sofia (override 2500) a
+  // Helen (override 3000) deja la fila con 2500 y la wallet de Helen cobra
+  // mal. Ver lib/cleaning/recompute-prices.ts.
+  const { recomputeTaskPricesForTask } = await import(
+    "@/lib/cleaning/recompute-prices"
+  );
+  const { updated: priceRecomputed } = await recomputeTaskPricesForTask(
+    supabase,
+    taskId,
+  );
+
   return NextResponse.json({
     ok: true,
     taskId,
     newAssigneeId: newAssigneeId ?? null,
     newAssigneeName,
+    priceRecomputed,
   });
 }

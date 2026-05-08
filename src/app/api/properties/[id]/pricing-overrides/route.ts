@@ -8,6 +8,10 @@ import { recomputeTaskPricesForProperty } from "@/lib/cleaning/recompute-prices"
 // Body: { overrides: [{ memberId, role, amount }] }
 //   - amount === null borra el override.
 //   - reemplaza el set completo de overrides para la propiedad (idempotente).
+//
+// AUTH: PUT solo permite al dueño del tenant (tenants.user_id = auth.uid()).
+// RLS también lo bloquea pero el chequeo en el handler da un 403 con mensaje
+// claro en vez de un fallo silencioso de policy.
 
 type Role = "cleaner" | "supervisor";
 
@@ -51,11 +55,26 @@ export async function PUT(
   req: NextRequest,
   ctx: { params: Promise<{ id: string }> },
 ) {
-  const { tenantId, supabase } = await getAuthenticatedTenant();
-  if (!tenantId) {
+  const { user, tenantId, supabase } = await getAuthenticatedTenant();
+  if (!user || !tenantId) {
     return NextResponse.json({ error: "No tenant" }, { status: 403 });
   }
   const { id: propertyId } = await ctx.params;
+
+  // Sólo el dueño del tenant puede mutar tarifas. Un cleaner/supervisor del
+  // mismo tenant pasaría el filtro de tenantId pero no este chequeo.
+  const { data: ownerRow } = await supabase
+    .from("tenants")
+    .select("id")
+    .eq("id", tenantId)
+    .eq("user_id", user.id)
+    .maybeSingle();
+  if (!ownerRow) {
+    return NextResponse.json(
+      { error: "Solo el dueño del tenant puede modificar tarifas." },
+      { status: 403 },
+    );
+  }
 
   let body: { overrides?: OverridePatch[] };
   try {

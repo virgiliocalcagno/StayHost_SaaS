@@ -22,7 +22,11 @@ interface ValidateBody {
 }
 
 interface ApprovalLogEntry {
-  by: string;
+  // by = team_members.id cuando admin/supervisor del equipo aprueba.
+  // by = null cuando aprueba el dueño del tenant — guardar su auth user_id
+  // acá lo expondría al staff vía GET /cleaning-tasks. role: "owner" basta
+  // para auditar quién aprobó sin filtrar PII.
+  by: string | null;
   role: string;
   action: "approved" | "rejected";
   at: string;
@@ -165,7 +169,7 @@ export async function POST(
 
   const nowIso = new Date().toISOString();
   const logEntry: ApprovalLogEntry = {
-    by: viewer.id,
+    by: viewerIsOwner ? null : viewer.id,
     role: viewerIsOwner ? "owner" : viewer.role,
     action: approved ? "approved" : "rejected",
     at: nowIso,

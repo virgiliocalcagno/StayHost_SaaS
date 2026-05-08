@@ -86,6 +86,8 @@ interface CleaningTask {
   arrivingGuestName?: string;  // Huésped que entra hoy
   arrivingGuestCount?: number; // Pax que entra hoy
   isWaitingValidation?: boolean;
+  validatedAt?: string | null;
+  validatedBy?: string | null;
   closurePhotos?: { category: string; url: string }[];
   reportedIssues?: string[];
   suppliesReport?: { item: string; needed: number; status: "ok" | "missing" | "replenished" }[];
@@ -2048,7 +2050,10 @@ export default function CleaningPanel() {
         onClose={() => setDetailTaskId(null)}
         onReassign={handleReassignFromDetail}
         onValidate={(taskId) => { handleValidateTask(taskId); setDetailTaskId(null); }}
-        onReopen={(taskId, note) => { handleReopenFromDetail(taskId, note); setDetailTaskId(null); }}
+        onReopen={async (taskId, note) => {
+          await handleReopenFromDetail(taskId, note);
+          setDetailTaskId(null);
+        }}
         onMarkUrgent={handleMarkUrgentFromDetail}
       />
     </div>

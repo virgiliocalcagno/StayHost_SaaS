@@ -381,8 +381,8 @@ export async function POST(req: NextRequest) {
 // PATCH /api/cleaning-tasks?id=... — update task fields
 // RLS restricts the update to rows owned by the current tenant.
 export async function PATCH(req: NextRequest) {
-  const { tenantId, supabase } = await getAuthenticatedTenant();
-  if (!tenantId) {
+  const { user, tenantId, supabase } = await getAuthenticatedTenant();
+  if (!user || !tenantId) {
     return NextResponse.json({ error: "No tenant linked to this user" }, { status: 403 });
   }
 
@@ -391,13 +391,47 @@ export async function PATCH(req: NextRequest) {
 
   try {
     const body = await req.json();
+
+    // Resolver rol del caller. Para detectar "owner" sin team_members row,
+    // chequeamos tenants.user_id. Anti-bypass: ciertos campos sólo los
+    // puede setear admin/supervisor/owner.
+    const { data: m } = await supabase
+      .from("team_members")
+      .select("role")
+      .eq("auth_user_id", user.id)
+      .eq("tenant_id", tenantId)
+      .maybeSingle();
+    const callerRole = (m as { role?: string } | null)?.role ?? null;
+    let callerIsOwnerOrSup = callerRole === "admin" || callerRole === "supervisor";
+    if (!callerIsOwnerOrSup) {
+      const { data: ownerRow } = await supabase
+        .from("tenants")
+        .select("id")
+        .eq("id", tenantId)
+        .eq("user_id", user.id)
+        .maybeSingle();
+      if (ownerRow) callerIsOwnerOrSup = true;
+    }
+
     const update: Record<string, unknown> = {};
     if (body.status !== undefined) update.status = body.status;
     if (body.assigneeId !== undefined) update.assignee_id = body.assigneeId;
     if (body.assigneeName !== undefined) update.assignee_name = body.assigneeName;
     if (body.assigneeAvatar !== undefined) update.assignee_avatar = body.assigneeAvatar;
     if (body.startTime !== undefined) update.start_time = body.startTime;
-    if (body.isWaitingValidation !== undefined) update.is_waiting_validation = body.isWaitingValidation;
+    if (body.isWaitingValidation !== undefined) {
+      // Cerrar bypass: bajar el flag a false desde PATCH genérico equivalía
+      // a saltarse /validate. Sólo admin/supervisor/owner pueden bajarlo.
+      // Subirlo a true sí lo puede hacer el cleaner (es lo que hace el
+      // wizard al cerrar la tarea).
+      if (body.isWaitingValidation === false && !callerIsOwnerOrSup) {
+        return NextResponse.json(
+          { error: "Solo admin/supervisor pueden marcar la tarea como ya no esperando validación. Usá /validate." },
+          { status: 403 },
+        );
+      }
+      update.is_waiting_validation = body.isWaitingValidation;
+    }
     if (body.checklistItems !== undefined) update.checklist_items = body.checklistItems;
     if (body.closurePhotos !== undefined) update.closure_photos = body.closurePhotos;
     if (body.rejectionReason !== undefined) update.rejection_reason = body.rejectionReason;
@@ -406,6 +440,12 @@ export async function PATCH(req: NextRequest) {
     // /api/cleaning-tasks/[id]/validate, que aplica las reglas anti-fraude
     // (no auto-aprobación) y la cadena canónica de aprobación. Permitir
     // escritura directa desde acá rompe esas garantías.
+    if (body.validatedAt !== undefined || body.validatedBy !== undefined) {
+      return NextResponse.json(
+        { error: "validatedAt/validatedBy se setean sólo vía /api/cleaning-tasks/[id]/validate" },
+        { status: 400 },
+      );
+    }
     if (body.declinedByIds !== undefined) update.declined_by_ids = body.declinedByIds;
     if (body.reportedIssues !== undefined) update.reported_issues = body.reportedIssues;
 
@@ -449,6 +489,20 @@ export async function PATCH(req: NextRequest) {
         console.log("[cleaning-tasks PATCH] sync result for", id, result);
       } catch (e) {
         console.error("[cleaning-tasks PATCH] syncStaffPinForTask failed:", e);
+      }
+    }
+
+    // Si cambió el assignee, recalcular cleaner_payout (trigger inherit es
+    // sólo BEFORE INSERT — sin esto, la fila se queda con el override del
+    // assignee anterior).
+    if (touchesAssignee) {
+      try {
+        const { recomputeTaskPricesForTask } = await import(
+          "@/lib/cleaning/recompute-prices"
+        );
+        await recomputeTaskPricesForTask(supabase, id);
+      } catch (e) {
+        console.error("[cleaning-tasks PATCH] recompute prices failed:", e);
       }
     }
 
