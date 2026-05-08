@@ -50,15 +50,40 @@ export async function POST(
     );
   }
 
+  // El viewer puede ser:
+  //   1. Un team_member con role admin/supervisor.
+  //   2. El dueño del tenant (tenants.user_id = auth.uid()) — en este caso lo
+  //      tratamos como admin aunque no figure en team_members. La regla
+  //      anti-fraude (assignee !== viewer) sigue aplicando porque el dueño
+  //      no debería estar limpiando tareas (no tiene team_members.id).
   const { data: memberRow } = await supabase
     .from("team_members")
     .select("id, role")
     .eq("auth_user_id", user.id)
     .eq("tenant_id", tenantId)
     .maybeSingle();
-  const viewer = memberRow as { id: string; role: string } | null;
+  let viewer = memberRow as { id: string; role: string } | null;
+
+  let viewerIsOwner = false;
   if (!viewer) {
-    return NextResponse.json({ error: "No team_member" }, { status: 403 });
+    const { data: ownerRow } = await supabase
+      .from("tenants")
+      .select("id")
+      .eq("id", tenantId)
+      .eq("user_id", user.id)
+      .maybeSingle();
+    if (ownerRow) {
+      // El dueño no tiene team_members row → guardamos su auth user_id en
+      // el approval_log y validated_by queda NULL (la columna es FK a
+      // team_members.id, no podemos meter un auth.uid() ahí). El registro
+      // canónico de quién aprobó queda en approval_log.
+      viewer = { id: user.id, role: "admin" };
+      viewerIsOwner = true;
+    }
+  }
+
+  if (!viewer) {
+    return NextResponse.json({ error: "No autorizado" }, { status: 403 });
   }
   if (viewer.role !== "admin" && viewer.role !== "supervisor") {
     return NextResponse.json(
@@ -141,17 +166,22 @@ export async function POST(
   const nowIso = new Date().toISOString();
   const logEntry: ApprovalLogEntry = {
     by: viewer.id,
-    role: viewer.role,
+    role: viewerIsOwner ? "owner" : viewer.role,
     action: approved ? "approved" : "rejected",
     at: nowIso,
     ...(rejectionNote ? { note: rejectionNote } : {}),
   };
   const newLog = [...(task.approval_log ?? []), logEntry];
 
+  // validated_by es FK a team_members(id). Si el aprobador es el dueño del
+  // tenant (sin row en team_members), dejamos validated_by en null pero el
+  // approval_log conserva quién aprobó (con role=owner y by=auth user_id).
+  const validatedByForRow = viewerIsOwner ? null : viewer.id;
+
   const patch = approved
     ? {
         validated_at: nowIso,
-        validated_by: viewer.id,
+        validated_by: validatedByForRow,
         rejection_note: null,
         is_waiting_validation: false,
         approval_log: newLog,

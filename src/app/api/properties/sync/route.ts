@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getAuthenticatedTenant } from "@/lib/supabase/server";
+import { recomputeTaskPricesForProperty } from "@/lib/cleaning/recompute-prices";
 
 // POST /api/properties/sync
 // Upserts a property for the authenticated tenant. The tenant_id is taken
@@ -80,6 +81,8 @@ export async function POST(req: NextRequest) {
           cleaning_fee_one_day: property.cleaningFeeOneDay ?? 0,
           cleaning_fee_more_days: property.cleaningFeeMoreDays ?? 0,
           default_cleaner_payout: property.cleanerPayout ?? null,
+          default_supervisor_payout: property.defaultSupervisorPayout ?? null,
+          default_client_price: property.defaultClientPrice ?? null,
           supervisor_id: property.supervisorId ?? null,
           weekly_discount_percent: property.weeklyDiscountPercent ?? 0,
           energy_fee_per_day: property.energyFeePerDay ?? 0,
@@ -136,7 +139,23 @@ export async function POST(req: NextRequest) {
     }
 
     const d = data as { id: string; ical_token: string | null };
-    return NextResponse.json({ ok: true, id: d.id, tenant_id: tenantId, ical_token: d.ical_token });
+
+    // Recalcular precios de tareas no validadas. Si el dueño cambió los
+    // defaults de la propiedad, las tareas pendientes/asignadas/in_progress
+    // pasan al precio nuevo. No tocamos tareas con validated_at porque
+    // ya entraron al flujo de payouts.
+    const { updated: recomputedTasks } = await recomputeTaskPricesForProperty(
+      supabase,
+      d.id,
+    );
+
+    return NextResponse.json({
+      ok: true,
+      id: d.id,
+      tenant_id: tenantId,
+      ical_token: d.ical_token,
+      recomputedTasks,
+    });
   } catch (err) {
     return NextResponse.json(
       { step: "exception", error: err instanceof Error ? err.message : String(err) },

@@ -402,8 +402,10 @@ export async function PATCH(req: NextRequest) {
     if (body.closurePhotos !== undefined) update.closure_photos = body.closurePhotos;
     if (body.rejectionReason !== undefined) update.rejection_reason = body.rejectionReason;
     if (body.rejectionNote !== undefined) update.rejection_note = body.rejectionNote;
-    if (body.validatedAt !== undefined) update.validated_at = body.validatedAt;
-    if (body.validatedBy !== undefined) update.validated_by = body.validatedBy;
+    // validatedAt / validatedBy NO se aceptan acá. La validación pasa por
+    // /api/cleaning-tasks/[id]/validate, que aplica las reglas anti-fraude
+    // (no auto-aprobación) y la cadena canónica de aprobación. Permitir
+    // escritura directa desde acá rompe esas garantías.
     if (body.declinedByIds !== undefined) update.declined_by_ids = body.declinedByIds;
     if (body.reportedIssues !== undefined) update.reported_issues = body.reportedIssues;
 
