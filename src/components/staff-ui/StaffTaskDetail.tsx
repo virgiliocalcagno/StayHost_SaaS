@@ -2,6 +2,7 @@
 
 import React, { useState } from "react";
 import { cn } from "@/lib/utils";
+import { useCopyFeedback } from "@/lib/hooks/useCopyFeedback";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -23,11 +24,13 @@ import {
   Copy,
 } from "lucide-react";
 import { CleaningTask, getPriorityInfo } from "@/types/staff";
+import { buildHelpMessage } from "@/lib/staff-help/buildHelpMessage";
 
 export interface StaffTaskDetailProps {
   task: CleaningTask;
   bedConfiguration?: string;
   ownerWhatsapp?: string | null;
+  staffName?: string | null;
   onClose: () => void;
   onAccept: (taskId: string) => void;
   onDecline: (taskId: string, reason: string) => void;
@@ -45,6 +48,7 @@ export function StaffTaskDetail({
   task,
   bedConfiguration,
   ownerWhatsapp,
+  staffName,
   onClose,
   onAccept,
   onDecline,
@@ -52,17 +56,14 @@ export function StaffTaskDetail({
 }: StaffTaskDetailProps) {
   const [rejectMode, setRejectMode] = useState(false);
   const [rejectReason, setRejectReason] = useState("");
-  const [copied, setCopied] = useState<string | null>(null);
+  const { copiedKey: copied, copy } = useCopyFeedback();
 
   const priority = getPriorityInfo(task);
-  const guestDigits = task.guestPhone ? toDigits(task.guestPhone) : null;
+  // Por privacidad del huésped, el staff sólo ve el primer nombre, sin
+  // apellido y sin teléfono. Si necesita comunicarse, lo coordina vía
+  // supervisor — botón "Pedir ayuda" más abajo.
+  const guestFirstName = (task.guestName || "").trim().split(/\s+/)[0] || null;
   const ownerDigits = ownerWhatsapp ? toDigits(ownerWhatsapp) : null;
-
-  const copy = (label: string, text: string) => {
-    navigator.clipboard?.writeText(text).catch(() => {});
-    setCopied(label);
-    setTimeout(() => setCopied(null), 1500);
-  };
 
   return (
     <div className="min-h-screen bg-[#F8F9FC] pb-20 animate-in slide-in-from-bottom duration-500">
@@ -129,7 +130,7 @@ export function StaffTaskDetail({
                 <p className="text-[11px] font-bold text-slate-400 uppercase tracking-widest">
                   Huésped
                 </p>
-                <p className="text-lg font-bold text-slate-800 truncate">{task.guestName}</p>
+                <p className="text-lg font-bold text-slate-800 truncate">{guestFirstName ?? "Reserva"}</p>
               </div>
               {task.guestCount && (
                 <div className="space-y-1">
@@ -148,6 +149,24 @@ export function StaffTaskDetail({
                 </div>
               )}
             </div>
+
+            {/* Re-trabajo solicitado por el supervisor. Cuando el supervisor
+                rechaza el cierre con "Pedir re-foto", la nota queda visible
+                acá hasta que el cleaner re-envíe la evidencia y el supervisor
+                la valide (handleValidateTask limpia rejection_note). */}
+            {task.rejectionNote && (
+              <div className="p-4 rounded-2xl bg-amber-50 border-2 border-amber-300 flex items-start gap-3">
+                <AlertTriangle className="h-5 w-5 text-amber-600 flex-shrink-0 mt-0.5" />
+                <div className="flex-1 min-w-0">
+                  <p className="text-[11px] font-black text-amber-700 uppercase tracking-widest mb-1">
+                    El supervisor te pidió revisión
+                  </p>
+                  <p className="text-sm text-amber-900 leading-snug">
+                    {task.rejectionNote}
+                  </p>
+                </div>
+              </div>
+            )}
 
             {/* ACCESO — PIN TTLock o keybox o "esperar contacto". Lo más
                 importante de la pantalla: sin esto el staff no puede entrar. */}
@@ -296,33 +315,29 @@ export function StaffTaskDetail({
           </div>
         </Card>
 
-        {/* CONTACTOS — coordinación huésped + owner */}
-        {(guestDigits || ownerDigits) && (
+        {/* CONTACTOS — sólo supervisor / admin. Por privacidad del huésped,
+            el staff NO ve el teléfono ni nombre completo del huésped. Si
+            necesita avisar algo al huésped, lo coordina vía supervisor. */}
+        {ownerDigits && (
           <div className="space-y-2">
             <h4 className="text-xs font-bold text-slate-400 uppercase tracking-widest px-1 flex items-center gap-2">
               <Phone className="h-3.5 w-3.5" />
-              Contactos
+              Pedir ayuda
             </h4>
             <div className="bg-white p-4 rounded-[1.75rem] border border-slate-100 space-y-2">
-              {guestDigits && (
-                <ContactRow
-                  icon={<User className="h-5 w-5 text-slate-500" />}
-                  label="Huésped"
-                  name={task.guestName}
-                  digits={guestDigits}
-                  raw={task.guestPhone!}
-                />
-              )}
-              {ownerDigits && (
-                <ContactRow
-                  icon={<User className="h-5 w-5 text-primary" />}
-                  label="Anfitrión"
-                  name="Llamar al dueño"
-                  digits={ownerDigits}
-                  raw={ownerWhatsapp!}
-                  primary
-                />
-              )}
+              <ContactRow
+                icon={<User className="h-5 w-5 text-primary" />}
+                label="Supervisor"
+                name="Avisar al supervisor"
+                digits={ownerDigits}
+                raw={ownerWhatsapp!}
+                whatsappMessage={buildHelpMessage({
+                  staffName,
+                  propertyName: task.propertyName,
+                  dueTime: task.dueTime,
+                })}
+                primary
+              />
             </div>
           </div>
         )}
@@ -337,7 +352,7 @@ export function StaffTaskDetail({
             <div className="bg-white p-4 rounded-[1.75rem] border border-slate-100 grid grid-cols-2 gap-3">
               {task.wifiName && (
                 <button
-                  onClick={() => copy("wifi-name", task.wifiName!)}
+                  onClick={() => copy(task.wifiName!, "wifi-name")}
                   className="text-left p-3 rounded-xl bg-slate-50 hover:bg-slate-100 active:scale-[0.98] transition-all"
                 >
                   <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-0.5">
@@ -354,7 +369,7 @@ export function StaffTaskDetail({
               )}
               {task.wifiPassword && (
                 <button
-                  onClick={() => copy("wifi-pwd", task.wifiPassword!)}
+                  onClick={() => copy(task.wifiPassword!, "wifi-pwd")}
                   className="text-left p-3 rounded-xl bg-slate-50 hover:bg-slate-100 active:scale-[0.98] transition-all"
                 >
                   <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-0.5">
@@ -407,7 +422,7 @@ function AccessBlock({
   copiedLabel,
 }: {
   task: CleaningTask;
-  onCopy: (label: string, text: string) => void;
+  onCopy: (value: string, key: string) => void;
   copiedLabel: string | null;
 }) {
   const accepted = task.acceptanceStatus !== "pending";
@@ -428,7 +443,7 @@ function AccessBlock({
             </p>
             {accepted && task.accessPin ? (
               <button
-                onClick={() => onCopy("pin", task.accessPin!)}
+                onClick={() => onCopy(task.accessPin!, "pin")}
                 className="text-left w-full"
               >
                 <p className="text-3xl font-black tracking-[0.2em] text-violet-900 font-mono">
@@ -467,7 +482,7 @@ function AccessBlock({
             </p>
             {task.keyboxCode ? (
               <button
-                onClick={() => onCopy("keybox", task.keyboxCode!)}
+                onClick={() => onCopy(task.keyboxCode!, "keybox")}
                 className="text-left w-full"
               >
                 <p className="text-3xl font-black tracking-[0.2em] text-amber-900 font-mono">
@@ -542,6 +557,7 @@ function ContactRow({
   digits,
   raw,
   primary,
+  whatsappMessage,
 }: {
   icon: React.ReactNode;
   label: string;
@@ -549,8 +565,12 @@ function ContactRow({
   digits: string;
   raw: string;
   primary?: boolean;
+  whatsappMessage?: string;
 }) {
   const display = raw.startsWith("+") ? raw : `+${digits}`;
+  const waHref = whatsappMessage
+    ? `https://wa.me/${digits}?text=${encodeURIComponent(whatsappMessage)}`
+    : `https://wa.me/${digits}`;
   return (
     <div className="flex items-center gap-3 p-2">
       <div
@@ -575,7 +595,7 @@ function ContactRow({
           <Phone className="h-5 w-5 text-slate-700" />
         </a>
         <a
-          href={`https://wa.me/${digits}`}
+          href={waHref}
           target="_blank"
           rel="noopener noreferrer"
           className="h-11 w-11 rounded-xl bg-emerald-500 hover:bg-emerald-600 active:scale-95 transition-all flex items-center justify-center"

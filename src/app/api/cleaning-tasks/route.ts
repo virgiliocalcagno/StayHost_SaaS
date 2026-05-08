@@ -49,6 +49,9 @@ type CleaningTaskRow = {
   start_time: string | null;
   is_waiting_validation: boolean | null;
   rejection_reason: string | null;
+  rejection_note: string | null;
+  validated_at: string | null;
+  validated_by: string | null;
   declined_by_ids: unknown;
   note: string | null;
   created_at: string | null;
@@ -259,6 +262,9 @@ export async function GET() {
       startTime: t.start_time ?? undefined,
       isWaitingValidation: t.is_waiting_validation ?? false,
       rejectionReason: t.rejection_reason ?? undefined,
+      rejectionNote: t.rejection_note ?? null,
+      validatedAt: t.validated_at ?? null,
+      validatedBy: t.validated_by ?? null,
       declinedByIds: t.declined_by_ids ?? [],
       acceptanceStatus:
         t.status === "accepted" ? "accepted" : t.status === "rejected" ? "declined" : "pending",
@@ -395,6 +401,9 @@ export async function PATCH(req: NextRequest) {
     if (body.checklistItems !== undefined) update.checklist_items = body.checklistItems;
     if (body.closurePhotos !== undefined) update.closure_photos = body.closurePhotos;
     if (body.rejectionReason !== undefined) update.rejection_reason = body.rejectionReason;
+    if (body.rejectionNote !== undefined) update.rejection_note = body.rejectionNote;
+    if (body.validatedAt !== undefined) update.validated_at = body.validatedAt;
+    if (body.validatedBy !== undefined) update.validated_by = body.validatedBy;
     if (body.declinedByIds !== undefined) update.declined_by_ids = body.declinedByIds;
     if (body.reportedIssues !== undefined) update.reported_issues = body.reportedIssues;
 

@@ -191,8 +191,27 @@ export default function DashboardSidebar({
     if (MODULES_IN_CONSTRUCTION.has(item.id) && !showInConstruction) return false;
     return true;
   });
+  // Badge de tareas pendientes de validación. Se refresca cada 60s.
+  // Cuando agreguemos `submitted_for_validation_at` separamos urgent vs total.
+  const [pendingValidation, setPendingValidation] = useState<number>(0);
+  useEffect(() => {
+    let cancelled = false;
+    const load = () => {
+      fetch("/api/cleaning-tasks/badges", { credentials: "include", cache: "no-store" })
+        .then((r) => (r.ok ? r.json() : { pendingValidation: 0 }))
+        .then((d: { pendingValidation?: number }) => {
+          if (!cancelled) setPendingValidation(d.pendingValidation ?? 0);
+        })
+        .catch(() => {});
+    };
+    load();
+    const t = setInterval(load, 60_000);
+    return () => { cancelled = true; clearInterval(t); };
+  }, []);
+
   const renderMenuItem = (item: { id: string; label: string; icon: React.ElementType }) => {
     const isActive = activePanel === item.id;
+    const badgeCount = item.id === "cleaning" ? pendingValidation : 0;
     const menuButton = (
       <Button
         key={item.id}
@@ -202,8 +221,24 @@ export default function DashboardSidebar({
         } ${!sidebarOpen && "justify-center px-2"}`}
         onClick={() => setActivePanel(item.id as PanelType)}
       >
-        <item.icon className="h-5 w-5 shrink-0" />
-        {sidebarOpen && <span className="truncate">{item.label}</span>}
+        <div className="relative shrink-0">
+          <item.icon className="h-5 w-5" />
+          {badgeCount > 0 && (
+            <span className="absolute -top-1.5 -right-1.5 min-w-[1.1rem] h-[1.1rem] px-1 rounded-full bg-rose-500 text-white text-[10px] font-bold flex items-center justify-center shadow-sm ring-2 ring-card">
+              {badgeCount > 99 ? "99+" : badgeCount}
+            </span>
+          )}
+        </div>
+        {sidebarOpen && (
+          <span className="truncate flex-1 flex items-center justify-between gap-2">
+            {item.label}
+            {badgeCount > 0 && (
+              <span className="text-[10px] font-bold text-rose-600">
+                {badgeCount} a validar
+              </span>
+            )}
+          </span>
+        )}
       </Button>
     );
 
