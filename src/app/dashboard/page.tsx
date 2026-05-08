@@ -17,6 +17,7 @@ import AgreementsPanel from "@/components/dashboard/AgreementsPanel";
 import ReviewsPanel from "@/components/dashboard/ReviewsPanel";
 import TasksPanel from "@/components/dashboard/TasksPanel";
 import TeamPanel from "@/components/dashboard/TeamPanel";
+import PayoutsPanel from "@/components/dashboard/PayoutsPanel";
 import CheckInsPanel from "@/components/dashboard/CheckInsPanel";
 import AccountsPanel from "@/components/dashboard/AccountsPanel";
 import KeysPanel from "@/components/dashboard/KeysPanel";
@@ -44,6 +45,7 @@ type PanelType =
   | "reviews"
   | "tasks"
   | "team"
+  | "payouts"
   | "check-ins"
   | "accounts"
   | "keys"
@@ -106,7 +108,7 @@ function DashboardContent() {
       const valid: PanelType[] = [
         "overview", "properties", "calendar", "messages", "cleaning",
         "pricing", "bookings", "devices", "upsells", "agreements",
-        "reviews", "tasks", "team", "check-ins", "accounts", "keys",
+        "reviews", "tasks", "team", "payouts", "check-ins", "accounts", "keys",
         "maintenance", "vendors", "reports",
       ];
       if ((valid as string[]).includes(panel)) {
@@ -190,6 +192,8 @@ function DashboardContent() {
         return <TasksPanel />;
       case "team":
         return <TeamPanel />;
+      case "payouts":
+        return <PayoutsPanel />;
       case "check-ins":
         return <CheckInsPanel />;
       case "accounts":

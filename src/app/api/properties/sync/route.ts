@@ -79,6 +79,8 @@ export async function POST(req: NextRequest) {
           price: property.price ?? 0,
           cleaning_fee_one_day: property.cleaningFeeOneDay ?? 0,
           cleaning_fee_more_days: property.cleaningFeeMoreDays ?? 0,
+          default_cleaner_payout: property.cleanerPayout ?? null,
+          supervisor_id: property.supervisorId ?? null,
           weekly_discount_percent: property.weeklyDiscountPercent ?? 0,
           energy_fee_per_day: property.energyFeePerDay ?? 0,
           additional_services_fee: property.additionalServicesFee ?? 0,

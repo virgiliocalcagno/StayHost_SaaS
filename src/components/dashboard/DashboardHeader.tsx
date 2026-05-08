@@ -33,6 +33,7 @@ type PanelType =
   | "reviews"
   | "tasks"
   | "team"
+  | "payouts"
   | "check-ins"
   | "accounts"
   | "keys"
@@ -63,6 +64,7 @@ const panelTitles: Record<PanelType, string> = {
   reviews: "Reseñas",
   tasks: "Tareas",
   team: "Miembros del Equipo",
+  payouts: "Pagos al Equipo",
   "check-ins": "Check-ins",
   accounts: "Cuentas y Listados",
   keys: "Llaves",

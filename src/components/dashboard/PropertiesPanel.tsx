@@ -119,6 +119,8 @@ interface Property {
   price: number;
   cleaningFeeOneDay?: number;
   cleaningFeeMoreDays?: number;
+  cleanerPayout?: number;
+  supervisorId?: string | null;
   weeklyDiscountPercent?: number;
   energyFeePerDay?: number;
   additionalServicesFee?: number;
@@ -162,6 +164,82 @@ interface Property {
   keyboxPhotoUrl?: string;
   keyboxShareWithGuest?: boolean;  // default true — false = caja solo para staff
   icalToken?: string;          // capability secret para /api/ical/export
+}
+
+// Factory: cada llamada devuelve un objeto fresh para que no se compartan
+// arrays/objetos anidados entre useState y los reset.
+function makeInitialFormData() {
+  return {
+    name: "",
+    address: "",
+    addressUnit: "",
+    neighborhood: "",
+    city: "",
+    postalCode: "",
+    type: "apartment" as Property["type"],
+    price: "",
+    beds: "",
+    baths: "",
+    maxGuests: "",
+    airbnbUrl: "",
+    airbnbIcal: "",
+    bookingUrl: "",
+    bookingIcal: "",
+    vrboUrl: "",
+    vrboIcal: "",
+    directaEnabled: false,
+    cleaningFeeOneDay: "",
+    cleaningFeeMoreDays: "",
+    cleanerPayout: "",
+    supervisorId: "",
+    weeklyDiscountPercent: "",
+    energyFeePerDay: "",
+    additionalServicesFee: "",
+    recurringSupplies: [] as SupplyRule[],
+    autoAssignCleaner: false,
+    cleanerPriorities: [] as string[],
+    bedConfiguration: "",
+    standardInstructions: "",
+    evidenceCriteria: ["Cocina", "Habitación", "Baño"] as string[],
+    descriptionES: "",
+    descriptionEN: "",
+    photoTour: [] as PhotoTourRoom[],
+    amenitiesConfig: {
+      popular: [],
+      bathroom: [],
+      bedroom: [],
+      kitchen: [],
+      outdoor: [],
+    } as AmenitiesConfig,
+    wifiSsid: "",
+    wifiPassword: "",
+    electricityEnabled: false,
+    electricityRate: "",
+    checkInTime: "14:00",
+    checkOutTime: "12:00",
+    ttlockLockId: "",
+    accessMethod: "in_person" as Property["accessMethod"],
+    hasKeybox: false,
+    keyboxCode: "",
+    keyboxLocation: "",
+    keyboxPhotoUrl: "",
+    keyboxShareWithGuest: true,
+  };
+}
+
+// Garantiza que amenitiesConfig siempre tenga las 5 keys con arrays. Hay
+// propiedades viejas en BD con amenities_config = {} (objeto vacío) que el
+// fallback "|| {default}" no cubre porque {} es truthy. Sin esto, el modal
+// rompe con "Cannot read properties of undefined (reading 'includes')".
+function normalizeAmenitiesConfig(raw: unknown): AmenitiesConfig {
+  const r = (raw ?? {}) as Partial<AmenitiesConfig>;
+  return {
+    popular: Array.isArray(r.popular) ? r.popular : [],
+    bathroom: Array.isArray(r.bathroom) ? r.bathroom : [],
+    bedroom: Array.isArray(r.bedroom) ? r.bedroom : [],
+    kitchen: Array.isArray(r.kitchen) ? r.kitchen : [],
+    outdoor: Array.isArray(r.outdoor) ? r.outdoor : [],
+  };
 }
 
 // ─── Mock Data ──────────────────────────────────────────────────────────────
@@ -660,6 +738,8 @@ export default function PropertiesPanel() {
           amenities: p.amenities ?? [],
           cleaningFeeOneDay: p.cleaning_fee_one_day ?? 0,
           cleaningFeeMoreDays: p.cleaning_fee_more_days ?? 0,
+          cleanerPayout: p.cleaner_payout ?? 0,
+          supervisorId: p.supervisor_id ?? null,
           weeklyDiscountPercent: p.weekly_discount_percent ?? 0,
           energyFeePerDay: p.energy_fee_per_day ?? 0,
           additionalServicesFee: p.additional_services_fee ?? 0,
@@ -672,7 +752,7 @@ export default function PropertiesPanel() {
           descriptionES: p.description_es ?? undefined,
           descriptionEN: p.description_en ?? undefined,
           photoTour: p.photo_tour ?? [],
-          amenitiesConfig: p.amenities_config ?? undefined,
+          amenitiesConfig: normalizeAmenitiesConfig(p.amenities_config),
           channels: [
             { name: "Airbnb", connected: !!p.ical_airbnb, color: "bg-rose-500", icon: "A", icalUrl: p.ical_airbnb ?? undefined },
             { name: "Booking", connected: false, color: "bg-blue-600", icon: "B" },
@@ -713,79 +793,36 @@ export default function PropertiesPanel() {
     }
   }, []);
 
-  // ─── Cleaners from team (for automation tab) ───────────────────────────────
-  // Fuente de verdad: /api/team-members. Filtramos por role="cleaner" en cliente.
+  // ─── Cleaners y supervisores del team ───────────────────────────────────
+  // Fuente de verdad: /api/team-members. Filtramos por role en cliente.
   const [availableCleaners, setAvailableCleaners] = useState<{id: string; name: string; avatar?: string}[]>([]);
+  const [availableSupervisors, setAvailableSupervisors] = useState<{id: string; name: string}[]>([]);
   useEffect(() => {
     let cancelled = false;
     fetch("/api/team-members", { credentials: "same-origin" })
       .then((res) => (res.ok ? res.json() : { members: [] }))
       .then((data) => {
         if (cancelled) return;
-        const cleaners = ((data.members ?? []) as Array<{ id: string; name: string; avatar?: string; role: string }>)
-          .filter((m) => m.role === "cleaner")
-          .map((m) => ({ id: m.id, name: m.name, avatar: m.avatar }));
-        setAvailableCleaners(cleaners);
+        const members = (data.members ?? []) as Array<{ id: string; name: string; avatar?: string; role: string }>;
+        setAvailableCleaners(
+          members.filter((m) => m.role === "cleaner").map((m) => ({ id: m.id, name: m.name, avatar: m.avatar }))
+        );
+        // Compat: legacy "manager" se trata como supervisor.
+        setAvailableSupervisors(
+          members.filter((m) => m.role === "supervisor" || m.role === "manager").map((m) => ({ id: m.id, name: m.name }))
+        );
       })
-      .catch(() => { if (!cancelled) setAvailableCleaners([]); });
+      .catch(() => {
+        if (cancelled) return;
+        setAvailableCleaners([]);
+        setAvailableSupervisors([]);
+      });
     return () => { cancelled = true; };
   }, []);
 
-  // Form state
-  const [formData, setFormData] = useState({
-    name: "",
-    address: "",
-    addressUnit: "",
-    neighborhood: "",
-    city: "",
-    postalCode: "",
-    type: "apartment" as Property["type"],
-    price: "",
-    beds: "",
-    baths: "",
-    maxGuests: "",
-    airbnbUrl: "",
-    airbnbIcal: "",
-    bookingUrl: "",
-    bookingIcal: "",
-    vrboUrl: "",
-    vrboIcal: "",
-    directaEnabled: false,
-    cleaningFeeOneDay: "",
-    cleaningFeeMoreDays: "",
-    weeklyDiscountPercent: "",
-    energyFeePerDay: "",
-    additionalServicesFee: "",
-    recurringSupplies: [] as SupplyRule[],
-    autoAssignCleaner: false,
-    cleanerPriorities: [] as string[],
-    bedConfiguration: "",
-    standardInstructions: "",
-    evidenceCriteria: [] as string[],
-    descriptionES: "",
-    descriptionEN: "",
-    photoTour: [] as PhotoTourRoom[],
-    amenitiesConfig: {
-      popular: [],
-      bathroom: [],
-      bedroom: [],
-      kitchen: [],
-      outdoor: []
-    } as AmenitiesConfig,
-    wifiSsid: "",
-    wifiPassword: "",
-    electricityEnabled: false,
-    electricityRate: "",
-    checkInTime: "14:00",
-    checkOutTime: "12:00",
-    ttlockLockId: "",
-    accessMethod: "in_person" as Property["accessMethod"],
-    hasKeybox: false,
-    keyboxCode: "",
-    keyboxLocation: "",
-    keyboxPhotoUrl: "",
-    keyboxShareWithGuest: true,
-  });
+  // Form state — el initial state nunca se ve directamente porque el modal
+  // siempre pasa por handleOpenAdd/handleOpenEdit antes de abrirse.
+  const [formData, setFormData] = useState(makeInitialFormData);
 
   // ─── Filtered ──────────────────────────────────────────────────────────────
   const filtered = useMemo(() => {
@@ -943,7 +980,7 @@ export default function PropertiesPanel() {
     setModalTab("propiedad");
     setCreationStep("options");
     setAirbnbImportLink("");
-    setFormData({ name: "", address: "", addressUnit: "", neighborhood: "", city: "", postalCode: "", type: "apartment", price: "", beds: "", baths: "", maxGuests: "", airbnbUrl: "", airbnbIcal: "", bookingUrl: "", bookingIcal: "", vrboUrl: "", vrboIcal: "", directaEnabled: false, cleaningFeeOneDay: "", cleaningFeeMoreDays: "", weeklyDiscountPercent: "", energyFeePerDay: "", additionalServicesFee: "", recurringSupplies: [], autoAssignCleaner: false, cleanerPriorities: [], bedConfiguration: "", standardInstructions: "", evidenceCriteria: ["Cocina", "Habitación", "Baño"], descriptionEN: "", descriptionES: "", photoTour: [], amenitiesConfig: { popular: [], bathroom: [], bedroom: [], kitchen: [], outdoor: [] }, wifiSsid: "", wifiPassword: "", electricityEnabled: false, electricityRate: "", checkInTime: "14:00", checkOutTime: "12:00", ttlockLockId: "", accessMethod: "in_person", hasKeybox: false, keyboxCode: "", keyboxLocation: "", keyboxPhotoUrl: "", keyboxShareWithGuest: true });
+    setFormData(makeInitialFormData());
     setShowModal(true);
   };
 
@@ -972,6 +1009,8 @@ export default function PropertiesPanel() {
       directaEnabled: p.channels.find(c => c.name === "Directa")?.connected || false,
       cleaningFeeOneDay: p.cleaningFeeOneDay?.toString() || "",
       cleaningFeeMoreDays: p.cleaningFeeMoreDays?.toString() || "",
+      cleanerPayout: p.cleanerPayout?.toString() || "",
+      supervisorId: p.supervisorId ?? "",
       weeklyDiscountPercent: p.weeklyDiscountPercent?.toString() || "",
       energyFeePerDay: p.energyFeePerDay?.toString() || "",
       additionalServicesFee: p.additionalServicesFee?.toString() || "",
@@ -984,13 +1023,7 @@ export default function PropertiesPanel() {
       descriptionES: p.descriptionES || "",
       descriptionEN: p.descriptionEN || "",
       photoTour: p.photoTour || [],
-      amenitiesConfig: p.amenitiesConfig || {
-        popular: [],
-        bathroom: [],
-        bedroom: [],
-        kitchen: [],
-        outdoor: []
-      },
+      amenitiesConfig: normalizeAmenitiesConfig(p.amenitiesConfig),
       wifiSsid: p.wifiSsid || "",
       wifiPassword: p.wifiPassword || "",
       electricityEnabled: p.electricityEnabled || false,
@@ -1053,6 +1086,8 @@ export default function PropertiesPanel() {
         currency: "USD",
         cleaningFeeOneDay: Number(formData.cleaningFeeOneDay) || 0,
         cleaningFeeMoreDays: Number(formData.cleaningFeeMoreDays) || 0,
+        cleanerPayout: formData.cleanerPayout === "" ? undefined : Number(formData.cleanerPayout) || 0,
+        supervisorId: formData.supervisorId || null,
         weeklyDiscountPercent: Number(formData.weeklyDiscountPercent) || 0,
         energyFeePerDay: Number(formData.energyFeePerDay) || 0,
         additionalServicesFee: Number(formData.additionalServicesFee) || 0,
@@ -2210,6 +2245,36 @@ export default function PropertiesPanel() {
                         <div className="space-y-2">
                           <Label>Tarifa limpieza +1 noche</Label>
                           <Input type="number" placeholder="Ej: 50" value={formData.cleaningFeeMoreDays} onChange={(e) => setFormData((p) => ({ ...p, cleaningFeeMoreDays: e.target.value }))} />
+                        </div>
+                      </div>
+                      <div className="grid grid-cols-2 gap-4">
+                        <div className="space-y-2">
+                          <Label className="flex items-center justify-between">
+                            Pago al cleaner por limpieza
+                            <span className="text-[10px] text-muted-foreground font-normal">se muestra en su billetera</span>
+                          </Label>
+                          <Input type="number" placeholder="Ej: 600" value={formData.cleanerPayout} onChange={(e) => setFormData((p) => ({ ...p, cleanerPayout: e.target.value }))} />
+                        </div>
+                        <div className="space-y-2">
+                          <Label className="flex items-center justify-between">
+                            Supervisor responsable
+                            <span className="text-[10px] text-muted-foreground font-normal">aprueba la evidencia</span>
+                          </Label>
+                          <select
+                            value={formData.supervisorId}
+                            onChange={(e) => setFormData((p) => ({ ...p, supervisorId: e.target.value }))}
+                            className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus:outline-none focus:ring-2 focus:ring-ring"
+                          >
+                            <option value="">Sin supervisor (admin coordina)</option>
+                            {availableSupervisors.map(s => (
+                              <option key={s.id} value={s.id}>{s.name}</option>
+                            ))}
+                          </select>
+                          {availableSupervisors.length === 0 && (
+                            <p className="text-[10px] text-muted-foreground">
+                              No hay supervisores en el equipo. Creá uno desde el panel de Equipo.
+                            </p>
+                          )}
                         </div>
                       </div>
                       <div className="grid grid-cols-2 gap-4">
