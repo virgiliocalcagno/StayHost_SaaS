@@ -73,6 +73,8 @@ import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { toast } from "sonner";
 import PricingOverridesEditor from "./PricingOverridesEditor";
+import { formatMoney } from "@/lib/money/format";
+import { useTenantCurrency } from "@/lib/money/useTenantCurrency";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 interface ChannelLink {
@@ -698,6 +700,7 @@ function DevicesTabContent({ formData, setFormData }: { formData: any; setFormDa
 }
 
 export default function PropertiesPanel() {
+  const { currency: tenantCurrency } = useTenantCurrency();
   const [viewMode, setViewMode] = useState<"grid" | "list">("grid");
   const [searchTerm, setSearchTerm] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
@@ -1357,7 +1360,7 @@ export default function PropertiesPanel() {
               <DollarSign className="h-5 w-5 text-amber-500" />
             </div>
             <div>
-              <p className="text-2xl font-bold">${(stats.totalRevenue / 1000).toFixed(1)}k</p>
+              <p className="text-2xl font-bold">{formatMoney(stats.totalRevenue / 1000, tenantCurrency, { maximumFractionDigits: 1, minimumFractionDigits: 1 })}k</p>
               <p className="text-sm text-muted-foreground">Ingresos / mes</p>
             </div>
           </CardContent>
@@ -1559,11 +1562,11 @@ export default function PropertiesPanel() {
                 {/* Footer */}
                 <div className="flex items-center justify-between pt-3 border-t">
                   <div>
-                    <span className="text-xl font-bold">${prop.price}</span>
+                    <span className="text-xl font-bold">{formatMoney(prop.price, prop.currency)}</span>
                     <span className="text-muted-foreground text-sm"> /noche</span>
                   </div>
                   <div className="text-right">
-                    <p className="text-sm font-semibold text-emerald-600">${(prop.monthlyRevenue / 1000).toFixed(1)}k</p>
+                    <p className="text-sm font-semibold text-emerald-600">{formatMoney(prop.monthlyRevenue / 1000, prop.currency, { maximumFractionDigits: 1, minimumFractionDigits: 1 })}k</p>
                     <p className="text-[10px] text-muted-foreground uppercase tracking-wider">mes</p>
                   </div>
                 </div>
@@ -1629,7 +1632,7 @@ export default function PropertiesPanel() {
                         </div>
                       </td>
                       <td className="p-4">
-                        <span className="font-semibold">${prop.price}</span>
+                        <span className="font-semibold">{formatMoney(prop.price, prop.currency)}</span>
                         <span className="text-muted-foreground text-xs">/noche</span>
                       </td>
                       <td className="p-4">
@@ -1639,7 +1642,7 @@ export default function PropertiesPanel() {
                         </div>
                       </td>
                       <td className="p-4">
-                        <span className="font-semibold text-emerald-600">${prop.monthlyRevenue.toLocaleString()}</span>
+                        <span className="font-semibold text-emerald-600">{formatMoney(prop.monthlyRevenue, prop.currency)}</span>
                       </td>
                       <td className="p-4">{getStatusBadge(prop.status)}</td>
                       <td className="p-4">
@@ -1733,19 +1736,19 @@ export default function PropertiesPanel() {
                 <div className="grid grid-cols-2 gap-3">
                   <div className="p-4 rounded-lg border bg-emerald-50 dark:bg-emerald-900/10 border-emerald-200 dark:border-emerald-800">
                     <p className="text-xs text-muted-foreground mb-1">Ingreso Mensual</p>
-                    <p className="text-xl font-bold text-emerald-600">${selectedProperty.monthlyRevenue.toLocaleString()}</p>
+                    <p className="text-xl font-bold text-emerald-600">{formatMoney(selectedProperty.monthlyRevenue, selectedProperty.currency)}</p>
                   </div>
                   <div className="p-4 rounded-lg border">
                     <p className="text-xs text-muted-foreground mb-1">Precio/Noche</p>
-                    <p className="text-xl font-bold">${selectedProperty.price}</p>
+                    <p className="text-xl font-bold">{formatMoney(selectedProperty.price, selectedProperty.currency)}</p>
                   </div>
                   <div className="p-4 rounded-lg border">
                     <p className="text-xs text-muted-foreground mb-1">Pago Propietario</p>
-                    <p className="text-lg font-bold">${selectedProperty.ownerPayout.toLocaleString()}</p>
+                    <p className="text-lg font-bold">{formatMoney(selectedProperty.ownerPayout, selectedProperty.currency)}</p>
                   </div>
                   <div className="p-4 rounded-lg border">
                     <p className="text-xs text-muted-foreground mb-1">Pago Staff</p>
-                    <p className="text-lg font-bold">${selectedProperty.staffPay}</p>
+                    <p className="text-lg font-bold">{formatMoney(selectedProperty.staffPay, selectedProperty.currency)}</p>
                   </div>
                 </div>
               </div>

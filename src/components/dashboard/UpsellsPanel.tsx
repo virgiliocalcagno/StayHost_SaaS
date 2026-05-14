@@ -49,6 +49,8 @@ import {
   Store,
   Palmtree
 } from "lucide-react";
+import { formatMoney, currencyLabel } from "@/lib/money/format";
+import { useTenantCurrency } from "@/lib/money/useTenantCurrency";
 
 // Mock Data Types
 type CategoryInfo = "service" | "experience" | "transport" | "food" | "other";
@@ -73,7 +75,7 @@ const defaultUpsells: UpsellProduct[] = [];
 const mockProperties: { id: string; name: string }[] = [];
 
 const stats = [
-  { label: "Ingresos Tienda/Extras", value: "$0", change: "—", icon: DollarSign },
+  { label: "Ingresos Tienda/Extras", value: "—", change: "—", icon: DollarSign },
   { label: "Ventas este mes", value: "0", change: "—", icon: ShoppingCart },
   { label: "Tasa de conversion", value: "—", change: "—", icon: TrendingUp },
   { label: "Productos activos", value: "0", change: "—", icon: Package },
@@ -90,6 +92,7 @@ const iconsMap: Record<string, React.ElementType> = {
 };
 
 export default function UpsellsPanel() {
+  const { currency: tenantCurrency } = useTenantCurrency();
   // State arranca vacio. Sin localStorage — leakeaba upsells entre
   // tenants. La persistencia real espera Sprint 3.1 (tabla upsells).
   const [upsells, setUpsells] = useState<UpsellProduct[]>([]);
@@ -207,7 +210,7 @@ export default function UpsellsPanel() {
 
                   <div className="flex items-center justify-between mb-2">
                     <div>
-                      <span className="text-2xl font-bold">${upsell.price}</span>
+                      <span className="text-2xl font-bold">{formatMoney(upsell.price, tenantCurrency)}</span>
                       <span className="text-muted-foreground text-sm"> / unidad</span>
                     </div>
                   </div>
@@ -232,7 +235,7 @@ export default function UpsellsPanel() {
                     </div>
                     <div>
                       <p className="text-sm text-muted-foreground">Generado</p>
-                      <p className="font-semibold text-chart-2">${upsell.revenue}</p>
+                      <p className="font-semibold text-chart-2">{formatMoney(upsell.revenue, tenantCurrency)}</p>
                     </div>
                   </div>
 
@@ -343,7 +346,7 @@ export default function UpsellsPanel() {
 
             <div className="grid grid-cols-2 gap-4">
               <div className="space-y-2">
-                <Label htmlFor="price">Precio (USD)</Label>
+                <Label htmlFor="price">Precio ({currencyLabel(tenantCurrency)})</Label>
                 <div className="relative">
                   <DollarSign className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
                   <Input 

@@ -11,6 +11,8 @@
  * check-in al huésped).
  */
 
+import { formatMoney } from "@/lib/money/format";
+
 type HostPaidEmailData = {
   hostName: string;
   channelCode: string | null;
@@ -53,7 +55,7 @@ export function renderHostPaidEmail(d: HostPaidEmailData): { subject: string; ht
         <!-- Header con monto destacado -->
         <tr><td style="background:linear-gradient(135deg,#059669,#10b981);padding:28px 32px;text-align:center;color:#ffffff">
           <p style="margin:0;font-size:11px;font-weight:700;letter-spacing:1.5px;text-transform:uppercase;opacity:0.9">💰 Pago recibido</p>
-          <p style="margin:8px 0 0;font-size:36px;font-weight:800">$${d.total.toLocaleString()} ${escapeHtml(d.currency)}</p>
+          <p style="margin:8px 0 0;font-size:36px;font-weight:800">${escapeHtml(formatMoney(d.total, d.currency))}</p>
           ${d.channelCode ? `<p style="margin:8px 0 0;font-size:14px;font-family:Menlo,Monaco,monospace;background:rgba(255,255,255,0.2);display:inline-block;padding:4px 12px;border-radius:20px">${escapeHtml(d.channelCode)}</p>` : ""}
         </td></tr>
 

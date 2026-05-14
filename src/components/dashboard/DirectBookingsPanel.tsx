@@ -28,6 +28,7 @@ import {
 } from "lucide-react";
 import { useState, useEffect, useCallback } from "react";
 import { formatCurrency } from "@/lib/utils";
+import { formatMoney } from "@/lib/money/format";
 import { useTenantCurrency } from "@/lib/money/useTenantCurrency";
 
 interface PropertyLite {
@@ -91,6 +92,7 @@ export default function DirectBookingsPanel() {
     checkIn: string;
     checkOut: string;
     total: number;
+    currency: string;
     channelCode: string | null;
     payUrl: string | null;
   } | null>(null);
@@ -199,6 +201,7 @@ export default function DirectBookingsPanel() {
         checkIn: req.checkIn,
         checkOut: req.checkOut,
         total: price,
+        currency: req.propertyCurrency,
         channelCode: json.channelCode ?? null,
         payUrl,
       });
@@ -664,7 +667,7 @@ export default function DirectBookingsPanel() {
                     readOnly
                     rows={6}
                     className="w-full text-sm p-3 border rounded-xl bg-slate-50 font-mono"
-                    value={`Hola ${approvedInfo.guestName}! 👋\n\nTu reserva en ${approvedInfo.propertyName} fue aprobada:\n📅 ${approvedInfo.checkIn} → ${approvedInfo.checkOut}\n💰 Total: $${approvedInfo.total}\n${approvedInfo.channelCode ? `🔑 Código: ${approvedInfo.channelCode}\n` : ""}${approvedInfo.payUrl ? `\nPagá tu reserva acá: ${approvedInfo.payUrl}\n` : ""}`}
+                    value={`Hola ${approvedInfo.guestName}! 👋\n\nTu reserva en ${approvedInfo.propertyName} fue aprobada:\n📅 ${approvedInfo.checkIn} → ${approvedInfo.checkOut}\n💰 Total: ${formatMoney(approvedInfo.total, approvedInfo.currency)}\n${approvedInfo.channelCode ? `🔑 Código: ${approvedInfo.channelCode}\n` : ""}${approvedInfo.payUrl ? `\nPagá tu reserva acá: ${approvedInfo.payUrl}\n` : ""}`}
                   />
                   <div className="flex gap-2">
                     <Button
@@ -674,7 +677,7 @@ export default function DirectBookingsPanel() {
                     >
                       <a
                         href={`https://wa.me/${approvedInfo.guestPhone.replace(/\D/g, "")}?text=${encodeURIComponent(
-                          `Hola ${approvedInfo.guestName}! Tu reserva en ${approvedInfo.propertyName} (${approvedInfo.checkIn} → ${approvedInfo.checkOut}) fue aprobada. Total: $${approvedInfo.total}.${approvedInfo.channelCode ? ` Código: ${approvedInfo.channelCode}.` : ""}${approvedInfo.payUrl ? ` Pagá acá: ${approvedInfo.payUrl}` : ""}`
+                          `Hola ${approvedInfo.guestName}! Tu reserva en ${approvedInfo.propertyName} (${approvedInfo.checkIn} → ${approvedInfo.checkOut}) fue aprobada. Total: ${formatMoney(approvedInfo.total, approvedInfo.currency)}.${approvedInfo.channelCode ? ` Código: ${approvedInfo.channelCode}.` : ""}${approvedInfo.payUrl ? ` Pagá acá: ${approvedInfo.payUrl}` : ""}`
                         )}`}
                         target="_blank"
                         rel="noopener noreferrer"
