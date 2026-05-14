@@ -169,16 +169,39 @@ export async function GET() {
   const { tenantId, supabase } = await getAuthenticatedTenant();
   if (!tenantId) return NextResponse.json({ error: "No tenant" }, { status: 403 });
 
-  const { data, error } = await supabase
-    .from("team_members")
-    .select("*")
-    .eq("tenant_id", tenantId)
-    .order("created_at", { ascending: false });
+  const [{ data, error }, { data: ratingsData }] = await Promise.all([
+    supabase
+      .from("team_members")
+      .select("*")
+      .eq("tenant_id", tenantId)
+      .order("created_at", { ascending: false }),
+    supabase
+      .from("cleaner_rating_summary")
+      .select("cleaner_id, rating_avg, rating_count")
+      .eq("tenant_id", tenantId),
+  ]);
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
-  return NextResponse.json({
-    members: (data as TeamRow[] | null ?? []).map(rowToDto),
+
+  const ratingsByCleaner = new Map<string, { avg: number; count: number }>();
+  for (const r of (ratingsData as { cleaner_id: string; rating_avg: number | null; rating_count: number | null }[] | null) ?? []) {
+    ratingsByCleaner.set(r.cleaner_id, {
+      avg: Number(r.rating_avg ?? 0),
+      count: Number(r.rating_count ?? 0),
+    });
+  }
+
+  const members = (data as TeamRow[] | null ?? []).map((row) => {
+    const dto = rowToDto(row);
+    const live = ratingsByCleaner.get(row.id);
+    return {
+      ...dto,
+      rating: live?.avg ?? dto.rating,
+      ratingCount: live?.count ?? 0,
+    };
   });
+
+  return NextResponse.json({ members });
 }
 
 // POST /api/team-members — crear

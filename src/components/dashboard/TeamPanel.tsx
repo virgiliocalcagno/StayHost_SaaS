@@ -76,6 +76,7 @@ interface TeamMember {
   tasksCompleted: number;
   tasksToday: number;
   rating: number;
+  ratingCount?: number;
   joinDate: string;
   lastActive: string;
   // Permissions & access
@@ -827,7 +828,10 @@ export default function TeamPanel() {
                           {member.rating > 0 && (
                             <div className="flex items-center gap-1">
                               <Star className="h-3 w-3 text-amber-500 fill-amber-500" />
-                              <span className="text-xs font-medium">{member.rating}</span>
+                              <span className="text-xs font-medium">{member.rating.toFixed(1)}</span>
+                              {member.ratingCount ? (
+                                <span className="text-[10px] text-muted-foreground">({member.ratingCount})</span>
+                              ) : null}
                             </div>
                           )}
                         </div>
@@ -960,8 +964,11 @@ export default function TeamPanel() {
                     <p className="text-lg font-bold flex items-center justify-center gap-1">
                       {member.rating > 0 ? (
                         <>
-                          {member.rating}
+                          {member.rating.toFixed(1)}
                           <Star className="h-3 w-3 text-amber-500 fill-amber-500" />
+                          {member.ratingCount ? (
+                            <span className="text-[10px] text-muted-foreground ml-0.5">({member.ratingCount})</span>
+                          ) : null}
                         </>
                       ) : (
                         "—"
