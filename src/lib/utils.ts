@@ -5,16 +5,13 @@ export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
 
-// DOP usa "RD$" como prefijo en uso local — Intl lo formatea como "DOP" o
-// "RD$" según locale. Forzamos "RD$" para coincidir con cómo lo escriben los
-// dueños en Punta Cana.
-export function formatCurrency(value: number, currency: string = "USD"): string {
-  if (currency === "DOP") {
-    return `RD$ ${value.toLocaleString("es-DO", { maximumFractionDigits: 0 })}`;
-  }
-  return new Intl.NumberFormat("en-US", {
-    style: "currency",
-    currency,
-    maximumFractionDigits: 0,
-  }).format(value);
+import { formatMoney } from "@/lib/money/format";
+
+// Compat shim: callers viejos llamaban formatCurrency(value) o
+// formatCurrency(value, "DOP"). El helper canónico es formatMoney en
+// @/lib/money/format con (amount, currency) requeridos. Este wrapper deja
+// currency opcional con default DOP (Punta Cana es DOP-mayoritario), pero
+// nuevo código DEBE usar formatMoney y pasar currency explícito.
+export function formatCurrency(value: number | string | null | undefined, currency: string = "DOP"): string {
+  return formatMoney(value, currency);
 }

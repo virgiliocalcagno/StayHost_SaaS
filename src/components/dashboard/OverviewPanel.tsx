@@ -5,6 +5,8 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
+import { formatMoney } from "@/lib/money/format";
+import { useTenantCurrency } from "@/lib/money/useTenantCurrency";
 import {
   Building2,
   Calendar,
@@ -244,11 +246,18 @@ export default function OverviewPanel() {
   }, [allBookings]);
 
   // ───────────────────────────────────────────────────────────────────────────
-  const currencyFmt = new Intl.NumberFormat("en-US", {
-    style: "currency",
-    currency: "USD",
-    maximumFractionDigits: 0,
-  });
+  // Moneda por defecto del tenant — los totales agregados se renderizan en esta
+  // moneda. Si el tenant tiene propiedades en monedas mixtas (DOP y USD), los
+  // totales actuales SUMAN números sin convertir; queda como deuda para PR de
+  // payouts agrupados por currency. Por ahora: mostrar el código de moneda
+  // explícito para que sea obvio si algo se ve raro.
+  const { currency: tenantCurrency } = useTenantCurrency();
+  const currencyFmt = useMemo(
+    () => ({
+      format: (n: number) => formatMoney(n, tenantCurrency),
+    }),
+    [tenantCurrency],
+  );
 
   if (loading) {
     return (

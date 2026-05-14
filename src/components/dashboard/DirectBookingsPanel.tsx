@@ -28,6 +28,7 @@ import {
 } from "lucide-react";
 import { useState, useEffect, useCallback } from "react";
 import { formatCurrency } from "@/lib/utils";
+import { useTenantCurrency } from "@/lib/money/useTenantCurrency";
 
 interface PropertyLite {
   id: string;
@@ -69,6 +70,7 @@ const INDIRECT_CHANNELS = new Set(["airbnb", "vrbo", "booking", "expedia", "ical
 export default function DirectBookingsPanel() {
   const [origin, setOrigin] = useState("");
   const [tenantId, setTenantId] = useState<string | null>(null);
+  const { currency: tenantCurrency } = useTenantCurrency();
   const [properties, setProperties] = useState<PropertyLite[]>([]);
   const [directCount, setDirectCount] = useState(0);
   const [directRevenue, setDirectRevenue] = useState(0);
@@ -250,7 +252,7 @@ export default function DirectBookingsPanel() {
     },
     {
       label: "Ingresos directos (mes)",
-      value: loading ? "—" : formatCurrency(directRevenue),
+      value: loading ? "—" : formatCurrency(directRevenue, tenantCurrency),
       icon: CreditCard,
       hint: directRevenue === 0 && !loading ? "Sin ingresos aún" : null,
     },
@@ -426,9 +428,9 @@ export default function DirectBookingsPanel() {
                             huésped negoció. */}
                         {req.suggestedPrice > 0 && (
                           <p className="text-[10px] text-muted-foreground leading-tight">
-                            Sugerido: {formatCurrency(req.suggestedPrice)} ={" "}
-                            {formatCurrency(req.propertyPrice)} × {req.nights} {req.nights === 1 ? "noche" : "noches"}
-                            {req.cleaningFee > 0 ? ` + ${formatCurrency(req.cleaningFee)} limpieza` : ""}
+                            Sugerido: {formatCurrency(req.suggestedPrice, req.propertyCurrency)} ={" "}
+                            {formatCurrency(req.propertyPrice, req.propertyCurrency)} × {req.nights} {req.nights === 1 ? "noche" : "noches"}
+                            {req.cleaningFee > 0 ? ` + ${formatCurrency(req.cleaningFee, req.propertyCurrency)} limpieza` : ""}
                           </p>
                         )}
                       </div>

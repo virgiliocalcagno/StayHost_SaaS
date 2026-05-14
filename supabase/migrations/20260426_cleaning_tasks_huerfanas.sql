@@ -30,11 +30,16 @@ WHERE booking_id IS NOT NULL
   AND status <> 'completed'
   AND booking_id NOT IN (SELECT id::text FROM public.bookings);
 
--- 3) Tareas asociadas a bloqueos (source='block') — nunca deberian haber
--- existido pero por las dudas. Los bloqueos no generan limpieza.
+-- 3) Tareas no-completadas asociadas a bloqueos (source='block').
+-- Los bloqueos no generan limpieza, pero si alguna tarea quedo asociada
+-- (bug viejo / import manual), las limpiamos. CRITICO filtrar por
+-- status<>completed: una tarea completada+validada sobre un block ES
+-- historial real (caso de limpieza profunda en propiedad bloqueada).
+-- Sin este filtro borrabamos tareas con cleaner_payout pagados.
 DELETE FROM public.cleaning_tasks ct
 USING public.bookings b
 WHERE ct.booking_id = b.id::text
-  AND b.source = 'block';
+  AND b.source = 'block'
+  AND ct.status <> 'completed';
 
 COMMIT;
