@@ -14,6 +14,7 @@ import {
   Loader2,
   ArrowUpRight,
 } from "lucide-react";
+import { formatMoney } from "@/lib/money/format";
 
 type Booking = {
   id: string;
@@ -192,7 +193,7 @@ export default function ReportsPanel() {
         <Card>
           <CardContent className="pt-4 pb-3 px-4">
             <p className="text-xs text-muted-foreground font-medium">Ingresos del Mes</p>
-            <p className="text-2xl font-black mt-1">${metrics.monthRevenue.toLocaleString()}</p>
+            <p className="text-2xl font-black mt-1">{formatMoney(metrics.monthRevenue, "USD")}</p>
             {metrics.revenueChange !== 0 && (
               <p className={`text-xs mt-1 flex items-center gap-0.5 ${metrics.revenueChange > 0 ? "text-emerald-600" : "text-red-500"}`}>
                 <ArrowUpRight className={`h-3 w-3 ${metrics.revenueChange < 0 ? "rotate-90" : ""}`} />
@@ -218,7 +219,7 @@ export default function ReportsPanel() {
         <Card>
           <CardContent className="pt-4 pb-3 px-4">
             <p className="text-xs text-muted-foreground font-medium">Tarifa Promedio/Noche</p>
-            <p className="text-2xl font-black mt-1">${metrics.adr}</p>
+            <p className="text-2xl font-black mt-1">{formatMoney(metrics.adr, "USD")}</p>
             <p className="text-xs text-muted-foreground mt-1">ADR</p>
           </CardContent>
         </Card>
@@ -238,7 +239,9 @@ export default function ReportsPanel() {
               {metrics.monthlyRevenue.map((m) => (
                 <div key={m.label} className="flex-1 flex flex-col items-center gap-1">
                   <span className="text-[10px] text-muted-foreground font-medium">
-                    ${m.value > 999 ? `${(m.value / 1000).toFixed(1)}k` : m.value}
+                    {m.value > 999
+                      ? `${formatMoney(m.value / 1000, "USD", { maximumFractionDigits: 1, minimumFractionDigits: 1 })}k`
+                      : formatMoney(m.value, "USD")}
                   </span>
                   <div
                     className="w-full rounded-t-md bg-primary/80 min-h-[4px] transition-all"
@@ -308,7 +311,7 @@ export default function ReportsPanel() {
                     <p className="text-sm font-semibold truncate">{p.name}</p>
                     <div className="flex items-center gap-3 text-xs text-muted-foreground mt-0.5">
                       <span className="flex items-center gap-1">
-                        <DollarSign className="h-3 w-3" />${p.revenue.toLocaleString()}
+                        <DollarSign className="h-3 w-3" />{formatMoney(p.revenue, "USD")}
                       </span>
                       <span className="flex items-center gap-1">
                         <Calendar className="h-3 w-3" />{p.bookings} reservas

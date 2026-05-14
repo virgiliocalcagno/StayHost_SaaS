@@ -49,6 +49,7 @@ import {
   Store,
   Palmtree
 } from "lucide-react";
+import { formatMoney } from "@/lib/money/format";
 
 // Mock Data Types
 type CategoryInfo = "service" | "experience" | "transport" | "food" | "other";
@@ -207,7 +208,7 @@ export default function UpsellsPanel() {
 
                   <div className="flex items-center justify-between mb-2">
                     <div>
-                      <span className="text-2xl font-bold">${upsell.price}</span>
+                      <span className="text-2xl font-bold">{formatMoney(upsell.price, "USD")}</span>
                       <span className="text-muted-foreground text-sm"> / unidad</span>
                     </div>
                   </div>
@@ -232,7 +233,7 @@ export default function UpsellsPanel() {
                     </div>
                     <div>
                       <p className="text-sm text-muted-foreground">Generado</p>
-                      <p className="font-semibold text-chart-2">${upsell.revenue}</p>
+                      <p className="font-semibold text-chart-2">{formatMoney(upsell.revenue, "USD")}</p>
                     </div>
                   </div>
 
@@ -343,7 +344,7 @@ export default function UpsellsPanel() {
 
             <div className="grid grid-cols-2 gap-4">
               <div className="space-y-2">
-                <Label htmlFor="price">Precio (USD)</Label>
+                <Label htmlFor="price">Precio (US$)</Label>
                 <div className="relative">
                   <DollarSign className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
                   <Input 

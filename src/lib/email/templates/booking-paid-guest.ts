@@ -8,6 +8,8 @@
  * que necesita sin pasar por WhatsApp.
  */
 
+import { formatMoney } from "@/lib/money/format";
+
 type GuestPaidEmailData = {
   guestName: string;
   channelCode: string | null;
@@ -99,7 +101,7 @@ export function renderGuestPaidEmail(d: GuestPaidEmailData): { subject: string; 
               <table role="presentation" width="100%" cellpadding="0" cellspacing="0">
                 <tr>
                   <td><p style="margin:0;font-size:13px;font-weight:700;color:#64748b;text-transform:uppercase;letter-spacing:1px">Pagado</p></td>
-                  <td align="right"><p style="margin:0;font-size:22px;font-weight:800;color:#059669">$${d.total.toLocaleString()} ${escapeHtml(d.currency)}</p></td>
+                  <td align="right"><p style="margin:0;font-size:22px;font-weight:800;color:#059669">${escapeHtml(formatMoney(d.total, d.currency))}</p></td>
                 </tr>
               </table>
               <p style="margin:4px 0 0;font-size:11px;color:#94a3b8;font-family:Menlo,Monaco,monospace">ID transacción: ${escapeHtml(d.paymentId)}</p>

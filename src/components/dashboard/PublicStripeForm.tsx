@@ -5,6 +5,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { CreditCard, Calendar, Lock, ShieldCheck, CheckCircle2 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { formatMoney } from "@/lib/money/format";
 
 interface PublicStripeFormProps {
   onComplete: (isValid: boolean) => void;
@@ -126,7 +127,7 @@ export default function PublicStripeForm({ onComplete, total }: PublicStripeForm
       ) : (
         <div className="bg-[#0070BA]/5 border-2 border-[#0070BA]/10 rounded-3xl p-8 text-center space-y-4 animate-in fade-in slide-in-from-top-2 duration-300">
            <img src="https://upload.wikimedia.org/wikipedia/commons/b/b5/PayPal.svg" className="h-8 mx-auto" alt="PayPal" />
-           <p className="text-sm font-medium text-[#002169]">Serás redirigido a PayPal para autorizar el cobro de <span className="font-black">${total.toLocaleString()}</span> de forma instantánea.</p>
+           <p className="text-sm font-medium text-[#002169]">Serás redirigido a PayPal para autorizar el cobro de <span className="font-black">{formatMoney(total, "USD")}</span> de forma instantánea.</p>
            <div className="flex justify-center gap-2">
              <div className="h-2 w-2 rounded-full bg-[#0070BA] animate-bounce" style={{ animationDelay: "0ms" }} />
              <div className="h-2 w-2 rounded-full bg-[#0070BA] animate-bounce" style={{ animationDelay: "200ms" }} />

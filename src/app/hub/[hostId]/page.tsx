@@ -20,6 +20,7 @@ import {
   MessageCircle,
 } from "lucide-react";
 import { useLanguage } from "../LanguageContext";
+import { formatMoney } from "@/lib/money/format";
 
 // ─── Types (matching stayhost_properties & stayhost_upsells shapes) ─────────
 interface StoredProperty {
@@ -267,7 +268,7 @@ export default function HostHubPage({ params }: { params: Promise<{ hostId: stri
                 </div>
                 {prop.price && (
                   <div className="text-right">
-                    <span className="font-extrabold text-lg text-slate-900 block">${prop.price}</span>
+                    <span className="font-extrabold text-lg text-slate-900 block">{formatMoney(prop.price, "USD")}</span>
                     <span className="text-xs font-medium text-slate-500 uppercase tracking-widest block mt-0.5">{t("perNight")}</span>
                   </div>
                 )}
@@ -313,7 +314,7 @@ export default function HostHubPage({ params }: { params: Promise<{ hostId: stri
                     </div>
                     <div className="flex items-center justify-between pt-4 border-t border-slate-200 mt-auto">
                       <div>
-                        <span className="text-2xl font-extrabold text-slate-900">${exp.price}</span>
+                        <span className="text-2xl font-extrabold text-slate-900">{formatMoney(exp.price, "USD")}</span>
                         <span className="text-slate-500 text-sm ml-1">/ persona</span>
                       </div>
                       <Button size="sm" className="gradient-gold text-white rounded-xl font-semibold shadow-md border-none">

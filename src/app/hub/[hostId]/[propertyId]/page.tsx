@@ -16,6 +16,7 @@ import {
 } from "lucide-react";
 import { useLanguage } from "../../LanguageContext";
 import { cn } from "@/lib/utils";
+import { formatMoney } from "@/lib/money/format";
 import PublicStripeForm from "@/components/dashboard/PublicStripeForm";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -423,7 +424,7 @@ export default function PropertyPage({ params }: { params: Promise<{ hostId: str
     if (found.expiresAt && new Date(found.expiresAt) < new Date()) { setCouponError("Este código ha expirado."); return; }
     if (found.maxUses !== null && found.usedCount >= found.maxUses) { setCouponError("Este código ya agotó sus usos disponibles."); return; }
     setAppliedCoupon(found);
-    setCouponSuccess(`¡Cupón aplicado! ${found.type === "percent" ? `${found.amount}% de descuento` : `$${found.amount} de descuento`}`);
+    setCouponSuccess(`¡Cupón aplicado! ${found.type === "percent" ? `${found.amount}% de descuento` : `${formatMoney(found.amount, "USD")} de descuento`}`);
   };
 
   const handleRemoveCoupon = () => {
@@ -577,7 +578,7 @@ export default function PropertyPage({ params }: { params: Promise<{ hostId: str
             </div>
             <div className="border-t pt-3 flex justify-between font-extrabold text-base">
               <span className="text-slate-700">Total estimado</span>
-              <span className="text-slate-900">${bookingConfirmed.total.toLocaleString()}</span>
+              <span className="text-slate-900">{formatMoney(bookingConfirmed.total, "USD")}</span>
             </div>
             <p className="text-[10px] text-slate-400 italic">
               Estimado preliminar. El total final lo confirma el host al aprobar.
@@ -731,7 +732,7 @@ export default function PropertyPage({ params }: { params: Promise<{ hostId: str
                         {upsell.description && <p className="text-sm text-slate-500">{upsell.description}</p>}
                       </div>
                       <div className="text-right flex flex-col items-end">
-                        <span className="font-bold text-slate-900">${upsell.price}</span>
+                        <span className="font-bold text-slate-900">{formatMoney(upsell.price, "USD")}</span>
                         {isSelected
                           ? <CheckCircle2 className="w-5 h-5 text-amber-600 mt-1" />
                           : <div className="w-5 h-5 rounded-full border-2 border-slate-300 mt-1" />
@@ -754,7 +755,7 @@ export default function PropertyPage({ params }: { params: Promise<{ hostId: str
                 {/* Price Header */}
                 <div className="flex justify-between items-end mb-6">
                   <div>
-                    <span className="text-3xl font-extrabold text-slate-900">${basePrice}</span>
+                    <span className="text-3xl font-extrabold text-slate-900">{formatMoney(basePrice, "USD")}</span>
                     <span className="text-slate-500 font-medium ml-1">{t("perNight")}</span>
                   </div>
                   <span className="text-xs font-bold text-green-600 bg-green-50 px-2 py-0.5 rounded flex items-center gap-1">
@@ -899,33 +900,33 @@ export default function PropertyPage({ params }: { params: Promise<{ hostId: str
                 {/* Price Breakdown */}
                 <div className="space-y-3 text-slate-600 font-medium pb-4 border-b border-slate-200">
                   <div className="flex justify-between">
-                    <span className="underline cursor-pointer decoration-slate-300">${basePrice} × {Math.max(nights, 1)} noches</span>
-                    <span>${stayTotal}</span>
+                    <span className="underline cursor-pointer decoration-slate-300">{formatMoney(basePrice, "USD")} × {Math.max(nights, 1)} noches</span>
+                    <span>{formatMoney(stayTotal, "USD")}</span>
                   </div>
                   {upsellsTotal > 0 && (
                     <div className="flex justify-between text-amber-700">
                       <span className="flex items-center gap-1"><Star className="w-3.5 h-3.5" /> {t("extraServices")}</span>
-                      <span>${upsellsTotal}</span>
+                      <span>{formatMoney(upsellsTotal, "USD")}</span>
                     </div>
                   )}
                   {discount > 0 && (
                     <div className="flex justify-between text-green-600">
                       <span className="flex items-center gap-1"><Tag className="w-3.5 h-3.5" /> Descuento ({appliedCoupon?.code})</span>
-                      <span>−${discount}</span>
+                      <span>−{formatMoney(discount, "USD")}</span>
                     </div>
                   )}
                   <div className="flex justify-between">
                     <span className="underline cursor-pointer decoration-slate-300">{t("cleaningFee")}</span>
-                    <span>${cleaningFee}</span>
+                    <span>{formatMoney(cleaningFee, "USD")}</span>
                   </div>
                   <div className="flex justify-between">
                     <span className="underline cursor-pointer decoration-slate-300">{t("taxes")} (16%)</span>
-                    <span>${taxes}</span>
+                    <span>{formatMoney(taxes, "USD")}</span>
                   </div>
                 </div>
                 <div className="flex justify-between items-center font-extrabold text-lg text-slate-900 pt-4">
                   <span>{t("total")}</span>
-                  <span>${finalTotal.toLocaleString()}</span>
+                  <span>{formatMoney(finalTotal, "USD")}</span>
                 </div>
               </Card>
 
@@ -974,7 +975,7 @@ export default function PropertyPage({ params }: { params: Promise<{ hostId: str
                 </div>
                 <div className="text-right">
                   <p className="text-xs text-slate-500 uppercase tracking-wide">Total</p>
-                  <p className="text-2xl font-extrabold text-amber-600">${finalTotal.toLocaleString()}</p>
+                  <p className="text-2xl font-extrabold text-amber-600">{formatMoney(finalTotal, "USD")}</p>
                 </div>
               </div>
 
@@ -1171,7 +1172,7 @@ export default function PropertyPage({ params }: { params: Promise<{ hostId: str
                     return u ? (
                       <div key={id} className="flex justify-between text-sm text-slate-700">
                         <span className="flex items-center gap-1.5"><CheckCircle2 className="h-3.5 w-3.5 text-amber-500" />{u.name}</span>
-                        <span className="font-bold">${u.price}</span>
+                        <span className="font-bold">{formatMoney(u.price, "USD")}</span>
                       </div>
                     ) : null;
                   })}
@@ -1214,19 +1215,19 @@ export default function PropertyPage({ params }: { params: Promise<{ hostId: str
 
               {/* Final price */}
               <div className="bg-slate-50 rounded-2xl p-4 border border-slate-200 space-y-2 text-sm">
-                <div className="flex justify-between text-slate-600"><span>${basePrice} × {Math.max(nights, 1)} noches</span><span>${stayTotal}</span></div>
-                {upsellsTotal > 0 && <div className="flex justify-between text-slate-600"><span>Servicios extra</span><span>${upsellsTotal}</span></div>}
-                {discount > 0 && <div className="flex justify-between text-green-600"><span>Descuento ({appliedCoupon?.code})</span><span>−${discount}</span></div>}
-                <div className="flex justify-between text-slate-600"><span>Limpieza</span><span>${cleaningFee}</span></div>
-                <div className="flex justify-between text-slate-600"><span>Impuestos (16%)</span><span>${taxes}</span></div>
+                <div className="flex justify-between text-slate-600"><span>{formatMoney(basePrice, "USD")} × {Math.max(nights, 1)} noches</span><span>{formatMoney(stayTotal, "USD")}</span></div>
+                {upsellsTotal > 0 && <div className="flex justify-between text-slate-600"><span>Servicios extra</span><span>{formatMoney(upsellsTotal, "USD")}</span></div>}
+                {discount > 0 && <div className="flex justify-between text-green-600"><span>Descuento ({appliedCoupon?.code})</span><span>−{formatMoney(discount, "USD")}</span></div>}
+                <div className="flex justify-between text-slate-600"><span>Limpieza</span><span>{formatMoney(cleaningFee, "USD")}</span></div>
+                <div className="flex justify-between text-slate-600"><span>Impuestos (16%)</span><span>{formatMoney(taxes, "USD")}</span></div>
                 {processingFee > 0 && (
                   <div className="flex justify-between text-slate-600">
                     <span>Comisión de procesamiento ({processingFeePercent}%)</span>
-                    <span>${processingFee}</span>
+                    <span>{formatMoney(processingFee, "USD")}</span>
                   </div>
                 )}
                 <div className="flex justify-between font-extrabold text-base text-slate-900 border-t pt-2 mt-2">
-                  <span>Total</span><span>${finalTotal.toLocaleString()}</span>
+                  <span>Total</span><span>{formatMoney(finalTotal, "USD")}</span>
                 </div>
               </div>
 
@@ -1256,7 +1257,7 @@ export default function PropertyPage({ params }: { params: Promise<{ hostId: str
                     {paymentMethod === "paypal" ? "Llevándote al pago..." : "Enviando solicitud..."}
                   </span>
                 ) : paymentMethod === "paypal" ? (
-                  `Pagar y confirmar reserva · $${finalTotal.toLocaleString()}`
+                  `Pagar y confirmar reserva · ${formatMoney(finalTotal, "USD")}`
                 ) : (
                   "Enviar solicitud al host"
                 )}
