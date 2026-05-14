@@ -34,6 +34,7 @@ import {
   ChevronDown,
   Zap,
   Wrench,
+  Wallet,
 } from "lucide-react";
 
 import { useState, useEffect } from "react";
@@ -59,6 +60,7 @@ type PanelType =
   | "reviews"
   | "tasks"
   | "team"
+  | "payouts"
   | "check-ins"
   | "accounts"
   | "keys"
@@ -104,6 +106,7 @@ const modulesMenuItems = [
   { id: "upsells", label: "Ventas Extras", icon: ShoppingCart },
   { id: "agreements", label: "Acuerdos", icon: ClipboardCheck },
   { id: "team", label: "Equipo", icon: Users },
+  { id: "payouts", label: "Pagos", icon: Wallet },
   { id: "check-ins", label: "Check-ins", icon: LogIn },
   { id: "accounts", label: "Cuentas", icon: User },
   { id: "keys", label: "Llaves", icon: Key },

@@ -69,7 +69,7 @@ interface TeamMember {
   loginIdentifier?: string;
   phone: string;
   avatar?: string;
-  role: "admin" | "manager" | "cleaner" | "co_host" | "maintenance" | "guest_support" | "owner" | "accountant";
+  role: "admin" | "supervisor" | "manager" | "cleaner" | "co_host" | "maintenance" | "guest_support" | "owner" | "accountant";
   status: "active" | "inactive" | "pending";
   available: boolean;
   properties: number;
@@ -95,6 +95,8 @@ interface TeamMember {
   references?: { name: string; phone: string }[];
   password?: string;
   documentPhoto?: string;
+  supervisorId?: string | null;
+  employmentType?: "contractor" | "employee" | null;
 }
 
 // ─── Role Configs ───────────────────────────────────────────────────────────
@@ -105,8 +107,16 @@ const roleConfig: Record<string, { label: string; icon: React.ReactNode; color: 
     color: "text-purple-700 dark:text-purple-300",
     bgColor: "bg-purple-100 dark:bg-purple-900/40 border-purple-200 dark:border-purple-800",
   },
+  supervisor: {
+    label: "Supervisor",
+    icon: <Briefcase className="h-3.5 w-3.5" />,
+    color: "text-blue-700 dark:text-blue-300",
+    bgColor: "bg-blue-100 dark:bg-blue-900/40 border-blue-200 dark:border-blue-800",
+  },
   manager: {
-    label: "Gerente",
+    // Compat: miembros legacy con role="manager" siguen mostrándose con
+    // el mismo estilo que supervisor. Formularios nuevos usan "supervisor".
+    label: "Supervisor",
     icon: <Briefcase className="h-3.5 w-3.5" />,
     color: "text-blue-700 dark:text-blue-300",
     bgColor: "bg-blue-100 dark:bg-blue-900/40 border-blue-200 dark:border-blue-800",
@@ -319,6 +329,8 @@ export default function TeamPanel() {
     references: [] as { name: string; phone: string }[],
     password: "",
     documentPhoto: "",
+    supervisorId: null as string | null,
+    employmentType: "contractor" as "contractor" | "employee",
     permissions: {
       canViewAnalytics: false,
       canManageTasks: true,
@@ -371,9 +383,10 @@ export default function TeamPanel() {
         member.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
         member.email.toLowerCase().includes(searchTerm.toLowerCase());
       
-      const matchesRole = 
+      const matchesRole =
         roleFilter === "all" ? true :
         roleFilter === "pending_only" ? member.status === "pending" :
+        roleFilter === "supervisor" ? (member.role === "supervisor" || member.role === "manager") :
         member.role === roleFilter;
 
       return matchesSearch && matchesRole;
@@ -404,6 +417,8 @@ export default function TeamPanel() {
       references: [],
       password: "",
       documentPhoto: "",
+      supervisorId: null,
+      employmentType: "contractor",
       permissions: { canViewAnalytics: false, canManageTasks: true, canMessageGuests: false, canEditProperties: false },
       propertyAccess: "all",
       notificationPrefs: { whatsapp: true, email: true },
@@ -425,6 +440,8 @@ export default function TeamPanel() {
       references: member.references || [],
       password: member.password || "",
       documentPhoto: member.documentPhoto || "",
+      supervisorId: member.supervisorId ?? null,
+      employmentType: member.employmentType ?? "contractor",
       permissions: member.permissions || { canViewAnalytics: false, canManageTasks: false, canMessageGuests: false, canEditProperties: false },
       propertyAccess: member.propertyAccess || "all",
       notificationPrefs: member.notificationPrefs || { whatsapp: true, email: true },
@@ -455,6 +472,7 @@ export default function TeamPanel() {
     }
 
     // Construye el payload que entiende la API (camelCase DTO).
+    const isOperario = formData.role === "cleaner" || formData.role === "maintenance";
     const payload: Record<string, unknown> = {
       name: formData.name,
       email: hasEmail ? formData.email : undefined,
@@ -465,6 +483,10 @@ export default function TeamPanel() {
       address: formData.address,
       references: formData.references,
       documentPhoto: formData.documentPhoto,
+      // Solo enviamos supervisorId/employmentType para operarios. Otros roles
+      // no tienen jerarquía ni clasificación contractor/employee aplicable.
+      supervisorId: isOperario ? formData.supervisorId : null,
+      employmentType: isOperario ? formData.employmentType : null,
       permissions: formData.permissions,
       propertyAccess: formData.propertyAccess,
       notificationPrefs: formData.notificationPrefs,
@@ -686,7 +708,7 @@ export default function TeamPanel() {
             <option value="all">Todos los Miembros</option>
             <option value="pending_only">Pendientes / Invitados</option>
             <option value="admin">Administradores</option>
-            <option value="manager">Gerentes</option>
+            <option value="supervisor">Supervisores</option>
             <option value="owner">Propietarios</option>
             <option value="co_host">Co-anfitriones</option>
             <option value="accountant">Contadores</option>
@@ -1253,7 +1275,9 @@ export default function TeamPanel() {
                         // (Virgilio o Master delegado), no para invitar staff.
                         // Filtrarlo del wizard cierra el agujero conceptual donde
                         // un cliente podia crear un staff con label "Dios".
-                        .filter(([key]) => key !== "owner")
+                        // owner: rol del SaaS Master, no se asigna desde acá.
+                        // manager: legacy — el wizard ofrece "supervisor" en su lugar.
+                        .filter(([key]) => key !== "owner" && key !== "manager")
                         .map(([key, config]) => (
                         <button
                           key={key}
@@ -1263,6 +1287,7 @@ export default function TeamPanel() {
                             // Auto-ajustar permisos al elegir rol (UX Dinámico)
                             const autoPerms = {
                               admin: { canViewAnalytics: true, canManageTasks: true, canMessageGuests: true, canEditProperties: true },
+                              supervisor: { canViewAnalytics: true, canManageTasks: true, canMessageGuests: true, canEditProperties: false },
                               manager: { canViewAnalytics: true, canManageTasks: true, canMessageGuests: true, canEditProperties: false },
                               cleaner: { canViewAnalytics: false, canManageTasks: true, canMessageGuests: false, canEditProperties: false },
                               maintenance: { canViewAnalytics: false, canManageTasks: true, canMessageGuests: false, canEditProperties: false },
@@ -1332,7 +1357,7 @@ export default function TeamPanel() {
 
                       <label className={`p-4 rounded-xl border flex items-start gap-4 cursor-pointer transition-colors ${formData.permissions.canEditProperties ? "border-primary/30 bg-primary/5" : "border-border hover:bg-muted/30"}`}>
                         <div className="pt-0.5">
-                          <input type="checkbox" className="w-5 h-5 rounded text-primary focus:ring-primary accent-primary" 
+                          <input type="checkbox" className="w-5 h-5 rounded text-primary focus:ring-primary accent-primary"
                                  checked={formData.permissions.canEditProperties}
                                  onChange={(e) => setFormData(prev => ({...prev, permissions: {...prev.permissions, canEditProperties: e.target.checked}}))} />
                         </div>
@@ -1341,9 +1366,61 @@ export default function TeamPanel() {
                           <p className="text-xs text-muted-foreground mt-1">Modifica precios, fotos maestras y amenities del anuncio.</p>
                         </div>
                       </label>
-                      
+
                     </div>
                   </div>
+
+                  {/* Jerarquía + clasificación — solo aplica a operarios */}
+                  {(formData.role === "cleaner" || formData.role === "maintenance") && (
+                    <div className="space-y-4">
+                      <Label className="text-sm font-medium text-muted-foreground uppercase tracking-wider">3. Jerarquía y clasificación</Label>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                        <div className="space-y-2">
+                          <Label className="text-xs">Supervisor a cargo</Label>
+                          <select
+                            value={formData.supervisorId ?? ""}
+                            onChange={(e) =>
+                              setFormData(prev => ({ ...prev, supervisorId: e.target.value || null }))
+                            }
+                            className="w-full h-10 rounded-md border border-input bg-background px-3 text-sm"
+                          >
+                            <option value="">Sin supervisor (responde al admin)</option>
+                            {team
+                              .filter(m => m.role === "supervisor" || m.role === "manager")
+                              .filter(m => m.id !== editingMember?.id)
+                              .map(s => (
+                                <option key={s.id} value={s.id}>{s.name}</option>
+                              ))}
+                          </select>
+                          <p className="text-[11px] text-muted-foreground">
+                            El supervisor verá las tareas de este operario en su inbox de aprobación.
+                          </p>
+                        </div>
+                        <div className="space-y-2">
+                          <Label className="text-xs">Tipo de relación</Label>
+                          <div className="grid grid-cols-2 gap-2">
+                            <button
+                              type="button"
+                              onClick={() => setFormData(prev => ({ ...prev, employmentType: "contractor" }))}
+                              className={`h-10 rounded-md border text-xs font-semibold transition-colors ${formData.employmentType === "contractor" ? "border-primary bg-primary/5 text-primary" : "border-border hover:bg-muted/30"}`}
+                            >
+                              Contratista
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setFormData(prev => ({ ...prev, employmentType: "employee" }))}
+                              className={`h-10 rounded-md border text-xs font-semibold transition-colors ${formData.employmentType === "employee" ? "border-primary bg-primary/5 text-primary" : "border-border hover:bg-muted/30"}`}
+                            >
+                              Empleado fijo
+                            </button>
+                          </div>
+                          <p className="text-[11px] text-muted-foreground">
+                            Contratista ve su pago por tarea. Empleado fijo no ve montos.
+                          </p>
+                        </div>
+                      </div>
+                    </div>
+                  )}
                 </div>
               )}
 
@@ -1553,7 +1630,11 @@ export default function TeamPanel() {
                     else setInviteStep("confirm");
                   }}
                   className="gap-2"
-                  disabled={!formData.name || !formData.email}
+                  disabled={
+                    !formData.name ||
+                    (!(formData.email && formData.email.includes("@")) &&
+                      !(formData.phone && formData.phone.replace(/\D/g, "").length >= 8))
+                  }
                 >
                   Siguiente Paso
                 </Button>

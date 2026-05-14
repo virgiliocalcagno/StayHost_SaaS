@@ -87,6 +87,8 @@ interface CleaningTask {
   arrivingGuestName?: string;  // Huésped que entra hoy
   arrivingGuestCount?: number; // Pax que entra hoy
   isWaitingValidation?: boolean;
+  validatedAt?: string | null;
+  validatedBy?: string | null;
   closurePhotos?: { category: string; url: string }[];
   reportedIssues?: string[];
   suppliesReport?: { item: string; needed: number; status: "ok" | "missing" | "replenished" }[];
@@ -873,23 +875,39 @@ export default function CleaningPanel() {
   // "Simular App Staff". El simulador se eliminó 2026-05-01 — esos handlers
   // ahora son responsabilidad de la app real /staff/page.tsx.
 
-  const handleValidateTask = (taskId: string) => {
-    const validatedAt = new Date().toISOString();
+  const handleValidateTask = async (taskId: string) => {
+    // Usar el endpoint canónico que aplica anti-fraude (assignee !== viewer)
+    // y registra approval_log. PATCH directo a validated_at/validated_by ya
+    // no funciona — el endpoint general los rechaza desde Sprint Cadena.
+    const task = tasks.find(t => t.id === taskId);
     setTasks(prev => prev.map(t =>
       t.id === taskId ? { ...t, isWaitingValidation: false, status: "completed" } : t
     ));
-    patchTask(taskId, {
-      status: "completed",
-      isWaitingValidation: false,
-      validatedAt,
-      rejectionNote: null,
-    });
-    syncTaskAccess(taskId);
-    const task = tasks.find(t => t.id === taskId);
-    if (task?.assigneeId) {
-      setTeam(prev => prev.map(m =>
-        m.id === task.assigneeId ? { ...m, completedTasks: m.completedTasks + 1, tasksToday: Math.max(0, m.tasksToday - 1) } : m
+    try {
+      const r = await fetch(`/api/cleaning-tasks/${encodeURIComponent(taskId)}/validate`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "same-origin",
+        body: JSON.stringify({ approved: true }),
+      });
+      if (!r.ok) {
+        const msg = (await r.json().catch(() => ({}))).error || `Error ${r.status}`;
+        throw new Error(msg);
+      }
+      syncTaskAccess(taskId);
+      if (task?.assigneeId) {
+        setTeam(prev => prev.map(m =>
+          m.id === task.assigneeId ? { ...m, completedTasks: m.completedTasks + 1, tasksToday: Math.max(0, m.tasksToday - 1) } : m
+        ));
+      }
+    } catch (e) {
+      // Revertir UI si la API rechazó (anti-fraude o cadena rota).
+      setTasks(prev => prev.map(t =>
+        t.id === taskId ? { ...t, isWaitingValidation: true, status: "completed" } : t
       ));
+      const msg = e instanceof Error ? e.message : "No se pudo validar";
+      // eslint-disable-next-line no-alert
+      alert(msg);
     }
   };
 
@@ -976,11 +994,8 @@ export default function CleaningPanel() {
     syncTaskAccess(taskId);
   };
 
-  const handleReopenFromDetail = (taskId: string, note?: string) => {
+  const handleReopenFromDetail = async (taskId: string, note?: string) => {
     const t = tasks.find(x => x.id === taskId);
-    // Si el supervisor pasa una nota → es "pedir re-foto", devolvemos al
-    // cleaner en in_progress con el motivo visible. Sin nota → reapertura
-    // genérica al último estado activo.
     const nextStatus = note
       ? (t?.assigneeId ? "in_progress" : "unassigned")
       : (t?.assigneeId ? "assigned" : "unassigned");
@@ -989,16 +1004,33 @@ export default function CleaningPanel() {
         ? { ...t, status: nextStatus, isWaitingValidation: false, validatedAt: null, validatedBy: null }
         : t,
     ));
-    // Limpiar también validated_at/validated_by: si la tarea ya había sido
-    // aprobada y luego se reabre, dejar el sello de validación previa la
-    // deja en estado incoherente ("validada pero in_progress de nuevo").
-    patchTask(taskId, {
-      status: nextStatus,
-      isWaitingValidation: false,
-      rejectionNote: note ?? null,
-      validatedAt: null,
-      validatedBy: null,
-    });
+    // Si la tarea estaba validada, "reabrir" = des-validar. Eso pasa por el
+    // endpoint canónico /validate con approved=false, que limpia
+    // validated_at/validated_by + registra rejection en approval_log. Sin
+    // pasar por ahí, la fila quedaría con sello de validación pero status
+    // in_progress (incoherente).
+    if (t?.validatedAt) {
+      try {
+        await fetch(`/api/cleaning-tasks/${encodeURIComponent(taskId)}/validate`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          credentials: "same-origin",
+          body: JSON.stringify({
+            approved: false,
+            rejectionNote: note || "Tarea reabierta por el dueño",
+          }),
+        });
+      } catch (e) {
+        console.warn("[CleaningPanel] reopen via /validate failed", e);
+      }
+    } else {
+      // No estaba validada: bastará con un PATCH normal de status.
+      patchTask(taskId, {
+        status: nextStatus,
+        isWaitingValidation: false,
+        rejectionNote: note ?? null,
+      });
+    }
     // Reabierta vuelve a estado activo → reactivar PIN si corresponde.
     syncTaskAccess(taskId);
   };
@@ -2016,7 +2048,10 @@ export default function CleaningPanel() {
         onClose={() => setDetailTaskId(null)}
         onReassign={handleReassignFromDetail}
         onValidate={(taskId) => { handleValidateTask(taskId); setDetailTaskId(null); }}
-        onReopen={(taskId, note) => { handleReopenFromDetail(taskId, note); setDetailTaskId(null); }}
+        onReopen={async (taskId, note) => {
+          await handleReopenFromDetail(taskId, note);
+          setDetailTaskId(null);
+        }}
         onMarkUrgent={handleMarkUrgentFromDetail}
       />
     </div>

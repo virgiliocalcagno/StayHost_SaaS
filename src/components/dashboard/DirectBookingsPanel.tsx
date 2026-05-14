@@ -27,6 +27,7 @@ import {
   Image as ImageIcon,
 } from "lucide-react";
 import { useState, useEffect, useCallback } from "react";
+import { formatCurrency } from "@/lib/utils";
 
 interface PropertyLite {
   id: string;
@@ -64,9 +65,6 @@ interface BookingRequest {
 }
 
 const INDIRECT_CHANNELS = new Set(["airbnb", "vrbo", "booking", "expedia", "ical", "ical_manual", "block"]);
-
-const formatCurrency = (n: number) =>
-  new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(n);
 
 export default function DirectBookingsPanel() {
   const [origin, setOrigin] = useState("");

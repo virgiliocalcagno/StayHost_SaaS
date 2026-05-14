@@ -1,14 +1,12 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
-import { useRouter } from "next/navigation";
+import { Suspense, useState, useEffect, useRef } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import { cn } from "@/lib/utils";
 import { logoutAndRedirect } from "@/lib/auth/logout";
-import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import {
-  Sparkles,
   CheckCircle2,
   ChevronRight,
   Wrench,
@@ -17,6 +15,10 @@ import {
   Eye,
   EyeOff,
   Clock,
+  Wallet,
+  X,
+  ClipboardList,
+  ArrowLeft,
 } from "lucide-react";
 interface StaffSession {
   memberId: string;
@@ -129,7 +131,25 @@ const roleLabels: Record<string, string> = {
 
 // ─── Component ────────────────────────────────────────────────────────────────
 export default function StaffPage() {
+  // useSearchParams() exige un boundary de Suspense para que Next pueda
+  // hacer client-side bailout sin romper la build estática (Next 15).
+  return (
+    <Suspense fallback={
+      <div className="min-h-screen flex items-center justify-center bg-[#F8F9FC]">
+        <p className="text-slate-400 text-sm font-medium">Cargando portal...</p>
+      </div>
+    }>
+      <StaffPageInner />
+    </Suspense>
+  );
+}
+
+function StaffPageInner() {
   const router = useRouter();
+  const searchParams = useSearchParams();
+  // Si Helen entra desde /supervisor a ejecutar sus tareas, mostramos un
+  // pill arriba para volver a su panel de supervisión sin perder el flujo.
+  const fromSupervisor = searchParams?.get("from") === "supervisor";
 
   // ─── Auth & data state ────────────────────────────────────────────────────
   const [session, setSession] = useState<StaffSession | null>(null);
@@ -144,6 +164,7 @@ export default function StaffPage() {
   const [screen, setScreen] = useState<"home" | "task">("home");
   const [activeTaskId, setActiveTaskId] = useState<string | null>(null);
   const [staffTimeFilter, setStaffTimeFilter] = useState<"today" | "tomorrow" | "week">("today");
+  const [staffStatusFilter, setStaffStatusFilter] = useState<"all" | "urgent" | "pending">("all");
 
   // ─── Wizard state ─────────────────────────────────────────────────────────
   const [wizardStep, setWizardStep] = useState(1);
@@ -287,27 +308,47 @@ export default function StaffPage() {
       ? currentProperty.evidenceCriteria
       : ["Cocina", "Habitación", "Baño"];
 
+  const isUrgent = (t: CleaningTask) => getPriorityInfo(t).isUrgent;
+  const isPending = (t: CleaningTask) =>
+    t.acceptanceStatus === "pending" || t.status === "pending";
+
+  // Stats globales — cuentan TODAS las tareas relevantes sin importar fecha.
+  // "Pendiente" o "crítica" no son conceptos del día: el cleaner tiene que
+  // saber cuántas le esperan en total, sea hoy o el lunes que viene.
   const staffSummary = {
-    urgent: myTasks.filter(
-      t => t.dueDate === getDateStr(0) && parseInt(t.dueTime.split(":")[0]) < 6
-    ).length,
-    pending: myTasks.filter(t => t.acceptanceStatus === "pending" || t.status === "pending").length,
+    pending: myTasks.filter(isPending).length,
+    urgent: myTasks.filter(isUrgent).length,
     today: myTasks.filter(t => t.dueDate === getDateStr(0)).length,
+    completedToday: myTasks.filter(
+      t => t.dueDate === getDateStr(0) && t.status === "completed"
+    ).length,
   };
 
-  const filteredTasksByTime = myTasks
-    .filter(t => {
-      if (staffTimeFilter === "today") return t.dueDate === getDateStr(0);
-      if (staffTimeFilter === "tomorrow") return t.dueDate === getDateStr(1);
-      return true;
-    })
-    .sort((a, b) => {
-      const aInfo = getPriorityInfo(a);
-      const bInfo = getPriorityInfo(b);
-      if (aInfo.isUrgent && !bInfo.isUrgent) return -1;
-      if (!aInfo.isUrgent && bInfo.isUrgent) return 1;
-      return a.dueTime.localeCompare(b.dueTime);
-    });
+  // Si hay status filter activo, ignora el time filter — mostramos todas las
+  // pendientes / críticas del cleaner, sin importar fecha (que es lo que
+  // dice el contador). Si no hay status filter, navegamos por cronograma.
+  const filteredTasksByTime = (
+    staffStatusFilter === "urgent"
+      ? myTasks.filter(isUrgent)
+      : staffStatusFilter === "pending"
+        ? myTasks.filter(isPending)
+        : myTasks.filter(t => {
+            if (staffTimeFilter === "today") return t.dueDate === getDateStr(0);
+            if (staffTimeFilter === "tomorrow") return t.dueDate === getDateStr(1);
+            return true;
+          })
+  ).sort((a, b) => {
+    const aInfo = getPriorityInfo(a);
+    const bInfo = getPriorityInfo(b);
+    if (aInfo.isUrgent && !bInfo.isUrgent) return -1;
+    if (!aInfo.isUrgent && bInfo.isUrgent) return 1;
+    // Sin status filter: ordeno por hora dentro del día. Con status filter
+    // (varios días): ordeno por fecha y dentro por hora.
+    if (staffStatusFilter !== "all" && a.dueDate !== b.dueDate) {
+      return a.dueDate.localeCompare(b.dueDate);
+    }
+    return a.dueTime.localeCompare(b.dueTime);
+  });
 
   // ─── Handlers ─────────────────────────────────────────────────────────────
   const toggleAvailable = async () => {
@@ -482,96 +523,165 @@ export default function StaffPage() {
 
   // ─── SCREEN: HOME ─────────────────────────────────────────────────────────
   if (screen === "home") {
+    const firstName = session.name.split(" ")[0] || session.name;
     return (
-      <div className="min-h-screen bg-[#F8F9FC] pb-24">
+      <div className="min-h-screen bg-[#F7F7F7] pb-28">
+        {fromSupervisor && (
+          <button
+            onClick={() => router.push("/supervisor")}
+            className="w-full bg-blue-600 text-white px-6 py-2.5 text-xs font-bold flex items-center justify-center gap-2 hover:bg-blue-700 transition-colors sticky top-0 z-50"
+          >
+            <ArrowLeft className="h-4 w-4" />
+            Volver al Panel de Supervisión
+          </button>
+        )}
         {/* Header */}
-        <div className="bg-white px-6 pt-12 pb-6 shadow-sm sticky top-0 z-20">
-          <div className="flex justify-between items-start mb-6">
-            <div className="flex items-center gap-3">
+        <header className={cn("w-full bg-white px-6 pb-6 border-b border-slate-200 sticky z-40", fromSupervisor ? "pt-4 top-9" : "pt-12 top-0")}>
+          <div className="flex justify-between items-start">
+            <div className="flex items-center gap-4">
               <div className="relative">
-                <Avatar className="h-12 w-12 border-2 border-primary/10">
-                  <AvatarFallback className="bg-primary/10 text-primary font-black text-sm">
+                <Avatar className="w-14 h-14 border border-slate-200">
+                  <AvatarFallback className="bg-primary/10 text-primary font-black text-base">
                     {session.name.split(" ").map((n: string) => n[0]).join("").slice(0, 2).toUpperCase()}
                   </AvatarFallback>
                 </Avatar>
                 <span
                   className={cn(
-                    "absolute -bottom-0.5 -right-0.5 w-3.5 h-3.5 rounded-full border-2 border-white",
+                    "absolute bottom-0 right-0 w-3.5 h-3.5 rounded-full border-2 border-white",
                     available ? "bg-emerald-500" : "bg-slate-300"
                   )}
                 />
               </div>
               <div>
-                <h2 className="text-xl font-black text-slate-800">{session.name}</h2>
-                <p className="text-xs font-bold text-slate-400">
-                  {roleLabels[session.role] ?? session.role}
-                </p>
-              </div>
-            </div>
-            <div className="flex items-center gap-2">
-              <button
-                onClick={toggleAvailable}
-                className={cn(
-                  "h-10 px-4 rounded-full text-xs font-bold border transition-all",
-                  available
-                    ? "bg-emerald-50 border-emerald-200 text-emerald-700"
-                    : "bg-slate-50 border-slate-200 text-slate-500"
-                )}
-              >
-                {available ? <><Eye className="h-3.5 w-3.5 inline mr-1.5" />Disponible</> : <><EyeOff className="h-3.5 w-3.5 inline mr-1.5" />Ocupado</>}
-              </button>
-              <div className="h-10 w-10 flex items-center justify-center bg-primary/5 rounded-full">
-                <Sparkles className="h-5 w-5 text-primary" />
+                <h1 className="text-2xl font-bold tracking-tight text-slate-900">Hola, {firstName}</h1>
+                <div className="flex items-center gap-1.5 mt-0.5">
+                  <button
+                    onClick={toggleAvailable}
+                    className={cn(
+                      "text-xs font-semibold flex items-center gap-1 transition-colors",
+                      available ? "text-emerald-600 hover:text-emerald-700" : "text-slate-400 hover:text-slate-600"
+                    )}
+                    title="Tocar para cambiar disponibilidad"
+                  >
+                    {available ? <Eye className="h-3.5 w-3.5" /> : <EyeOff className="h-3.5 w-3.5" />}
+                    {available ? "Disponible" : "Ocupado"}
+                  </button>
+                  <span className="text-slate-400 text-xs">•</span>
+                  <span className="text-slate-500 text-xs">
+                    {roleLabels[session.role] ?? session.role}
+                  </span>
+                </div>
               </div>
             </div>
           </div>
+        </header>
 
-          {/* Stats grid */}
-          <div className="grid grid-cols-3 gap-3 mb-6">
-            <div
+        <main className="max-w-xl mx-auto px-6 py-6">
+        {/* Métricas — clickables */}
+        <section className="grid grid-cols-3 gap-3 mb-6">
+          <button
+            onClick={() => {
+              setStaffStatusFilter(prev => (prev === "pending" ? "all" : "pending"));
+            }}
+            className={cn(
+              "bg-white p-4 rounded-2xl border shadow-sm flex flex-col items-center text-center transition-all active:scale-95",
+              staffStatusFilter === "pending"
+                ? "border-amber-400 ring-2 ring-amber-200"
+                : "border-slate-200 hover:border-slate-300"
+            )}
+          >
+            <span className="text-slate-500 text-[10px] font-bold uppercase tracking-wider mb-1 leading-tight">
+              Tareas Pendientes
+            </span>
+            <span className={cn(
+              "text-2xl font-extrabold leading-none",
+              staffStatusFilter === "pending" ? "text-amber-600" : "text-slate-900"
+            )}>
+              {staffSummary.pending}
+            </span>
+          </button>
+
+          <button
+            onClick={() => router.push("/staff/wallet")}
+            className="bg-white p-4 rounded-2xl border border-slate-200 shadow-sm flex flex-col items-center text-center transition-all active:scale-95 hover:border-emerald-300"
+            title="Ver mi billetera"
+          >
+            <span className="text-slate-500 text-[10px] font-bold uppercase tracking-wider mb-1 leading-tight">
+              Completadas Hoy
+            </span>
+            <span className="text-2xl font-extrabold text-emerald-600 leading-none">
+              {staffSummary.completedToday}
+            </span>
+          </button>
+
+          <button
+            onClick={() => {
+              setStaffStatusFilter(prev => (prev === "urgent" ? "all" : "urgent"));
+            }}
+            className={cn(
+              "bg-white p-4 rounded-2xl border shadow-sm flex flex-col items-center text-center transition-all active:scale-95",
+              staffStatusFilter === "urgent"
+                ? "border-rose-400 ring-2 ring-rose-200"
+                : "border-slate-200 hover:border-slate-300"
+            )}
+          >
+            <span className="text-rose-600 text-[10px] font-bold uppercase tracking-wider mb-1 leading-tight">
+              Alertas Críticas
+            </span>
+            <span className="text-2xl font-extrabold text-rose-600 leading-none">
+              {staffSummary.urgent}
+            </span>
+          </button>
+        </section>
+
+        {/* Selector de tiempo — atenuado cuando hay status filter activo */}
+        <div
+          className={cn(
+            "flex p-1 bg-slate-200/60 rounded-xl mb-6 transition-opacity",
+            staffStatusFilter !== "all" && "opacity-40"
+          )}
+        >
+          {(["today", "tomorrow", "week"] as const).map(f => (
+            <button
+              key={f}
+              onClick={() => {
+                setStaffTimeFilter(f);
+                setStaffStatusFilter("all");
+              }}
               className={cn(
-                "p-3 rounded-2xl border text-center transition-all",
-                staffSummary.urgent > 0
-                  ? "bg-rose-50 border-rose-100 ring-1 ring-rose-200"
-                  : "bg-slate-50 border-slate-100"
+                "flex-1 py-2 text-sm font-bold rounded-lg transition-all",
+                staffTimeFilter === f && staffStatusFilter === "all"
+                  ? "bg-white shadow-sm text-slate-900"
+                  : "text-slate-500 hover:text-slate-700"
               )}
             >
-              <p className="text-[9px] font-bold text-slate-400 uppercase tracking-tighter">Urgentes</p>
-              <p className={cn("text-xl font-black", staffSummary.urgent > 0 ? "text-rose-600" : "text-slate-600")}>
-                {staffSummary.urgent}
-              </p>
-            </div>
-            <div className="p-3 bg-slate-50 border border-slate-100 rounded-2xl text-center">
-              <p className="text-[9px] font-bold text-slate-400 uppercase tracking-tighter">Pendientes</p>
-              <p className="text-xl font-black text-slate-600">{staffSummary.pending}</p>
-            </div>
-            <div className="p-3 bg-slate-50 border border-slate-100 rounded-2xl text-center">
-              <p className="text-[9px] font-bold text-slate-400 uppercase tracking-tighter">Total Hoy</p>
-              <p className="text-xl font-black text-slate-600">{staffSummary.today}</p>
-            </div>
-          </div>
-
-          {/* Time filter tabs */}
-          <div className="flex bg-slate-100 p-1 rounded-2xl">
-            {(["today", "tomorrow", "week"] as const).map(f => (
-              <button
-                key={f}
-                onClick={() => setStaffTimeFilter(f)}
-                className={cn(
-                  "flex-1 py-2.5 text-[10px] uppercase tracking-widest font-black rounded-xl transition-all",
-                  staffTimeFilter === f
-                    ? "bg-white text-primary shadow-sm"
-                    : "text-slate-500 hover:text-slate-700"
-                )}
-              >
-                {f === "today" ? "Hoy" : f === "tomorrow" ? "Mañana" : "Semana"}
-              </button>
-            ))}
-          </div>
+              {f === "today" ? "Hoy" : f === "tomorrow" ? "Mañana" : "Semana"}
+            </button>
+          ))}
         </div>
 
+        {/* Indicador de filtro activo */}
+        {staffStatusFilter !== "all" && (
+          <button
+            onClick={() => setStaffStatusFilter("all")}
+            className={cn(
+              "w-full flex items-center justify-between px-4 py-2 rounded-full text-xs font-bold border mb-4",
+              staffStatusFilter === "urgent"
+                ? "bg-rose-50 border-rose-200 text-rose-700"
+                : "bg-amber-50 border-amber-200 text-amber-700"
+            )}
+          >
+            <span>
+              Mostrando {staffStatusFilter === "urgent" ? "alertas críticas" : "pendientes"} · {filteredTasksByTime.length}
+            </span>
+            <span className="flex items-center gap-1">
+              Quitar filtro <X className="h-3 w-3" />
+            </span>
+          </button>
+        )}
+
         {/* Task list */}
-        <div className="px-6 mt-6 space-y-3">
+        <div className="space-y-3">
           {filteredTasksByTime.length > 0 ? (
             filteredTasksByTime.map(task => {
               const info = getPriorityInfo(task);
@@ -662,25 +772,50 @@ export default function StaffPage() {
               );
             })
           ) : (
-            <div className="text-center py-20 bg-white rounded-[2.5rem] border-2 border-dashed border-slate-100">
-              <div className="h-20 w-20 bg-slate-50 rounded-full flex items-center justify-center mx-auto mb-4 border border-slate-100">
-                <Box className="h-10 w-10 text-slate-200" />
+            <section className="flex flex-col items-center justify-center py-16 text-center">
+              <div className="w-40 h-40 mb-6 relative">
+                <div className="absolute inset-0 bg-primary/5 rounded-full" />
+                <div className="absolute inset-0 flex items-center justify-center">
+                  <CheckCircle2 className="h-20 w-20 text-primary" strokeWidth={1.5} />
+                </div>
               </div>
-              <p className="text-slate-400 text-sm font-bold">No hay tareas programadas</p>
-            </div>
+              <h3 className="text-xl font-bold mb-2 text-slate-900">
+                {staffStatusFilter === "all" ? "Todo listo por ahora" : "Nada con ese filtro"}
+              </h3>
+              <p className="text-slate-500 leading-relaxed max-w-[280px]">
+                {staffStatusFilter === "all"
+                  ? `No tienes tareas programadas para ${staffTimeFilter === "today" ? "hoy" : staffTimeFilter === "tomorrow" ? "mañana" : "esta semana"}. ¡Buen trabajo!`
+                  : "Probá quitar el filtro o cambiar el período."}
+              </p>
+            </section>
           )}
         </div>
+        </main>
 
-        {/* Logout FAB */}
-        <Button
-          variant="outline"
-          size="sm"
-          className="fixed bottom-6 right-6 rounded-full shadow-2xl h-12 px-6 border-slate-200 bg-white"
-          onClick={handleLogout}
-        >
-          <LogOut className="h-4 w-4 mr-2" />
-          Cerrar sesión
-        </Button>
+        {/* Bottom Navigation Bar */}
+        <nav className="fixed bottom-0 left-0 w-full bg-white border-t border-slate-200 px-6 pt-3 pb-6 z-40 flex justify-around items-center shadow-[0_-1px_10px_rgba(0,0,0,0.04)]">
+          <button
+            onClick={() => setStaffStatusFilter("all")}
+            className="flex flex-col items-center gap-1 px-3"
+          >
+            <ClipboardList className="h-6 w-6 text-primary" strokeWidth={2.2} />
+            <span className="text-[11px] font-bold text-slate-900">Tareas</span>
+          </button>
+          <button
+            onClick={() => router.push("/staff/wallet")}
+            className="flex flex-col items-center gap-1 px-3 group"
+          >
+            <Wallet className="h-6 w-6 text-slate-400 group-hover:text-slate-700" strokeWidth={2.2} />
+            <span className="text-[11px] font-medium text-slate-500 group-hover:text-slate-700">Billetera</span>
+          </button>
+          <button
+            onClick={handleLogout}
+            className="flex flex-col items-center gap-1 px-3 group"
+          >
+            <LogOut className="h-6 w-6 text-slate-400 group-hover:text-rose-600" strokeWidth={2.2} />
+            <span className="text-[11px] font-medium text-slate-500 group-hover:text-rose-600">Salir</span>
+          </button>
+        </nav>
       </div>
     );
   }

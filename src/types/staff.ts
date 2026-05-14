@@ -69,18 +69,33 @@ export interface PriorityInfo {
   isUrgent: boolean;
 }
 
+// Lógica canónica documentada en docs/modulo-limpieza-modelo-canonico.md §7.
+// CRÍTICA si: priority="critical" | hoy<6am | mañana B2B | mañana<7am |
+// mañana sin assignee. ALTA si hoy o mañana (no críticas). MEDIA si próximos
+// 7 días. BAJA en el resto.
 export const getPriorityInfo = (task: CleaningTask): PriorityInfo => {
   const d = new Date();
   const todayStr = toLocalDateStr(d);
   d.setDate(d.getDate() + 1);
   const tomorrowStr = toLocalDateStr(d);
+  d.setDate(d.getDate() + 6); // total +7 desde hoy
+  const weekEndStr = toLocalDateStr(d);
 
   const isToday = task.dueDate === todayStr;
   const isTomorrow = task.dueDate === tomorrowStr;
+  const isThisWeek = task.dueDate >= todayStr && task.dueDate <= weekEndStr;
   const [hoursStr] = task.dueTime.split(":");
-  const hours = parseInt(hoursStr);
+  const hours = parseInt(hoursStr) || 0;
+  const noAssignee = !task.assigneeId;
 
-  if ((isToday && hours < 6) || task.priority === "critical") {
+  const criticalBecause =
+    task.priority === "critical" ||
+    (isToday && hours < 6) ||
+    (isTomorrow && task.isBackToBack) ||
+    (isTomorrow && hours < 7) ||
+    (isTomorrow && noAssignee);
+
+  if (criticalBecause) {
     return {
       label: "¡URGENTE!",
       color: "text-white bg-rose-600 border-none animate-pulse",
@@ -88,7 +103,7 @@ export const getPriorityInfo = (task: CleaningTask): PriorityInfo => {
       isUrgent: true,
     };
   }
-  if (isToday) {
+  if (isToday || isTomorrow) {
     return {
       label: "PRIORIDAD ALTA",
       color: "text-rose-600 bg-rose-50 border-rose-200",
@@ -96,7 +111,7 @@ export const getPriorityInfo = (task: CleaningTask): PriorityInfo => {
       isUrgent: false,
     };
   }
-  if (isTomorrow) {
+  if (isThisWeek) {
     return {
       label: "PRIORIDAD MEDIA",
       color: "text-amber-600 bg-amber-50 border-amber-200",

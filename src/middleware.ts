@@ -29,10 +29,12 @@ import { createSupabaseMiddlewareClient } from "@/lib/supabase/server";
 const PROTECTED_PREFIXES = [
   "/dashboard",
   "/staff",
+  "/supervisor",
   "/api/bookings",
   "/api/properties",
   "/api/cleaning-tasks",
   "/api/team-members",
+  "/api/supervisor",
   "/api/tuya",
   "/api/ttlock",          // /api/ttlock and /api/ttlock/code — webhook is carved out below
   // /api/ical/export es PUBLICO — Airbnb / Google Calendar / VRBO lo
@@ -117,18 +119,41 @@ export async function middleware(req: NextRequest) {
   // la cookie y llega a /dashboard, igual no verá data del tenant que no
   // le corresponde porque las /api/* van por sesión.
   const sessionRole = req.cookies.get("sh_role")?.value;
-  if (
-    user &&
-    (sessionRole === "cleaner" || sessionRole === "maintenance") &&
-    (pathname === "/dashboard" || pathname.startsWith("/dashboard/"))
-  ) {
-    const target = req.nextUrl.clone();
-    target.pathname = "/staff";
-    target.search = "";
-    const redir = NextResponse.redirect(target);
-    redir.headers.set("Cache-Control", "no-store, max-age=0");
-    return redir;
+  const inDashboard = pathname === "/dashboard" || pathname.startsWith("/dashboard/");
+  const inSupervisor = pathname === "/supervisor" || pathname.startsWith("/supervisor/");
+  const inStaff = pathname === "/staff" || pathname.startsWith("/staff/");
+
+  if (user && sessionRole) {
+    // Cleaner/maintenance no entran a /dashboard ni a /supervisor.
+    if (
+      (sessionRole === "cleaner" || sessionRole === "maintenance") &&
+      (inDashboard || inSupervisor)
+    ) {
+      const target = req.nextUrl.clone();
+      target.pathname = "/staff";
+      target.search = "";
+      const redir = NextResponse.redirect(target);
+      redir.headers.set("Cache-Control", "no-store, max-age=0");
+      return redir;
+    }
+    // Supervisor: si toca /dashboard se va a su PWA. /staff se permite por
+    // si también limpia (un supervisor puede ser asignado a tareas).
+    if (sessionRole === "supervisor" && inDashboard) {
+      const target = req.nextUrl.clone();
+      target.pathname = "/supervisor";
+      target.search = "";
+      const redir = NextResponse.redirect(target);
+      redir.headers.set("Cache-Control", "no-store, max-age=0");
+      return redir;
+    }
+    // Admin/owner: si entra a /supervisor o /staff, lo dejamos pasar (modo
+    // inspección/debug). No redirigimos para no romper el flujo del owner
+    // que quiere ver la app de su staff.
   }
+  // Sin cookie de rol pero con sesión = owner-direct (no team_member). Que
+  // siga al dashboard si quiere; staff/supervisor lo bloquearíamos pero no
+  // hay caso real ahí.
+  void inStaff;
 
   if (isProtectedPath(pathname) && !user) {
     // API routes → machine-readable 401.

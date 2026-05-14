@@ -26,6 +26,8 @@ type TeamRow = {
   role: string;
   status: string;
   available: boolean;
+  supervisor_id: string | null;
+  employment_type: string | null;
   document_id: string | null;
   emergency_phone: string | null;
   address: string | null;
@@ -91,6 +93,8 @@ function rowToDto(row: TeamRow) {
     address: row.address ?? undefined,
     references: row.references_json ?? [],
     documentPhoto: row.document_photo_url ?? undefined,
+    supervisorId: row.supervisor_id ?? null,
+    employmentType: (row.employment_type as "contractor" | "employee" | null) ?? null,
   };
 }
 
@@ -122,6 +126,8 @@ type InboundBody = {
   address?: string;
   references?: { name: string; phone: string }[];
   documentPhoto?: string;
+  supervisorId?: string | null;
+  employmentType?: "contractor" | "employee" | null;
 };
 
 function dtoToRow(body: InboundBody) {
@@ -160,6 +166,8 @@ function dtoToRow(body: InboundBody) {
   if (body.address !== undefined) patch.address = body.address || null;
   if (body.references !== undefined) patch.references_json = body.references;
   if (body.documentPhoto !== undefined) patch.document_photo_url = body.documentPhoto || null;
+  if (body.supervisorId !== undefined) patch.supervisor_id = body.supervisorId || null;
+  if (body.employmentType !== undefined) patch.employment_type = body.employmentType || null;
 
   return patch;
 }
