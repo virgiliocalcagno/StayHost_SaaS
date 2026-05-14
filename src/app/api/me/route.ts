@@ -109,6 +109,14 @@ export async function GET() {
     }
   }
 
+  // Tipo de cambio USD↔local es info comercial del owner. La app del cleaner
+  // no necesita la tasa (no ve márgenes ni totales agregados, solo su payout
+  // en la moneda de cada tarea). Si el rol es staff de bajo privilegio, lo
+  // omitimos del response. defaultCurrency sí se devuelve a todos porque la
+  // billetera del staff necesita formatear sus propios montos.
+  const isFinanceRole =
+    !role || ["owner", "admin", "manager", "co_host", "accountant"].includes(role);
+
   const res = NextResponse.json({
     email: email || null,
     tenantId: tenantId ?? null,
@@ -123,7 +131,7 @@ export async function GET() {
     moduleOverrides,
     timezone,
     defaultCurrency,
-    usdToLocalRate,
+    usdToLocalRate: isFinanceRole ? usdToLocalRate : undefined,
   });
 
   // Cookie httpOnly con el rol del usuario actual. La consume el middleware
