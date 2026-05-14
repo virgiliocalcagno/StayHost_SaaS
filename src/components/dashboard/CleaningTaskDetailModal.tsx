@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useEffect, useMemo, useState } from "react";
+import { formatTenantDate } from "@/lib/datetime/tenant-time";
 import {
   Sheet,
   SheetContent,
@@ -148,13 +149,7 @@ function getReservationCode(task: CleaningTaskDetailData): string {
 }
 
 function formatLongDate(iso?: string): string {
-  if (!iso) return "—";
-  // Forzamos T00:00:00 local para que `"2026-04-28"` no se parsee como UTC
-  // midnight (que en DR/UTC-4 muestra 27 abr local). Sin esto, esta función
-  // y la del CleaningPanel mostraban fechas distintas para la misma reserva.
-  const d = new Date(iso + (iso.includes("T") ? "" : "T00:00:00"));
-  if (isNaN(d.getTime())) return iso;
-  return d.toLocaleDateString("es", {
+  return formatTenantDate(iso, undefined, {
     weekday: "short",
     day: "2-digit",
     month: "short",
