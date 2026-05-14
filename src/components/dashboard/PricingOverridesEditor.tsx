@@ -8,6 +8,7 @@ import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Users, Save, RefreshCw } from "lucide-react";
 import { toast } from "sonner";
+import { formatMoney } from "@/lib/money/format";
 
 interface Member {
   id: string;
@@ -187,13 +188,13 @@ export default function PricingOverridesEditor({
               <th className="text-right px-3 py-2 font-bold">
                 Cobro como cleaner
                 <div className="text-[10px] font-normal text-slate-400 normal-case">
-                  default {defaultCleanerPayout != null ? `${currency} ${defaultCleanerPayout}` : "—"}
+                  default {defaultCleanerPayout != null ? formatMoney(defaultCleanerPayout, currency) : "—"}
                 </div>
               </th>
               <th className="text-right px-3 py-2 font-bold">
                 Cobro como supervisor
                 <div className="text-[10px] font-normal text-slate-400 normal-case">
-                  default {defaultSupervisorPayout != null ? `${currency} ${defaultSupervisorPayout}` : "—"}
+                  default {defaultSupervisorPayout != null ? formatMoney(defaultSupervisorPayout, currency) : "—"}
                 </div>
               </th>
             </tr>

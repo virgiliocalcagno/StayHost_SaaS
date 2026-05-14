@@ -73,6 +73,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { toast } from "sonner";
 import PricingOverridesEditor from "./PricingOverridesEditor";
+import { formatMoney } from "@/lib/money/format";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 interface ChannelLink {
@@ -1357,7 +1358,7 @@ export default function PropertiesPanel() {
               <DollarSign className="h-5 w-5 text-amber-500" />
             </div>
             <div>
-              <p className="text-2xl font-bold">${(stats.totalRevenue / 1000).toFixed(1)}k</p>
+              <p className="text-2xl font-bold">{formatMoney(stats.totalRevenue / 1000, "USD", { maximumFractionDigits: 1, minimumFractionDigits: 1 })}k</p>
               <p className="text-sm text-muted-foreground">Ingresos / mes</p>
             </div>
           </CardContent>
@@ -1559,11 +1560,11 @@ export default function PropertiesPanel() {
                 {/* Footer */}
                 <div className="flex items-center justify-between pt-3 border-t">
                   <div>
-                    <span className="text-xl font-bold">${prop.price}</span>
+                    <span className="text-xl font-bold">{formatMoney(prop.price, "USD")}</span>
                     <span className="text-muted-foreground text-sm"> /noche</span>
                   </div>
                   <div className="text-right">
-                    <p className="text-sm font-semibold text-emerald-600">${(prop.monthlyRevenue / 1000).toFixed(1)}k</p>
+                    <p className="text-sm font-semibold text-emerald-600">{formatMoney(prop.monthlyRevenue / 1000, "USD", { maximumFractionDigits: 1, minimumFractionDigits: 1 })}k</p>
                     <p className="text-[10px] text-muted-foreground uppercase tracking-wider">mes</p>
                   </div>
                 </div>
@@ -1629,7 +1630,7 @@ export default function PropertiesPanel() {
                         </div>
                       </td>
                       <td className="p-4">
-                        <span className="font-semibold">${prop.price}</span>
+                        <span className="font-semibold">{formatMoney(prop.price, "USD")}</span>
                         <span className="text-muted-foreground text-xs">/noche</span>
                       </td>
                       <td className="p-4">
@@ -1639,7 +1640,7 @@ export default function PropertiesPanel() {
                         </div>
                       </td>
                       <td className="p-4">
-                        <span className="font-semibold text-emerald-600">${prop.monthlyRevenue.toLocaleString()}</span>
+                        <span className="font-semibold text-emerald-600">{formatMoney(prop.monthlyRevenue, "USD")}</span>
                       </td>
                       <td className="p-4">{getStatusBadge(prop.status)}</td>
                       <td className="p-4">
@@ -1733,19 +1734,19 @@ export default function PropertiesPanel() {
                 <div className="grid grid-cols-2 gap-3">
                   <div className="p-4 rounded-lg border bg-emerald-50 dark:bg-emerald-900/10 border-emerald-200 dark:border-emerald-800">
                     <p className="text-xs text-muted-foreground mb-1">Ingreso Mensual</p>
-                    <p className="text-xl font-bold text-emerald-600">${selectedProperty.monthlyRevenue.toLocaleString()}</p>
+                    <p className="text-xl font-bold text-emerald-600">{formatMoney(selectedProperty.monthlyRevenue, "USD")}</p>
                   </div>
                   <div className="p-4 rounded-lg border">
                     <p className="text-xs text-muted-foreground mb-1">Precio/Noche</p>
-                    <p className="text-xl font-bold">${selectedProperty.price}</p>
+                    <p className="text-xl font-bold">{formatMoney(selectedProperty.price, "USD")}</p>
                   </div>
                   <div className="p-4 rounded-lg border">
                     <p className="text-xs text-muted-foreground mb-1">Pago Propietario</p>
-                    <p className="text-lg font-bold">${selectedProperty.ownerPayout.toLocaleString()}</p>
+                    <p className="text-lg font-bold">{formatMoney(selectedProperty.ownerPayout, "USD")}</p>
                   </div>
                   <div className="p-4 rounded-lg border">
                     <p className="text-xs text-muted-foreground mb-1">Pago Staff</p>
-                    <p className="text-lg font-bold">${selectedProperty.staffPay}</p>
+                    <p className="text-lg font-bold">{formatMoney(selectedProperty.staffPay, selectedProperty.currency)}</p>
                   </div>
                 </div>
               </div>
@@ -2286,23 +2287,9 @@ export default function PropertiesPanel() {
                     </h4>
                     <p className="text-xs text-muted-foreground mb-4">Configura las tarifas y descuentos para reservas ingresadas manualmente.</p>
                     <div className="space-y-4">
-                      <div className="grid grid-cols-3 gap-3">
+                      <div className="grid grid-cols-2 gap-3">
                         <div className="space-y-2">
-                          <Label>Moneda</Label>
-                          <select
-                            value={formData.currency}
-                            onChange={(e) => setFormData((p) => ({ ...p, currency: e.target.value }))}
-                            className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus:outline-none focus:ring-2 focus:ring-ring"
-                          >
-                            <option value="DOP">RD$ — Pesos dominicanos</option>
-                            <option value="USD">US$ — Dólares</option>
-                          </select>
-                          <p className="text-[10px] text-muted-foreground">
-                            Aplica a todas las tarifas de esta propiedad.
-                          </p>
-                        </div>
-                        <div className="space-y-2">
-                          <Label>Tarifa base por noche ({formData.currency === "USD" ? "US$" : "RD$"})</Label>
+                          <Label>Tarifa base por noche (US$)</Label>
                           <Input type="number" placeholder="Ej: 150" value={formData.price} onChange={(e) => setFormData((p) => ({ ...p, price: e.target.value }))} />
                         </div>
                         <div className="space-y-2">
@@ -2312,11 +2299,11 @@ export default function PropertiesPanel() {
                       </div>
                       <div className="grid grid-cols-2 gap-4">
                         <div className="space-y-2">
-                          <Label>Tarifa limpieza 1 noche</Label>
+                          <Label>Tarifa limpieza 1 noche (US$)</Label>
                           <Input type="number" placeholder="Ej: 30" value={formData.cleaningFeeOneDay} onChange={(e) => setFormData((p) => ({ ...p, cleaningFeeOneDay: e.target.value }))} />
                         </div>
                         <div className="space-y-2">
-                          <Label>Tarifa limpieza +1 noche</Label>
+                          <Label>Tarifa limpieza +1 noche (US$)</Label>
                           <Input type="number" placeholder="Ej: 50" value={formData.cleaningFeeMoreDays} onChange={(e) => setFormData((p) => ({ ...p, cleaningFeeMoreDays: e.target.value }))} />
                         </div>
                       </div>
@@ -2324,8 +2311,19 @@ export default function PropertiesPanel() {
                         <div className="flex items-start gap-2">
                           <DollarSign className="h-4 w-4 text-amber-600 mt-0.5 shrink-0" />
                           <div className="text-xs text-amber-900 leading-snug">
-                            <span className="font-bold">Tarifas operativas por limpieza.</span> Cada tarea creada para esta propiedad hereda estos montos. Sin esto, la billetera del cleaner queda vacía y no se generan cortes de pago.
+                            <span className="font-bold">Tarifas operativas por limpieza — pagos al staff.</span> Cada tarea creada para esta propiedad hereda estos montos. Los pagos al staff son la única parte multi-moneda (el resto siempre va en US$).
                           </div>
+                        </div>
+                        <div className="space-y-2">
+                          <Label className="text-xs">Moneda de pagos al staff</Label>
+                          <select
+                            value={formData.currency}
+                            onChange={(e) => setFormData((p) => ({ ...p, currency: e.target.value }))}
+                            className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-2 text-xs ring-offset-background focus:outline-none focus:ring-2 focus:ring-ring"
+                          >
+                            <option value="DOP">RD$ — Pesos dominicanos</option>
+                            <option value="USD">US$ — Dólares</option>
+                          </select>
                         </div>
                         <div className="grid grid-cols-3 gap-3">
                           <div className="space-y-1">

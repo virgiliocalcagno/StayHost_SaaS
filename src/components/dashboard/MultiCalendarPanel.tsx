@@ -37,6 +37,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { useState, useMemo, useEffect } from "react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
+import { formatMoney } from "@/lib/money/format";
 import { Sheet, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -608,7 +609,7 @@ export default function MultiCalendarPanel() {
                   </div>
 
                   <div className="space-y-2">
-                    <Label htmlFor="price" className="text-[11px] font-bold text-muted-foreground uppercase tracking-[0.05em]">Precio Total ($)</Label>
+                    <Label htmlFor="price" className="text-[11px] font-bold text-muted-foreground uppercase tracking-[0.05em]">Precio Total (US$)</Label>
                     <div className="relative">
                       <Input id="price" type="number" placeholder="Ej. 1500" value={newBooking.price || ""} onChange={e => setNewBooking({...newBooking, price: Number(e.target.value)})} className="h-11 bg-muted/30 border-border/50 rounded-xl pl-8" />
                       <DollarSign className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
@@ -795,7 +796,7 @@ export default function MultiCalendarPanel() {
                   <ChannelIcon channel={property.channel} className="mr-3 shrink-0" />
                   <div className="min-w-0">
                     <p className="font-bold truncate text-[11px] leading-tight group-hover:text-primary transition-colors text-foreground/90">{property.name}</p>
-                    <p className="text-[9px] text-muted-foreground font-medium">Desde ${property.price}/noche</p>
+                    <p className="text-[9px] text-muted-foreground font-medium">Desde {formatMoney(property.price, "USD")}/noche</p>
                   </div>
                 </button>
               ))}
@@ -851,7 +852,7 @@ export default function MultiCalendarPanel() {
                               "text-[10px] font-black tracking-tighter relative z-10",
                               isBooked ? "text-rose-600/50 dark:text-rose-400/50 line-through" : "text-foreground/70"
                             )}>
-                              ${property.price}
+                              {formatMoney(property.price, "USD")}
                             </span>
                             {/* Patrón rayado rosado dramático para bloqueo */}
                             {isBooked && (
@@ -996,7 +997,7 @@ export default function MultiCalendarPanel() {
 
                           <div className="flex items-center justify-between font-black text-sm mb-4">
                             <span className="text-muted-foreground">Payout Est.</span>
-                            <span className="text-emerald-600 dark:text-emerald-400">${property.price * Math.max(1, Math.ceil((new Date(booking.end).getTime() - new Date(booking.start).getTime()) / (1000 * 3600 * 24)))}</span>
+                            <span className="text-emerald-600 dark:text-emerald-400">{formatMoney(property.price * Math.max(1, Math.ceil((new Date(booking.end).getTime() - new Date(booking.start).getTime()) / (1000 * 3600 * 24))), "USD")}</span>
                           </div>
 
                           {booking.phone && (

@@ -38,6 +38,7 @@ import {
   Search
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { formatMoney } from "@/lib/money/format";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -342,7 +343,7 @@ export default function DynamicPricingPanel() {
             <CardTitle className="text-sm font-medium text-blue-100 uppercase tracking-wider">RevPAR Estimado</CardTitle>
           </CardHeader>
           <CardContent>
-            <div className="text-3xl font-bold tracking-tight">${kpis.revpar}</div>
+            <div className="text-3xl font-bold tracking-tight">{formatMoney(kpis.revpar, "USD")}</div>
             <p className="text-xs text-blue-200 mt-2 flex items-center gap-1 font-medium bg-white/10 w-fit px-2 py-0.5 rounded-full">
               <TrendingUp className="h-3 w-3" /> +12.4% vs mes anterior
             </p>
@@ -364,7 +365,7 @@ export default function DynamicPricingPanel() {
             <CardTitle className="text-sm font-medium text-slate-500">Tarifa Media (ADR)</CardTitle>
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">${kpis.adr}</div>
+            <div className="text-2xl font-bold">{formatMoney(kpis.adr, "USD")}</div>
             <p className="text-xs text-slate-500 mt-1 flex items-center gap-1">
               <DollarSign className="h-3 w-3" /> Basado en {portfolioMetrics.length} propiedades
             </p>
@@ -375,7 +376,7 @@ export default function DynamicPricingPanel() {
             <CardTitle className="text-sm font-medium text-slate-500">Ingresos Proyectados (MTD)</CardTitle>
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">${kpis.revenueMTD.toLocaleString()}</div>
+            <div className="text-2xl font-bold">{formatMoney(kpis.revenueMTD, "USD")}</div>
             <p className="text-xs text-slate-500 mt-1 italic">Pronóstico basado en tendencia</p>
           </CardContent>
         </Card>
@@ -428,7 +429,7 @@ export default function DynamicPricingPanel() {
                       </div>
                       <p className="text-xs font-bold text-blue-600 uppercase tracking-widest mb-2">Precio Mercado</p>
                       <div className="flex items-baseline gap-2">
-                        <span className="text-3xl font-black text-slate-900">${analysisResult.marketStats.avgPrice}</span>
+                        <span className="text-3xl font-black text-slate-900">{formatMoney(analysisResult.marketStats.avgPrice, "USD")}</span>
                         <span className="text-xs font-medium text-slate-400 italic">media / noche</span>
                       </div>
                     </div>
@@ -452,7 +453,7 @@ export default function DynamicPricingPanel() {
                       </div>
                       <p className="text-xs font-bold text-amber-700 uppercase tracking-widest mb-2">Recomendación AI</p>
                       <div className="flex items-baseline gap-2">
-                        <span className="text-3xl font-black text-amber-900">${analysisResult.suggestion}</span>
+                        <span className="text-3xl font-black text-amber-900">{formatMoney(analysisResult.suggestion, "USD")}</span>
                         <span className="text-[10px] font-bold text-amber-600 bg-white px-2 py-0.5 rounded-full shadow-sm">OPCIÓN ÓPTIMA</span>
                       </div>
                     </div>
@@ -483,7 +484,7 @@ export default function DynamicPricingPanel() {
                             </div>
                           </div>
                           <div className="text-right">
-                            <p className="text-xl font-black text-slate-900">${comp.price}</p>
+                            <p className="text-xl font-black text-slate-900">{formatMoney(comp.price, "USD")}</p>
                             <div className="flex items-center justify-end gap-1">
                               <Star className="h-3 w-3 fill-amber-500 text-amber-500" />
                               <span className="text-xs font-bold text-slate-600">{comp.rating}</span>
@@ -560,14 +561,14 @@ export default function DynamicPricingPanel() {
                         <h4 className="font-bold text-slate-900">{prop.name}</h4>
                         <div className="flex items-center gap-2">
                           <Badge variant="outline" className="text-[10px] h-4 px-1">{prop.occupancy}% Ocupación</Badge>
-                          <span className="text-xs text-slate-500">Base: ${prop.base}</span>
+                          <span className="text-xs text-slate-500">Base: {formatMoney(prop.base, "USD")}</span>
                         </div>
                       </div>
                     </div>
                     <div className="flex items-center gap-6">
                       <div className="text-right">
                         <div className="flex items-center justify-end gap-1">
-                          <p className="text-lg font-bold text-slate-900">${prop.suggested}</p>
+                          <p className="text-lg font-bold text-slate-900">{formatMoney(prop.suggested, "USD")}</p>
                           <span className={cn(
                             "text-[10px] font-bold px-1 rounded",
                             prop.change > 0 ? "text-emerald-600 bg-emerald-50" : "text-amber-600 bg-amber-50"
@@ -669,7 +670,7 @@ export default function DynamicPricingPanel() {
                       <div className="w-full bg-slate-100 rounded-t-xl transition-all hover:bg-blue-100 relative group/bar" style={{ height: `${(day.price/260)*100}%` }}>
                         <div className="absolute inset-x-0 bottom-0 bg-blue-600 opacity-30 h-[30%] rounded-t-xl group-hover/bar:h-full transition-all duration-300" />
                         <div className="absolute -top-10 left-1/2 -translate-x-1/2 bg-indigo-600 text-white text-[10px] px-2 py-1 rounded-lg opacity-0 group-hover/bar:opacity-100 transition-all pointer-events-none z-20 shadow-xl scale-95 group-hover/bar:scale-100 font-bold">
-                          ${day.price}
+                          {formatMoney(day.price, "USD")}
                         </div>
                       </div>
                       <span className="text-[10px] font-bold text-slate-400">{day.day}</span>
