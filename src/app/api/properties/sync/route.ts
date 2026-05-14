@@ -87,7 +87,7 @@ export async function POST(req: NextRequest) {
           weekly_discount_percent: property.weeklyDiscountPercent ?? 0,
           energy_fee_per_day: property.energyFeePerDay ?? 0,
           additional_services_fee: property.additionalServicesFee ?? 0,
-          currency: property.currency ?? "USD",
+          currency: property.currency === "USD" ? "USD" : "DOP",
           beds: property.beds ?? 1,
           baths: property.baths ?? 1,
           max_guests: property.maxGuests ?? 2,

@@ -30,6 +30,8 @@ export async function GET() {
   let trialExpired = false;
   let moduleOverrides: Record<string, boolean> = {};
   let timezone: string = "America/Santo_Domingo";
+  let defaultCurrency: string = "DOP";
+  let usdToLocalRate: number = 60;
   // Rol resuelto desde team_members: 'cleaner' | 'maintenance' | 'admin' |
   // 'manager' | 'co_host' | 'guest_support' | 'accountant' | 'owner'.
   // null si el user es owner directo (no tiene row en team_members) o si
@@ -39,7 +41,7 @@ export async function GET() {
   if (tenantId) {
     const { data } = await supabase
       .from("tenants")
-      .select("plan, plan_expires_at, onboarding_completed_at, module_overrides, timezone")
+      .select("plan, plan_expires_at, onboarding_completed_at, module_overrides, timezone, default_currency, usd_to_local_rate")
       .eq("id", tenantId)
       .single();
     const row = data as {
@@ -48,12 +50,19 @@ export async function GET() {
       onboarding_completed_at: string | null;
       module_overrides: Record<string, boolean> | null;
       timezone: string | null;
+      default_currency: string | null;
+      usd_to_local_rate: number | string | null;
     } | null;
     plan = row?.plan ?? null;
     planExpiresAt = row?.plan_expires_at ?? null;
     onboarded = !!row?.onboarding_completed_at;
     moduleOverrides = row?.module_overrides ?? {};
     if (row?.timezone) timezone = row.timezone;
+    if (row?.default_currency) defaultCurrency = row.default_currency;
+    if (row?.usd_to_local_rate != null) {
+      const r = Number(row.usd_to_local_rate);
+      if (!Number.isNaN(r) && r > 0) usdToLocalRate = r;
+    }
     // Trial expirado: tenants en plan='trial' cuyo plan_expires_at ya pasó.
     // El Master nunca se considera expirado — siempre tiene acceso.
     if (
@@ -113,6 +122,8 @@ export async function GET() {
     trialExpired,
     moduleOverrides,
     timezone,
+    defaultCurrency,
+    usdToLocalRate,
   });
 
   // Cookie httpOnly con el rol del usuario actual. La consume el middleware

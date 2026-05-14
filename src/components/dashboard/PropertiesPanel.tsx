@@ -196,6 +196,7 @@ function makeInitialFormData() {
     cleanerPayout: "",
     defaultSupervisorPayout: "",
     defaultClientPrice: "",
+    currency: "DOP",
     supervisorId: "",
     weeklyDiscountPercent: "",
     energyFeePerDay: "",
@@ -728,7 +729,7 @@ export default function PropertiesPanel() {
           image: p.cover_image ?? "",
           type: (p.property_type ?? "apartment") as Property["type"],
           price: p.price ?? 0,
-          currency: p.currency ?? "USD",
+          currency: p.currency ?? "DOP",
           rating: 0,
           reviews: 0,
           beds: p.beds ?? 1,
@@ -1019,6 +1020,7 @@ export default function PropertiesPanel() {
       cleanerPayout: p.cleanerPayout?.toString() || "",
       defaultSupervisorPayout: p.defaultSupervisorPayout?.toString() || "",
       defaultClientPrice: p.defaultClientPrice?.toString() || "",
+      currency: p.currency || "DOP",
       supervisorId: p.supervisorId ?? "",
       weeklyDiscountPercent: p.weeklyDiscountPercent?.toString() || "",
       energyFeePerDay: p.energyFeePerDay?.toString() || "",
@@ -1089,6 +1091,7 @@ export default function PropertiesPanel() {
         postalCode: formData.postalCode,
         type: formData.type,
         price: Number(formData.price) || editingProperty.price,
+        currency: formData.currency || "DOP",
         beds: Number(formData.beds) || editingProperty.beds,
         baths: Number(formData.baths) || editingProperty.baths,
         maxGuests: Number(formData.maxGuests) || editingProperty.maxGuests,
@@ -1137,7 +1140,7 @@ export default function PropertiesPanel() {
         type: formData.type,
         image: "https://images.unsplash.com/photo-1560448204-e02f11c3d0e2?w=600&h=400&fit=crop",
         price: Number(formData.price) || 100,
-        currency: "USD",
+        currency: formData.currency || "DOP",
         cleaningFeeOneDay: Number(formData.cleaningFeeOneDay) || 0,
         cleaningFeeMoreDays: Number(formData.cleaningFeeMoreDays) || 0,
         cleanerPayout: formData.cleanerPayout === "" ? undefined : Number(formData.cleanerPayout) || 0,
@@ -2283,13 +2286,27 @@ export default function PropertiesPanel() {
                     </h4>
                     <p className="text-xs text-muted-foreground mb-4">Configura las tarifas y descuentos para reservas ingresadas manualmente.</p>
                     <div className="space-y-4">
-                      <div className="grid grid-cols-2 gap-4">
+                      <div className="grid grid-cols-3 gap-3">
                         <div className="space-y-2">
-                          <Label>Tarifa base por noche (USD)</Label>
+                          <Label>Moneda</Label>
+                          <select
+                            value={formData.currency}
+                            onChange={(e) => setFormData((p) => ({ ...p, currency: e.target.value }))}
+                            className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus:outline-none focus:ring-2 focus:ring-ring"
+                          >
+                            <option value="DOP">RD$ — Pesos dominicanos</option>
+                            <option value="USD">US$ — Dólares</option>
+                          </select>
+                          <p className="text-[10px] text-muted-foreground">
+                            Aplica a todas las tarifas de esta propiedad.
+                          </p>
+                        </div>
+                        <div className="space-y-2">
+                          <Label>Tarifa base por noche ({formData.currency === "USD" ? "US$" : "RD$"})</Label>
                           <Input type="number" placeholder="Ej: 150" value={formData.price} onChange={(e) => setFormData((p) => ({ ...p, price: e.target.value }))} />
                         </div>
                         <div className="space-y-2">
-                          <Label>Descuento Semanal (%)</Label>
+                          <Label>Descuento semanal (%)</Label>
                           <Input type="number" placeholder="Ej: 10" value={formData.weeklyDiscountPercent} onChange={(e) => setFormData((p) => ({ ...p, weeklyDiscountPercent: e.target.value }))} />
                         </div>
                       </div>
@@ -2312,16 +2329,16 @@ export default function PropertiesPanel() {
                         </div>
                         <div className="grid grid-cols-3 gap-3">
                           <div className="space-y-1">
-                            <Label className="text-xs">Pago al cleaner</Label>
-                            <Input type="number" placeholder="Ej: 600" value={formData.cleanerPayout} onChange={(e) => setFormData((p) => ({ ...p, cleanerPayout: e.target.value }))} />
+                            <Label className="text-xs">Pago al cleaner ({formData.currency === "USD" ? "US$" : "RD$"})</Label>
+                            <Input type="number" placeholder={formData.currency === "USD" ? "Ej: 15" : "Ej: 1000"} value={formData.cleanerPayout} onChange={(e) => setFormData((p) => ({ ...p, cleanerPayout: e.target.value }))} />
                           </div>
                           <div className="space-y-1">
-                            <Label className="text-xs">Pago al supervisor</Label>
-                            <Input type="number" placeholder="Ej: 200" value={formData.defaultSupervisorPayout} onChange={(e) => setFormData((p) => ({ ...p, defaultSupervisorPayout: e.target.value }))} />
+                            <Label className="text-xs">Pago al supervisor ({formData.currency === "USD" ? "US$" : "RD$"})</Label>
+                            <Input type="number" placeholder={formData.currency === "USD" ? "Ej: 5" : "Ej: 300"} value={formData.defaultSupervisorPayout} onChange={(e) => setFormData((p) => ({ ...p, defaultSupervisorPayout: e.target.value }))} />
                           </div>
                           <div className="space-y-1">
-                            <Label className="text-xs">Cobro al dueño</Label>
-                            <Input type="number" placeholder="Ej: 1200" value={formData.defaultClientPrice} onChange={(e) => setFormData((p) => ({ ...p, defaultClientPrice: e.target.value }))} />
+                            <Label className="text-xs">Cobro al dueño ({formData.currency === "USD" ? "US$" : "RD$"})</Label>
+                            <Input type="number" placeholder={formData.currency === "USD" ? "Ej: 25" : "Ej: 1500"} value={formData.defaultClientPrice} onChange={(e) => setFormData((p) => ({ ...p, defaultClientPrice: e.target.value }))} />
                           </div>
                         </div>
                         <p className="text-[10px] text-amber-800/80">
@@ -2356,7 +2373,7 @@ export default function PropertiesPanel() {
                           supervisors={availableSupervisors}
                           defaultCleanerPayout={formData.cleanerPayout === "" ? null : Number(formData.cleanerPayout)}
                           defaultSupervisorPayout={formData.defaultSupervisorPayout === "" ? null : Number(formData.defaultSupervisorPayout)}
-                          currency={editingProperty?.currency || "DOP"}
+                          currency={formData.currency || "DOP"}
                         />
                       </div>
                       <div className="grid grid-cols-2 gap-4">
