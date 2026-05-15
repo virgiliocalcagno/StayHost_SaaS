@@ -20,20 +20,15 @@ import {
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
-import {
-  Loader2,
-  Search,
-  Sparkles,
-  Palmtree,
-  Car,
-  UtensilsCrossed,
-  Package,
-  Store,
-  Check,
-} from "lucide-react";
+import { Loader2, Search, Check } from "lucide-react";
 import { formatMoney } from "@/lib/money/format";
 import type { UpsellCategory } from "@/types/upsellShared";
 import { UPSELL_CATEGORY_LABELS } from "@/types/upsellShared";
+import {
+  getUpsellIcon,
+  getCategoryGradient,
+  getCategoryIconColor,
+} from "@/lib/upsell/categoryVisuals";
 
 interface Template {
   id: string;
@@ -51,10 +46,6 @@ interface Template {
   cutoffHours: number;
   market: string;
 }
-
-const iconMap: Record<string, React.ElementType> = {
-  Sparkles, Palmtree, Car, UtensilsCrossed, Package, Store,
-};
 
 const PRICING_SUFFIX: Record<string, string> = {
   fixed: "",
@@ -151,11 +142,6 @@ export default function UpsellTemplateCatalog({
     }
   };
 
-  const getIcon = (name: string) => {
-    const Icon = iconMap[name] ?? Sparkles;
-    return <Icon className="h-5 w-5 text-amber-600" />;
-  };
-
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
       <SheetContent className="w-full sm:max-w-2xl overflow-y-auto">
@@ -225,13 +211,14 @@ export default function UpsellTemplateCatalog({
             filtered.map((t) => {
               const imported = justImported.has(t.id) || existingNames.has(t.name);
               const suffix = PRICING_SUFFIX[t.pricingModel];
+              const Icon = getUpsellIcon(t.category, t.iconName);
               return (
                 <div
                   key={t.id}
                   className="flex items-start gap-3 p-3 rounded-xl border bg-background hover:shadow-md transition-shadow"
                 >
-                  <div className="h-10 w-10 rounded-xl bg-amber-50 flex items-center justify-center shrink-0">
-                    {getIcon(t.iconName)}
+                  <div className={`h-10 w-10 rounded-xl bg-gradient-to-br ${getCategoryGradient(t.category)} flex items-center justify-center shrink-0`}>
+                    <Icon className={`h-5 w-5 ${getCategoryIconColor(t.category)}`} />
                   </div>
                   <div className="flex-1 min-w-0">
                     <div className="flex items-baseline gap-2 flex-wrap">

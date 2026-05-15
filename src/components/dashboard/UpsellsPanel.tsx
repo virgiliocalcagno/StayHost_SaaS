@@ -33,11 +33,7 @@ import {
 import {
   ShoppingCart,
   Plus,
-  Clock,
-  Car,
-  UtensilsCrossed,
   Sparkles,
-  Baby,
   DollarSign,
   TrendingUp,
   Package,
@@ -47,7 +43,6 @@ import {
   ExternalLink,
   MapPin,
   Store,
-  Palmtree,
   Loader2,
   Users as UsersIcon,
   Phone,
@@ -61,22 +56,12 @@ import type { Upsell, UpsellCategory, PricingModel } from "@/types/upsell";
 import { PRICING_MODEL_LABELS, PRICING_MODEL_SUFFIX, UPSELL_DEFAULT_ICON, UPSELL_CATEGORY_LABELS } from "@/types/upsell";
 import type { UpsellVendor, PaymentTerms, VendorPricingMethod } from "@/types/upsellVendor";
 import { PAYMENT_TERMS_LABELS, VENDOR_PRICING_METHOD_LABELS, VENDOR_PRICING_VALUE_LABEL } from "@/types/upsellVendor";
+import { CategoryHero, UPSELL_ICON_OPTIONS } from "@/lib/upsell/categoryVisuals";
 
 interface PropertyLite {
   id: string;
   name: string;
 }
-
-const iconsMap: Record<string, React.ElementType> = {
-  Clock,
-  Car,
-  UtensilsCrossed,
-  Sparkles,
-  Baby,
-  Palmtree,
-  Store,
-  Package,
-};
 
 // ── Form state types ─────────────────────────────────────────────────────────
 interface UpsellFormState {
@@ -248,11 +233,6 @@ export default function UpsellsPanel() {
       activeCount: upsells.filter((u) => u.active).length,
     };
   }, [upsells]);
-
-  const getIconComponent = (name: string) => {
-    const Icon = iconsMap[name] || Sparkles;
-    return <Icon className="h-6 w-6 text-primary" />;
-  };
 
   const vendorName = (vendorId: string | null): string | null => {
     if (!vendorId) return null;
@@ -640,59 +620,55 @@ export default function UpsellsPanel() {
                 const vName = vendorName(upsell.vendorId);
                 return (
                   <Card key={upsell.id} className={`relative transition-all hover:shadow-md overflow-hidden ${!upsell.active && "opacity-60"}`}>
-                    {/* Hero photo: si hay foto, ocupa el top del card. Sin foto,
-                        cae al patrón viejo del icono + badge en row. */}
-                    {upsell.heroPhoto && (
-                      <div className="relative h-36 bg-muted">
-                        {/* eslint-disable-next-line @next/next/no-img-element */}
+                    {/* Header: foto si el host la subió, gradient + ícono de
+                        categoría como fallback. Siempre presente para que el
+                        card se vea consistente, foto o no. */}
+                    <div className="relative h-36 bg-muted">
+                      {upsell.heroPhoto ? (
+                        // eslint-disable-next-line @next/next/no-img-element
                         <img
                           src={upsell.heroPhoto}
                           alt={upsell.name}
                           className="w-full h-full object-cover"
                           loading="lazy"
                         />
-                        <Badge
-                          variant={upsell.active ? "default" : "secondary"}
-                          className={`absolute top-2 right-2 ${upsell.active ? "bg-chart-2" : ""}`}
-                        >
-                          {upsell.active ? "Activo" : "Inactivo"}
-                        </Badge>
-                        {/* Mini-galería overlay abajo a la izquierda: 4 thumbs
-                            máx + "+N" si hay más. Sirve como indicador
-                            visual de que el producto tiene fotos extras. */}
-                        {upsell.galleryPhotos.length > 0 && (
-                          <div className="absolute bottom-2 left-2 flex gap-1">
-                            {upsell.galleryPhotos.slice(0, 4).map((url, i) => (
-                              // eslint-disable-next-line @next/next/no-img-element
-                              <img
-                                key={`${upsell.id}-thumb-${i}`}
-                                src={url}
-                                alt=""
-                                className="h-8 w-8 object-cover rounded border-2 border-white shadow"
-                                loading="lazy"
-                              />
-                            ))}
-                            {upsell.galleryPhotos.length > 4 && (
-                              <div className="h-8 w-8 rounded border-2 border-white shadow bg-black/70 text-white text-xs font-bold flex items-center justify-center">
-                                +{upsell.galleryPhotos.length - 4}
-                              </div>
-                            )}
-                          </div>
-                        )}
-                      </div>
-                    )}
-                    <CardContent className="p-6">
-                      {!upsell.heroPhoto && (
-                        <div className="flex items-start justify-between mb-4">
-                          <div className="p-3 rounded-xl bg-primary/10">
-                            {getIconComponent(upsell.iconName)}
-                          </div>
-                          <Badge variant={upsell.active ? "default" : "secondary"} className={upsell.active ? "bg-chart-2" : ""}>
-                            {upsell.active ? "Activo" : "Inactivo"}
-                          </Badge>
+                      ) : (
+                        <CategoryHero
+                          category={upsell.category}
+                          iconName={upsell.iconName}
+                          size="mini"
+                        />
+                      )}
+                      <Badge
+                        variant={upsell.active ? "default" : "secondary"}
+                        className={`absolute top-2 right-2 ${upsell.active ? "bg-chart-2" : ""}`}
+                      >
+                        {upsell.active ? "Activo" : "Inactivo"}
+                      </Badge>
+                      {/* Mini-galería overlay abajo a la izquierda: 4 thumbs
+                          máx + "+N" si hay más. Sólo si hay foto principal y
+                          galería; sin foto principal no tendría sentido. */}
+                      {upsell.heroPhoto && upsell.galleryPhotos.length > 0 && (
+                        <div className="absolute bottom-2 left-2 flex gap-1">
+                          {upsell.galleryPhotos.slice(0, 4).map((url, i) => (
+                            // eslint-disable-next-line @next/next/no-img-element
+                            <img
+                              key={`${upsell.id}-thumb-${i}`}
+                              src={url}
+                              alt=""
+                              className="h-8 w-8 object-cover rounded border-2 border-white shadow"
+                              loading="lazy"
+                            />
+                          ))}
+                          {upsell.galleryPhotos.length > 4 && (
+                            <div className="h-8 w-8 rounded border-2 border-white shadow bg-black/70 text-white text-xs font-bold flex items-center justify-center">
+                              +{upsell.galleryPhotos.length - 4}
+                            </div>
+                          )}
                         </div>
                       )}
-
+                    </div>
+                    <CardContent className="p-6">
                       <h3 className="font-semibold text-lg line-clamp-1" title={upsell.name}>{upsell.name}</h3>
                       <p className="text-sm text-muted-foreground mb-4 line-clamp-2 min-h-[40px]">
                         {upsell.description || <span className="italic opacity-60">Sin descripción</span>}
@@ -1388,8 +1364,8 @@ export default function UpsellsPanel() {
                   <SelectValue placeholder="Icono Principal" />
                 </SelectTrigger>
                 <SelectContent>
-                  {Object.keys(iconsMap).map((iconKey) => (
-                    <SelectItem key={iconKey} value={iconKey}>{iconKey}</SelectItem>
+                  {UPSELL_ICON_OPTIONS.map((opt) => (
+                    <SelectItem key={opt.name} value={opt.name}>{opt.label}</SelectItem>
                   ))}
                 </SelectContent>
               </Select>

@@ -24,21 +24,15 @@ import {
   SheetFooter,
 } from "@/components/ui/sheet";
 import {
-  Car,
-  UtensilsCrossed,
-  Palmtree,
-  Sparkles,
-  Home,
   ShoppingCart,
   X,
   Plus,
   Minus,
   MessageCircle,
   Store,
-  Package,
-  Clock,
 } from "lucide-react";
 import { formatMoney } from "@/lib/money/format";
+import { CategoryHero } from "@/lib/upsell/categoryVisuals";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 type PricingModel = "fixed" | "per_person" | "per_unit" | "per_kg" | "per_night";
@@ -91,17 +85,6 @@ const CATEGORY_LABEL: Record<string, string> = {
   connectivity: "Conectividad",
   service: "Servicios",
   other: "Otro",
-};
-
-const iconMap: Record<string, React.ElementType> = {
-  Car,
-  UtensilsCrossed,
-  Palmtree,
-  Sparkles,
-  Home,
-  Store,
-  Package,
-  Clock,
 };
 
 const STORAGE_KEY_PREFIX = "stayhost.hub.cart.v1.";
@@ -335,7 +318,6 @@ export default function UpsellExperiences({
 
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
             {experiences.map((exp) => {
-              const Icon = iconMap[exp.iconName] || Sparkles;
               const suffix = PRICING_SUFFIX[exp.pricingModel];
               return (
                 <button
@@ -344,7 +326,7 @@ export default function UpsellExperiences({
                   onClick={() => setDetailOpen(exp)}
                   className="group text-left relative overflow-hidden rounded-3xl bg-slate-50 border border-slate-100 hover:border-amber-200 hover:shadow-xl transition-all duration-300 cursor-pointer"
                 >
-                  {/* Foto principal — si no hay, fallback al icono Lucide */}
+                  {/* Foto principal — si no hay, gradient + ícono por categoría */}
                   {exp.heroPhoto ? (
                     <div className="relative aspect-[4/3] overflow-hidden">
                       {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -359,8 +341,15 @@ export default function UpsellExperiences({
                       </Badge>
                     </div>
                   ) : (
-                    <div className="aspect-[4/3] flex items-center justify-center bg-gradient-to-br from-amber-50 to-amber-100">
-                      <Icon className="h-16 w-16 text-amber-600/60" />
+                    <div className="relative">
+                      <CategoryHero
+                        category={exp.category}
+                        iconName={exp.iconName}
+                        size="card"
+                      />
+                      <Badge className="absolute top-3 left-3 bg-white/90 text-slate-900 text-[10px] uppercase tracking-wider">
+                        {CATEGORY_LABEL[exp.category] ?? exp.category}
+                      </Badge>
                     </div>
                   )}
 
@@ -673,8 +662,8 @@ function UpsellDetail({ upsell, lang, onClose, onAdd }: DetailProps) {
         </SheetHeader>
 
         <div className="mt-6 space-y-6">
-          {/* Galería con foto activa + thumbs */}
-          {photos.length > 0 && (
+          {/* Galería con foto activa + thumbs. Sin fotos → category hero. */}
+          {photos.length > 0 ? (
             <div className="space-y-2">
               <div className="aspect-[16/10] rounded-2xl overflow-hidden bg-muted">
                 {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -701,6 +690,14 @@ function UpsellDetail({ upsell, lang, onClose, onAdd }: DetailProps) {
                   ))}
                 </div>
               )}
+            </div>
+          ) : (
+            <div className="rounded-2xl overflow-hidden">
+              <CategoryHero
+                category={upsell.category}
+                iconName={upsell.iconName}
+                size="detail"
+              />
             </div>
           )}
 
