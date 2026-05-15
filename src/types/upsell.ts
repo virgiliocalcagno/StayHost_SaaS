@@ -10,6 +10,18 @@ import type { UpsellCategory, VendorPricingMethod } from "./upsellShared";
 export type { UpsellCategory };
 export { UPSELL_CATEGORY_LABELS } from "./upsellShared";
 
+// Visibilidad de cada campo de info del servicio (Sprint 5).
+//   off       → no se renderiza
+//   optional  → se renderiza, no es obligatorio
+//   required  → se renderiza, bloquea checkout si vacío
+export type UpsellFieldVisibility = "off" | "optional" | "required";
+
+export const FIELD_VISIBILITY_LABELS: Record<UpsellFieldVisibility, string> = {
+  off: "No pedirla",
+  optional: "Opcional",
+  required: "Obligatoria",
+};
+
 // Cómo se multiplica el precio del upsell al cobrar al huésped.
 //   fixed       → 1 cobro total (late checkout, decoración cumpleaños)
 //   per_person  → precio × #personas (catamarán, buggy, tour)
@@ -53,12 +65,15 @@ export interface Upsell {
   vendorCommissionPercent: number | null;
   vendorFlatFee: number | null;
 
-  // Info del servicio (Sprint 5). Flags que indican qué datos extra
-  // pedirle al huésped al momento de comprar. Si todos están en false y
-  // notesPlaceholder es null, el flujo es el actual (solo cantidad + fecha).
-  requiresTime: boolean;
-  requiresPickupLocation: boolean;
-  requiresFlightNumber: boolean;
+  // Info del servicio (Sprint 5). 3 estados por campo:
+  //   'off'      → no se muestra al huésped
+  //   'optional' → se muestra pero no bloquea checkout si vacío
+  //   'required' → obligatorio, bloquea checkout si vacío
+  // Antes eran booleanos (Sprint 5 v1) pero eso obligaba a marcar
+  // "obligatorio" para mostrar el campo, sin poder hacerlo opcional.
+  timeField: UpsellFieldVisibility;
+  pickupField: UpsellFieldVisibility;
+  flightField: UpsellFieldVisibility;
   /** Hint del textarea de notas al huésped. Si null, el campo no se muestra. */
   notesPlaceholder: string | null;
 

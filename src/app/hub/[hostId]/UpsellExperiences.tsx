@@ -36,6 +36,7 @@ import { CategoryHero } from "@/lib/upsell/categoryVisuals";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 type PricingModel = "fixed" | "per_person" | "per_unit" | "per_kg" | "per_night";
+type FieldVisibility = "off" | "optional" | "required";
 
 interface HubUpsell {
   id: string;
@@ -51,11 +52,12 @@ interface HubUpsell {
   minQuantity: number;
   maxQuantity: number | null;
   cutoffHours: number;
-  // Sprint 5 — info del servicio que pide el host. El detail modal y el
-  // cart renderizan inputs dinámicos según estos flags.
-  requiresTime: boolean;
-  requiresPickupLocation: boolean;
-  requiresFlightNumber: boolean;
+  // Sprint 5 — visibility por campo: "off" | "optional" | "required".
+  // El detail modal renderiza solo los campos !== "off" y bloquea submit
+  // solo si los "required" están vacíos.
+  timeField: FieldVisibility;
+  pickupField: FieldVisibility;
+  flightField: FieldVisibility;
   notesPlaceholder: string | null;
   isGlobal: boolean;
   linkedPropertyIds: string[];
@@ -759,12 +761,11 @@ function UpsellDetail({ upsell, lang, onClose, onAdd }: DetailProps) {
   //     permiten fecha vacía.
   const quantityOk = upsell.pricingModel === "fixed" || (quantity >= min && quantity <= max);
   const dateOk = upsell.cutoffHours === 0 || !!serviceDate;
-  // Sprint 5 — campos obligatorios cuando el host los pidió.
-  const timeOk = !upsell.requiresTime || !!serviceTime;
-  const pickupOk = !upsell.requiresPickupLocation || pickupLocation.trim().length > 0;
-  // Flight number: relajamos en cliente (server hace la validación estricta).
-  // Solo exigimos no-vacío acá.
-  const flightOk = !upsell.requiresFlightNumber || flightNumber.trim().length > 0;
+  // Sprint 5 — solo bloqueamos cuando el field es "required" Y está vacío.
+  // Si es "optional", el huésped puede dejar el input vacío y seguir.
+  const timeOk = upsell.timeField !== "required" || !!serviceTime;
+  const pickupOk = upsell.pickupField !== "required" || pickupLocation.trim().length > 0;
+  const flightOk = upsell.flightField !== "required" || flightNumber.trim().length > 0;
   const canAdd = quantityOk && dateOk && timeOk && pickupOk && flightOk;
 
   return (
@@ -909,66 +910,77 @@ function UpsellDetail({ upsell, lang, onClose, onAdd }: DetailProps) {
               )}
             </div>
 
-            {/* Sprint 5 — campos dinámicos según lo que el host pidió */}
-            {upsell.requiresTime && (
-              <div className="space-y-2">
-                <Label className="text-xs">
-                  🕒 {lang === "es" ? "Hora del servicio" : "Service time"}
-                  <span className="text-amber-600 ml-1">
-                    {lang === "es" ? "(requerida)" : "(required)"}
-                  </span>
-                </Label>
-                <Input
-                  type="time"
-                  value={serviceTime}
-                  onChange={(e) => setServiceTime(e.target.value)}
-                />
-              </div>
-            )}
+            {/* Sprint 5 — campos dinámicos. Mostramos cuando field != "off".
+                Marcamos "(requerida)" en amber solo si "required"; "(opcional)"
+                en slate si "optional". */}
+            {(() => {
+              const requiredLabel = lang === "es" ? "(requerida)" : "(required)";
+              const optionalLabel = lang === "es" ? "(opcional)" : "(optional)";
+              const renderRequiredHint = (state: FieldVisibility) => {
+                if (state === "required")
+                  return <span className="text-amber-600 ml-1">{requiredLabel}</span>;
+                if (state === "optional")
+                  return <span className="text-slate-400 ml-1">{optionalLabel}</span>;
+                return null;
+              };
+              return (
+                <>
+                  {upsell.timeField !== "off" && (
+                    <div className="space-y-2">
+                      <Label className="text-xs">
+                        🕒 {lang === "es" ? "Hora del servicio" : "Service time"}
+                        {renderRequiredHint(upsell.timeField)}
+                      </Label>
+                      <Input
+                        type="time"
+                        value={serviceTime}
+                        onChange={(e) => setServiceTime(e.target.value)}
+                      />
+                    </div>
+                  )}
 
-            {upsell.requiresPickupLocation && (
-              <div className="space-y-2">
-                <Label className="text-xs">
-                  📍 {lang === "es" ? "Punto de recogida" : "Pickup location"}
-                  <span className="text-amber-600 ml-1">
-                    {lang === "es" ? "(requerido)" : "(required)"}
-                  </span>
-                </Label>
-                <Input
-                  value={pickupLocation}
-                  onChange={(e) => setPickupLocation(e.target.value)}
-                  placeholder={
-                    lang === "es"
-                      ? "Ej: Hotel Riu Bávaro, lobby principal"
-                      : "Ex: Hotel Riu Bávaro, main lobby"
-                  }
-                  maxLength={500}
-                />
-              </div>
-            )}
+                  {upsell.pickupField !== "off" && (
+                    <div className="space-y-2">
+                      <Label className="text-xs">
+                        📍 {lang === "es" ? "Punto de recogida" : "Pickup location"}
+                        {renderRequiredHint(upsell.pickupField)}
+                      </Label>
+                      <Input
+                        value={pickupLocation}
+                        onChange={(e) => setPickupLocation(e.target.value)}
+                        placeholder={
+                          lang === "es"
+                            ? "Ej: Hotel Riu Bávaro, lobby principal"
+                            : "Ex: Hotel Riu Bávaro, main lobby"
+                        }
+                        maxLength={500}
+                      />
+                    </div>
+                  )}
 
-            {upsell.requiresFlightNumber && (
-              <div className="space-y-2">
-                <Label className="text-xs">
-                  ✈️ {lang === "es" ? "Número de vuelo" : "Flight number"}
-                  <span className="text-amber-600 ml-1">
-                    {lang === "es" ? "(requerido)" : "(required)"}
-                  </span>
-                </Label>
-                <Input
-                  value={flightNumber}
-                  onChange={(e) => setFlightNumber(e.target.value.toUpperCase())}
-                  placeholder="AA1234"
-                  maxLength={10}
-                  className="uppercase font-mono"
-                />
-                <p className="text-[10px] text-slate-500">
-                  {lang === "es"
-                    ? "Te seguimos el vuelo en tiempo real para coordinar el recojo."
-                    : "We'll track the flight in real time to coordinate the pickup."}
-                </p>
-              </div>
-            )}
+                  {upsell.flightField !== "off" && (
+                    <div className="space-y-2">
+                      <Label className="text-xs">
+                        ✈️ {lang === "es" ? "Número de vuelo" : "Flight number"}
+                        {renderRequiredHint(upsell.flightField)}
+                      </Label>
+                      <Input
+                        value={flightNumber}
+                        onChange={(e) => setFlightNumber(e.target.value.toUpperCase())}
+                        placeholder="AA1234"
+                        maxLength={10}
+                        className="uppercase font-mono"
+                      />
+                      <p className="text-[10px] text-slate-500">
+                        {lang === "es"
+                          ? "Te seguimos el vuelo en tiempo real para coordinar el recojo."
+                          : "We'll track the flight in real time to coordinate the pickup."}
+                      </p>
+                    </div>
+                  )}
+                </>
+              );
+            })()}
 
             {upsell.notesPlaceholder && (
               <div className="space-y-2">

@@ -52,8 +52,8 @@ import { formatMoney } from "@/lib/money/format";
 import PhotoUploader from "@/components/dashboard/PhotoUploader";
 import OrdersTab from "@/components/dashboard/OrdersTab";
 import UpsellTemplateCatalog from "@/components/dashboard/UpsellTemplateCatalog";
-import type { Upsell, UpsellCategory, PricingModel } from "@/types/upsell";
-import { PRICING_MODEL_LABELS, PRICING_MODEL_SUFFIX, UPSELL_DEFAULT_ICON, UPSELL_CATEGORY_LABELS } from "@/types/upsell";
+import type { Upsell, UpsellCategory, PricingModel, UpsellFieldVisibility } from "@/types/upsell";
+import { PRICING_MODEL_LABELS, PRICING_MODEL_SUFFIX, UPSELL_DEFAULT_ICON, UPSELL_CATEGORY_LABELS, FIELD_VISIBILITY_LABELS } from "@/types/upsell";
 import type { UpsellVendor, PaymentTerms, VendorPricingMethod } from "@/types/upsellVendor";
 import { PAYMENT_TERMS_LABELS, VENDOR_PRICING_METHOD_LABELS, VENDOR_PRICING_VALUE_LABEL } from "@/types/upsellVendor";
 import { CategoryHero, UPSELL_ICON_OPTIONS } from "@/lib/upsell/categoryVisuals";
@@ -84,10 +84,10 @@ interface UpsellFormState {
   vendorCost: string;
   vendorCommissionPercent: string;
   vendorFlatFee: string;
-  // Sprint 5 — qué info pedirle al huésped al comprar este producto.
-  requiresTime: boolean;
-  requiresPickupLocation: boolean;
-  requiresFlightNumber: boolean;
+  // Sprint 5 — visibility por campo (off / optional / required).
+  timeField: UpsellFieldVisibility;
+  pickupField: UpsellFieldVisibility;
+  flightField: UpsellFieldVisibility;
   notesPlaceholder: string;
   isGlobal: boolean;
   linkedPropertyIds: string[];
@@ -113,9 +113,9 @@ const emptyUpsellForm: UpsellFormState = {
   vendorCost: "",
   vendorCommissionPercent: "",
   vendorFlatFee: "",
-  requiresTime: false,
-  requiresPickupLocation: false,
-  requiresFlightNumber: false,
+  timeField: "off",
+  pickupField: "off",
+  flightField: "off",
   notesPlaceholder: "",
   isGlobal: true,
   linkedPropertyIds: [],
@@ -368,9 +368,9 @@ export default function UpsellsPanel() {
       vendorCommissionPercent:
         u.vendorCommissionPercent != null ? String(u.vendorCommissionPercent) : "",
       vendorFlatFee: u.vendorFlatFee != null ? String(u.vendorFlatFee) : "",
-      requiresTime: u.requiresTime,
-      requiresPickupLocation: u.requiresPickupLocation,
-      requiresFlightNumber: u.requiresFlightNumber,
+      timeField: u.timeField,
+      pickupField: u.pickupField,
+      flightField: u.flightField,
       notesPlaceholder: u.notesPlaceholder ?? "",
       isGlobal: u.isGlobal,
       linkedPropertyIds: u.linkedPropertyIds,
@@ -446,9 +446,9 @@ export default function UpsellsPanel() {
             ? Number(upsellForm.vendorFlatFee)
             : null,
         // Sprint 5 — info del servicio que se le pedirá al huésped.
-        requiresTime: upsellForm.requiresTime,
-        requiresPickupLocation: upsellForm.requiresPickupLocation,
-        requiresFlightNumber: upsellForm.requiresFlightNumber,
+        timeField: upsellForm.timeField,
+        pickupField: upsellForm.pickupField,
+        flightField: upsellForm.flightField,
         notesPlaceholder: upsellForm.notesPlaceholder.trim() || null,
         isGlobal: upsellForm.isGlobal,
         linkedPropertyIds: upsellForm.isGlobal ? [] : upsellForm.linkedPropertyIds,
@@ -1574,56 +1574,57 @@ export default function UpsellsPanel() {
               <div>
                 <h4 className="font-medium text-sm">¿Qué necesitás saber del huésped?</h4>
                 <p className="text-[11px] text-muted-foreground mt-0.5">
-                  Marcá los datos que el huésped tiene que indicar al comprar este producto.
+                  Por cada campo elegí si <strong>no se pide</strong>, es <strong>opcional</strong>{" "}
+                  o <strong>obligatorio</strong>. Lo obligatorio bloquea el checkout si está vacío.
                 </p>
               </div>
-              <div className="space-y-2">
-                <label className="flex items-start gap-2 text-sm cursor-pointer hover:bg-white/60 p-2 rounded-md">
-                  <input
-                    type="checkbox"
-                    checked={upsellForm.requiresTime}
-                    onChange={(e) => setUpsellForm({ ...upsellForm, requiresTime: e.target.checked })}
-                    className="h-4 w-4 mt-0.5 text-primary"
-                  />
-                  <span>
-                    <strong className="block font-medium">🕒 Hora del servicio</strong>
-                    <span className="text-muted-foreground text-xs block">
-                      Ej: excursión, masaje, chef, lavandería con horario.
-                    </span>
-                  </span>
-                </label>
-                <label className="flex items-start gap-2 text-sm cursor-pointer hover:bg-white/60 p-2 rounded-md">
-                  <input
-                    type="checkbox"
-                    checked={upsellForm.requiresPickupLocation}
-                    onChange={(e) =>
-                      setUpsellForm({ ...upsellForm, requiresPickupLocation: e.target.checked })
-                    }
-                    className="h-4 w-4 mt-0.5 text-primary"
-                  />
-                  <span>
-                    <strong className="block font-medium">📍 Punto de recogida</strong>
-                    <span className="text-muted-foreground text-xs block">
-                      Ej: excursiones, transporte, alquiler de bicis.
-                    </span>
-                  </span>
-                </label>
-                <label className="flex items-start gap-2 text-sm cursor-pointer hover:bg-white/60 p-2 rounded-md">
-                  <input
-                    type="checkbox"
-                    checked={upsellForm.requiresFlightNumber}
-                    onChange={(e) =>
-                      setUpsellForm({ ...upsellForm, requiresFlightNumber: e.target.checked })
-                    }
-                    className="h-4 w-4 mt-0.5 text-primary"
-                  />
-                  <span>
-                    <strong className="block font-medium">✈️ Número de vuelo</strong>
-                    <span className="text-muted-foreground text-xs block">
-                      Ideal para shuttle aeropuerto. El panel arma link a Google Flights automático.
-                    </span>
-                  </span>
-                </label>
+              <div className="space-y-3">
+                {([
+                  {
+                    key: "timeField" as const,
+                    icon: "🕒",
+                    label: "Hora del servicio",
+                    hint: "Ej: excursión, masaje, chef, lavandería con horario.",
+                  },
+                  {
+                    key: "pickupField" as const,
+                    icon: "📍",
+                    label: "Punto de recogida",
+                    hint: "Ej: excursiones desde hotel, transporte local, alquileres.",
+                  },
+                  {
+                    key: "flightField" as const,
+                    icon: "✈️",
+                    label: "Número de vuelo",
+                    hint: "Shuttle aeropuerto. Tracking automático con Google Flights.",
+                  },
+                ]).map(({ key, icon, label, hint }) => (
+                  <div key={key} className="grid grid-cols-[1fr_auto] gap-3 items-center bg-white/70 rounded-md p-2">
+                    <div className="min-w-0">
+                      <p className="font-medium text-sm">
+                        {icon} {label}
+                      </p>
+                      <p className="text-[10px] text-muted-foreground">{hint}</p>
+                    </div>
+                    <Select
+                      value={upsellForm[key]}
+                      onValueChange={(val) =>
+                        setUpsellForm({ ...upsellForm, [key]: val as UpsellFieldVisibility })
+                      }
+                    >
+                      <SelectTrigger className="h-8 w-[140px] text-xs">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {(Object.keys(FIELD_VISIBILITY_LABELS) as UpsellFieldVisibility[]).map((v) => (
+                          <SelectItem key={v} value={v}>
+                            {FIELD_VISIBILITY_LABELS[v]}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                ))}
               </div>
               <div className="space-y-1 pt-2 border-t border-blue-100">
                 <Label htmlFor="notesPlaceholder" className="text-xs">
@@ -1640,7 +1641,7 @@ export default function UpsellsPanel() {
                 />
                 <p className="text-[10px] text-muted-foreground">
                   Si lo dejás vacío, el campo de notas no se muestra al huésped. Si tipeás algo,
-                  aparece como placeholder de una textarea opcional.
+                  aparece como placeholder de una textarea opcional (siempre opcional).
                 </p>
               </div>
             </div>

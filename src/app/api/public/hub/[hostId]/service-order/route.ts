@@ -88,10 +88,10 @@ type UpsellSnapshot = {
   cutoff_hours: number;
   active: boolean;
   vendor_id: string | null;
-  // Sprint 5: flags de info del servicio
-  requires_time: boolean | null;
-  requires_pickup_location: boolean | null;
-  requires_flight_number: boolean | null;
+  // Sprint 5: visibility de info del servicio (3-estado por campo)
+  time_field: string | null;
+  pickup_field: string | null;
+  flight_field: string | null;
   notes_placeholder: string | null;
 };
 
@@ -166,7 +166,7 @@ export async function POST(
 
   const { data: upsellRows, error: upErr } = await supabaseAdmin
     .from("upsells")
-    .select("id, name, price, currency, pricing_model, min_quantity, max_quantity, capacity_per_slot, cutoff_hours, active, vendor_id, requires_time, requires_pickup_location, requires_flight_number, notes_placeholder")
+    .select("id, name, price, currency, pricing_model, min_quantity, max_quantity, capacity_per_slot, cutoff_hours, active, vendor_id, time_field, pickup_field, flight_field, notes_placeholder")
     .eq("tenant_id", hostId)
     .in("id", upsellIds);
 
@@ -281,14 +281,18 @@ export async function POST(
       }
     }
 
-    // Sprint 5 — validar info del servicio según los flags del upsell.
-    // Si requires_X=true, el campo es OBLIGATORIO. Si false, lo ignoramos
-    // aunque venga (sanitización: el huésped no puede meter notas si el
-    // host no las pidió — coherencia BD).
+    // Sprint 5 — validar info del servicio según el estado de cada campo:
+    //   'off'      → ignoramos (campo no se mostró al huésped)
+    //   'optional' → aceptamos si viene, sin bloquear si vacío
+    //   'required' → exigimos no-vacío, retornamos 422 si falta
+    const timeFieldState = snap.time_field ?? "off";
+    const pickupFieldState = snap.pickup_field ?? "off";
+    const flightFieldState = snap.flight_field ?? "off";
+
     let serviceTime: string | null = null;
-    if (snap.requires_time) {
+    if (timeFieldState !== "off") {
       const raw = typeof item.serviceTime === "string" ? item.serviceTime.trim() : "";
-      if (!raw) {
+      if (!raw && timeFieldState === "required") {
         return NextResponse.json(
           { error: `${snap.name}: indicá la hora del servicio` },
           { status: 422 },
@@ -300,13 +304,13 @@ export async function POST(
           { status: 400 },
         );
       }
-      serviceTime = raw;
+      serviceTime = raw || null;
     }
 
     let pickupLocation: string | null = null;
-    if (snap.requires_pickup_location) {
+    if (pickupFieldState !== "off") {
       const raw = typeof item.pickupLocation === "string" ? item.pickupLocation.trim() : "";
-      if (!raw) {
+      if (!raw && pickupFieldState === "required") {
         return NextResponse.json(
           { error: `${snap.name}: indicá el punto de recogida` },
           { status: 422 },
@@ -318,28 +322,31 @@ export async function POST(
           { status: 400 },
         );
       }
-      pickupLocation = raw;
+      pickupLocation = raw || null;
     }
 
     let flightNumber: string | null = null;
-    if (snap.requires_flight_number) {
+    if (flightFieldState !== "off") {
       const raw = typeof item.flightNumber === "string" ? item.flightNumber.trim().toUpperCase() : "";
       if (!raw) {
-        return NextResponse.json(
-          { error: `${snap.name}: indicá tu número de vuelo` },
-          { status: 422 },
-        );
+        if (flightFieldState === "required") {
+          return NextResponse.json(
+            { error: `${snap.name}: indicá tu número de vuelo` },
+            { status: 422 },
+          );
+        }
+        // optional + vacío → OK, dejamos null
+      } else {
+        // Si vino, validamos formato razonable. Tolerante a espacios/guiones.
+        const normalized = raw.replace(/[\s-]/g, "");
+        if (!/^[A-Z0-9]{3,10}$/.test(normalized)) {
+          return NextResponse.json(
+            { error: `${snap.name}: número de vuelo inválido (ej AA1234)` },
+            { status: 400 },
+          );
+        }
+        flightNumber = normalized;
       }
-      // Validación tolerante — 2-3 letras de aerolínea + 1-5 dígitos
-      // (ej AA1234, IB5544). Aceptamos también espacios/guiones internos.
-      const normalized = raw.replace(/[\s-]/g, "");
-      if (!/^[A-Z0-9]{3,10}$/.test(normalized)) {
-        return NextResponse.json(
-          { error: `${snap.name}: número de vuelo inválido (ej AA1234)` },
-          { status: 400 },
-        );
-      }
-      flightNumber = normalized;
     }
 
     // Notas extras: aceptamos solo si el host las pidió (notes_placeholder

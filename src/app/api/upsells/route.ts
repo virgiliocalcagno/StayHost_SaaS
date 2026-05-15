@@ -11,8 +11,12 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getAuthenticatedTenant } from "@/lib/supabase/server";
 import type { SupabaseClient } from "@supabase/supabase-js";
-import type { Upsell, UpsellCategory, PricingModel } from "@/types/upsell";
+import type { Upsell, UpsellCategory, PricingModel, UpsellFieldVisibility } from "@/types/upsell";
 import type { VendorPricingMethod } from "@/types/upsellShared";
+
+const VALID_FIELD_VISIBILITY = new Set<UpsellFieldVisibility>(["off", "optional", "required"]);
+const isValidFieldVisibility = (v: unknown): v is UpsellFieldVisibility =>
+  typeof v === "string" && (VALID_FIELD_VISIBILITY as Set<string>).has(v);
 
 // 10 categorías unificadas con upsell_vendors.
 const VALID_CATEGORIES = new Set<UpsellCategory>([
@@ -145,10 +149,10 @@ type UpsellRow = {
   vendor_cost: string | number | null;
   vendor_commission_percent: string | number | null;
   vendor_flat_fee: string | number | null;
-  // Sprint 5: info del servicio
-  requires_time: boolean;
-  requires_pickup_location: boolean;
-  requires_flight_number: boolean;
+  // Sprint 5: info del servicio (3-estado por campo)
+  time_field: string | null;
+  pickup_field: string | null;
+  flight_field: string | null;
   notes_placeholder: string | null;
   is_global: boolean;
   linked_property_ids: unknown;
@@ -185,9 +189,9 @@ function rowToUpsell(row: UpsellRow): Upsell {
     vendorCommissionPercent:
       row.vendor_commission_percent != null ? Number(row.vendor_commission_percent) : null,
     vendorFlatFee: row.vendor_flat_fee != null ? Number(row.vendor_flat_fee) : null,
-    requiresTime: !!row.requires_time,
-    requiresPickupLocation: !!row.requires_pickup_location,
-    requiresFlightNumber: !!row.requires_flight_number,
+    timeField: (isValidFieldVisibility(row.time_field) ? row.time_field : "off"),
+    pickupField: (isValidFieldVisibility(row.pickup_field) ? row.pickup_field : "off"),
+    flightField: (isValidFieldVisibility(row.flight_field) ? row.flight_field : "off"),
     notesPlaceholder: row.notes_placeholder,
     isGlobal: row.is_global,
     linkedPropertyIds,
@@ -387,11 +391,17 @@ export async function POST(req: NextRequest) {
   }
   const galleryPhotos = galleryRaw;
 
-  // Info del servicio (Sprint 5). Flags + placeholder de notas. Defaults
-  // a false / null → comportamiento legacy si el caller no manda nada.
-  const requiresTime = body.requiresTime === true;
-  const requiresPickupLocation = body.requiresPickupLocation === true;
-  const requiresFlightNumber = body.requiresFlightNumber === true;
+  // Info del servicio (Sprint 5). Cada campo tiene 3 estados.
+  // Default 'off' → comportamiento legacy si el caller no manda nada.
+  function parseField(raw: unknown): UpsellFieldVisibility | null {
+    if (raw === undefined || raw === null || raw === "") return null;
+    if (isValidFieldVisibility(raw)) return raw;
+    return null;
+  }
+  const timeField = parseField(body.timeField) ?? "off";
+  const pickupField = parseField(body.pickupField) ?? "off";
+  const flightField = parseField(body.flightField) ?? "off";
+
   let notesPlaceholder: string | null = null;
   if (typeof body.notesPlaceholder === "string") {
     const v = body.notesPlaceholder.trim();
@@ -426,9 +436,9 @@ export async function POST(req: NextRequest) {
     vendor_cost: vendorCost,
     vendor_commission_percent: vendorCommissionPercent,
     vendor_flat_fee: vendorFlatFee,
-    requires_time: requiresTime,
-    requires_pickup_location: requiresPickupLocation,
-    requires_flight_number: requiresFlightNumber,
+    time_field: timeField,
+    pickup_field: pickupField,
+    flight_field: flightField,
     notes_placeholder: notesPlaceholder,
     is_global: body.isGlobal !== false,
     linked_property_ids: linkedPropertyIds,
@@ -664,12 +674,20 @@ export async function PATCH(req: NextRequest) {
     }
   }
   // Info del servicio (Sprint 5).
-  if (body.requiresTime !== undefined) patch.requires_time = !!body.requiresTime;
-  if (body.requiresPickupLocation !== undefined) {
-    patch.requires_pickup_location = !!body.requiresPickupLocation;
-  }
-  if (body.requiresFlightNumber !== undefined) {
-    patch.requires_flight_number = !!body.requiresFlightNumber;
+  for (const [bodyKey, dbKey] of [
+    ["timeField", "time_field"],
+    ["pickupField", "pickup_field"],
+    ["flightField", "flight_field"],
+  ] as const) {
+    if (body[bodyKey] !== undefined) {
+      if (!isValidFieldVisibility(body[bodyKey])) {
+        return NextResponse.json(
+          { error: `${bodyKey} debe ser 'off' | 'optional' | 'required'` },
+          { status: 400 },
+        );
+      }
+      patch[dbKey] = body[bodyKey];
+    }
   }
   if (body.notesPlaceholder !== undefined) {
     if (body.notesPlaceholder === null || body.notesPlaceholder === "") {

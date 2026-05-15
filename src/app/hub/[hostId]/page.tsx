@@ -55,10 +55,10 @@ interface StoredUpsell {
   minQuantity: number;
   maxQuantity: number | null;
   cutoffHours: number;
-  // Sprint 5
-  requiresTime: boolean;
-  requiresPickupLocation: boolean;
-  requiresFlightNumber: boolean;
+  // Sprint 5 — visibility por campo (off / optional / required)
+  timeField: "off" | "optional" | "required";
+  pickupField: "off" | "optional" | "required";
+  flightField: "off" | "optional" | "required";
   notesPlaceholder: string | null;
   isGlobal: boolean;
   linkedPropertyIds: string[];

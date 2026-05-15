@@ -31,9 +31,9 @@ type TemplateRow = {
   cutoff_hours: number;
   active: boolean;
   // Sprint 5
-  requires_time: boolean;
-  requires_pickup_location: boolean;
-  requires_flight_number: boolean;
+  time_field: string | null;
+  pickup_field: string | null;
+  flight_field: string | null;
   notes_placeholder: string | null;
 };
 
@@ -101,9 +101,9 @@ export async function POST(req: NextRequest) {
       capacity_per_slot: t.capacity_per_slot,
       cutoff_hours: t.cutoff_hours,
       // Sprint 5: heredar flags de info del servicio del template.
-      requires_time: !!t.requires_time,
-      requires_pickup_location: !!t.requires_pickup_location,
-      requires_flight_number: !!t.requires_flight_number,
+      time_field: t.time_field ?? "off",
+      pickup_field: t.pickup_field ?? "off",
+      flight_field: t.flight_field ?? "off",
       notes_placeholder: t.notes_placeholder,
       is_global: true,
       linked_property_ids: [],

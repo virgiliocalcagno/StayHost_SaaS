@@ -28,9 +28,9 @@ type Row = {
   market: string;
   popularity_rank: number;
   // Sprint 5: info del servicio (pre-configurado por template)
-  requires_time: boolean;
-  requires_pickup_location: boolean;
-  requires_flight_number: boolean;
+  time_field: string | null;
+  pickup_field: string | null;
+  flight_field: string | null;
   notes_placeholder: string | null;
 };
 
@@ -85,9 +85,9 @@ export async function GET(req: NextRequest) {
     cutoffHours: r.cutoff_hours,
     market: r.market,
     popularityRank: r.popularity_rank,
-    requiresTime: !!r.requires_time,
-    requiresPickupLocation: !!r.requires_pickup_location,
-    requiresFlightNumber: !!r.requires_flight_number,
+    timeField: r.time_field ?? "off",
+    pickupField: r.pickup_field ?? "off",
+    flightField: r.flight_field ?? "off",
     notesPlaceholder: r.notes_placeholder,
   }));
 
