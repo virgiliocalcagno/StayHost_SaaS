@@ -56,6 +56,7 @@ import {
 import { formatMoney } from "@/lib/money/format";
 import PhotoUploader from "@/components/dashboard/PhotoUploader";
 import OrdersTab from "@/components/dashboard/OrdersTab";
+import UpsellTemplateCatalog from "@/components/dashboard/UpsellTemplateCatalog";
 import type { Upsell, UpsellCategory, PricingModel } from "@/types/upsell";
 import { PRICING_MODEL_LABELS, PRICING_MODEL_SUFFIX, UPSELL_DEFAULT_ICON, UPSELL_CATEGORY_LABELS } from "@/types/upsell";
 import type { UpsellVendor, PaymentTerms, VendorPricingMethod } from "@/types/upsellVendor";
@@ -186,6 +187,9 @@ export default function UpsellsPanel() {
   // huérfanos en Storage — el bucket free tier lo aguanta de sobra.
   const [tempUpsellId, setTempUpsellId] = useState<string>("");
   const [tempVendorId, setTempVendorId] = useState<string>("");
+
+  // Catálogo de templates Punta Cana (Sprint 4)
+  const [catalogOpen, setCatalogOpen] = useState(false);
 
   // Upsell sheet
   const [upsellSheetOpen, setUpsellSheetOpen] = useState(false);
@@ -608,10 +612,20 @@ export default function UpsellsPanel() {
 
           <div className="flex justify-between items-center flex-wrap gap-4">
             <h3 className="text-lg font-semibold">Tus Productos y Experiencias</h3>
-            <Button onClick={handleAddUpsell} className="gradient-gold text-primary-foreground gap-2">
-              <Plus className="h-4 w-4" />
-              Nuevo producto
-            </Button>
+            <div className="flex items-center gap-2 flex-wrap">
+              <Button
+                variant="outline"
+                onClick={() => setCatalogOpen(true)}
+                className="gap-2"
+              >
+                <Sparkles className="h-4 w-4 text-amber-500" />
+                Importar del catálogo Punta Cana
+              </Button>
+              <Button onClick={handleAddUpsell} className="gradient-gold text-primary-foreground gap-2">
+                <Plus className="h-4 w-4" />
+                Nuevo producto
+              </Button>
+            </div>
           </div>
 
           {loading ? (
@@ -1684,6 +1698,16 @@ export default function UpsellsPanel() {
           </SheetFooter>
         </SheetContent>
       </Sheet>
+
+      {/* Catálogo Punta Cana — importar templates curados */}
+      <UpsellTemplateCatalog
+        open={catalogOpen}
+        onOpenChange={setCatalogOpen}
+        existingNames={new Set(upsells.map((u) => u.name))}
+        onImported={() => {
+          void load();
+        }}
+      />
     </div>
   );
 }
