@@ -7,6 +7,40 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { formatCurrency, cn } from "@/lib/utils";
+import { formatMoney } from "@/lib/money/format";
+
+// Pagos al staff son multi-moneda nativos: un cleaner puede tener tareas
+// en propiedades DOP y USD el mismo período (commit dffaf6e). NO convertimos
+// a una sola moneda — mostramos breakdown "RD$ X · US$ Y" para que el admin
+// vea cuánto debe en cada caja sin perder precisión por FX.
+//
+// Orden estable: DOP, USD, después el resto alfabético. Evita que el orden
+// dependa del locale del navegador y mantiene RD$ primero en el mercado LATAM.
+const CURRENCY_PRIORITY: Record<string, number> = { DOP: 0, USD: 1 };
+function currencySortRank(code: string): number {
+  return CURRENCY_PRIORITY[code] ?? 2;
+}
+
+function formatTotalsByCurrency(totals: Record<string, number>): string {
+  const entries = Object.entries(totals).filter(([k, v]) => {
+    // Defensa: si un payout legacy tiene currency=null en BD y el endpoint
+    // no aplicó fallback, la clave llega como string "null" o "". No
+    // queremos renderizar "NULL 12000" — preferimos omitir y dejar el cero
+    // visible (más honesto que ocultar el monto detrás de basura).
+    if (!k || k === "null" || k === "undefined") return false;
+    return v > 0;
+  });
+  if (entries.length === 0) return formatMoney(0, "DOP");
+  return entries
+    .sort(([a], [b]) => {
+      const ra = currencySortRank(a);
+      const rb = currencySortRank(b);
+      if (ra !== rb) return ra - rb;
+      return a.localeCompare(b, "en");
+    })
+    .map(([curr, amount]) => formatMoney(amount, curr))
+    .join(" · ");
+}
 import {
   Wallet,
   Plus,
@@ -98,15 +132,29 @@ export default function PayoutsPanel() {
   const stats = useMemo(() => {
     const pending = payouts.filter(p => p.status === "pending");
     const paid = payouts.filter(p => p.status === "paid");
-    const totalPending = pending.reduce((s, p) => s + p.totalAmount, 0);
-    const totalPaid = paid.reduce((s, p) => s + p.totalAmount, 0);
-    const currency = payouts[0]?.currency ?? "DOP";
+
+    // Totales agrupados por currency. Un cleaner con tareas en propiedades
+    // DOP y USD aparece en ambos buckets. NO sumamos cross-currency porque
+    // perdería precisión y el admin necesita saber cuánto pagar en cada
+    // moneda exactamente.
+    const totalPendingByCurr: Record<string, number> = {};
+    const totalPaidByCurr: Record<string, number> = {};
+    const totalAllByCurr: Record<string, number> = {};
+    for (const p of pending) {
+      totalPendingByCurr[p.currency] = (totalPendingByCurr[p.currency] ?? 0) + p.totalAmount;
+      totalAllByCurr[p.currency] = (totalAllByCurr[p.currency] ?? 0) + p.totalAmount;
+    }
+    for (const p of paid) {
+      totalPaidByCurr[p.currency] = (totalPaidByCurr[p.currency] ?? 0) + p.totalAmount;
+      totalAllByCurr[p.currency] = (totalAllByCurr[p.currency] ?? 0) + p.totalAmount;
+    }
+
     return {
       pendingCount: pending.length,
       paidCount: paid.length,
-      totalPending,
-      totalPaid,
-      currency,
+      totalPendingByCurr,
+      totalPaidByCurr,
+      totalAllByCurr,
     };
   }, [payouts]);
 
@@ -140,7 +188,7 @@ export default function PayoutsPanel() {
             <p className="text-xs uppercase tracking-wider text-muted-foreground font-semibold">Pendientes</p>
             <p className="text-2xl font-bold mt-1">{stats.pendingCount}</p>
             <p className="text-xs text-amber-600 font-semibold mt-1">
-              {formatCurrency(stats.totalPending, stats.currency)}
+              {formatTotalsByCurrency(stats.totalPendingByCurr)}
             </p>
           </CardContent>
         </Card>
@@ -149,7 +197,7 @@ export default function PayoutsPanel() {
             <p className="text-xs uppercase tracking-wider text-muted-foreground font-semibold">Pagados</p>
             <p className="text-2xl font-bold mt-1">{stats.paidCount}</p>
             <p className="text-xs text-emerald-600 font-semibold mt-1">
-              {formatCurrency(stats.totalPaid, stats.currency)}
+              {formatTotalsByCurrency(stats.totalPaidByCurr)}
             </p>
           </CardContent>
         </Card>
@@ -161,7 +209,7 @@ export default function PayoutsPanel() {
             <div>
               <p className="text-xs uppercase tracking-wider text-muted-foreground font-semibold">Total liquidado</p>
               <p className="text-lg font-bold">
-                {formatCurrency(stats.totalPending + stats.totalPaid, stats.currency)}
+                {formatTotalsByCurrency(stats.totalAllByCurr)}
               </p>
             </div>
           </CardContent>
@@ -349,8 +397,6 @@ function GenerateWizard({
   const [periodStart, setPeriodStart] = useState(defaultStart);
   const [periodEnd, setPeriodEnd] = useState(defaultEnd);
   const [preview, setPreview] = useState<PreviewBucket[] | null>(null);
-  const [previewTotal, setPreviewTotal] = useState(0);
-  const [previewCurrency, setPreviewCurrency] = useState("DOP");
   const [excluded, setExcluded] = useState<Set<string>>(new Set());
   const [loadingPreview, setLoadingPreview] = useState(false);
   const [submitting, setSubmitting] = useState(false);
@@ -371,14 +417,11 @@ function GenerateWizard({
         const msg = (await r.json().catch(() => ({}))).error || `Error ${r.status}`;
         throw new Error(msg);
       }
-      const d = (await r.json()) as {
-        buckets: PreviewBucket[];
-        totalAmount: number;
-        currency: string;
-      };
+      // `totalAmount`/`currency` del endpoint son single-currency legacy;
+      // el wizard agrupa por moneda cliente-side via `adjustedTotals` para
+      // soportar cleaners con tareas en propiedades DOP y USD el mismo corte.
+      const d = (await r.json()) as { buckets: PreviewBucket[] };
       setPreview(d.buckets);
-      setPreviewTotal(d.totalAmount);
-      setPreviewCurrency(d.currency);
       setExcluded(new Set());
     } catch (e) {
       setErr(e instanceof Error ? e.message : "Error en preview");
@@ -422,11 +465,20 @@ function GenerateWizard({
     }
   };
 
-  const adjustedTotal = useMemo(() => {
-    if (!preview) return 0;
-    return preview
-      .filter(b => !excluded.has(b.memberId))
-      .reduce((s, b) => s + b.total, 0);
+  // Total agrupado por currency. Si hay buckets en DOP y USD el mismo
+  // corte, mostramos "RD$ X · US$ Y" en vez de sumar a ciegas. `grandTotal`
+  // existe sólo como flag numérico para deshabilitar el submit cuando
+  // todos los buckets están excluidos.
+  const adjustedTotals = useMemo(() => {
+    const byCurrency: Record<string, number> = {};
+    let grandTotal = 0;
+    if (!preview) return { byCurrency, grandTotal };
+    for (const b of preview) {
+      if (excluded.has(b.memberId)) continue;
+      byCurrency[b.currency] = (byCurrency[b.currency] ?? 0) + b.total;
+      grandTotal += b.total;
+    }
+    return { byCurrency, grandTotal };
   }, [preview, excluded]);
 
   return (
@@ -493,7 +545,7 @@ function GenerateWizard({
                   {preview.length} miembro{preview.length === 1 ? "" : "s"} con tareas elegibles
                 </span>
                 <span className="font-bold text-primary">
-                  Total ajustado: {formatCurrency(adjustedTotal, previewCurrency)}
+                  Total ajustado: {formatTotalsByCurrency(adjustedTotals.byCurrency)}
                 </span>
               </div>
               <div className="space-y-2">
@@ -526,10 +578,10 @@ function GenerateWizard({
           </Button>
           <Button
             onClick={submit}
-            disabled={!preview || preview.length === 0 || submitting || adjustedTotal <= 0}
+            disabled={!preview || preview.length === 0 || submitting || adjustedTotals.grandTotal <= 0}
             className="gradient-gold text-primary-foreground gap-2"
           >
-            {submitting ? "Generando…" : `Confirmar ${formatCurrency(adjustedTotal, previewCurrency)}`}
+            {submitting ? "Generando…" : `Confirmar ${formatTotalsByCurrency(adjustedTotals.byCurrency)}`}
           </Button>
         </div>
       </div>

@@ -5,7 +5,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
-import { formatMoney } from "@/lib/money/format";
+import { formatMoney, sumByCurrency } from "@/lib/money/format";
 import { useTenantCurrency } from "@/lib/money/useTenantCurrency";
 import {
   Building2,
@@ -37,11 +37,14 @@ type BookingRow = {
   status: string;
   channel: string;
   totalPrice: number;
+  // Heredada de la propiedad — necesaria para no sumar DOP+USD en KPIs.
+  currency: string;
 };
 
 type PropRow = {
   id: string;
   name: string;
+  currency: string;
   bookings: BookingRow[];
 };
 
@@ -87,6 +90,10 @@ function formatDateRange(startYMD: string, endYMD: string): string {
 }
 
 export default function OverviewPanel() {
+  // Moneda por defecto del tenant — los totales agregados se normalizan a
+  // esta moneda usando el FX rate USD↔local del tenant. El display agrega
+  // "≈" cuando la mezcla incluyó conversión.
+  const { currency: tenantCurrency, usdToLocalRate } = useTenantCurrency();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [properties, setProperties] = useState<PropRow[]>([]);
@@ -106,7 +113,21 @@ export default function OverviewPanel() {
         }
         const data = (await res.json()) as BookingsResponse;
         if (!cancelled) {
-          setProperties(data.properties ?? []);
+          // Defensa: si un cliente cacheado golpea un endpoint viejo sin
+          // currency, asumimos "DOP" para que las agregaciones no rompan.
+          // Bookings heredan la moneda de su propiedad por consistencia.
+          const normalized = (data.properties ?? []).map((p) => {
+            const propCurrency = p.currency ?? "DOP";
+            return {
+              ...p,
+              currency: propCurrency,
+              bookings: (p.bookings ?? []).map((b) => ({
+                ...b,
+                currency: b.currency ?? propCurrency,
+              })),
+            };
+          });
+          setProperties(normalized);
           setLoading(false);
         }
       } catch (e) {
@@ -133,14 +154,18 @@ export default function OverviewPanel() {
       (b) => b.status !== "cancelled" && b.start <= today && b.end > today
     );
 
-    // Ingresos del mes actual — tomamos reservas cuyo check-in cae este mes.
+    // Ingresos del mes actual — tomamos reservas cuyo check-in cae este mes
+    // y las agregamos cross-currency (DOP+USD se convierten a tenantCurrency
+    // usando el FX rate del tenant; si no hay rate, los items se omiten).
     const thisMonthBookings = allBookings.filter(
       (b) => b.status !== "cancelled" && monthKey(b.start) === thisMonth
     );
-    const monthlyRevenue = thisMonthBookings.reduce(
-      (sum, b) => sum + (Number(b.totalPrice) || 0),
-      0
+    const monthAgg = sumByCurrency(
+      thisMonthBookings.map((b) => ({ amount: Number(b.totalPrice) || 0, currency: b.currency })),
+      tenantCurrency,
+      usdToLocalRate,
     );
+    const monthlyRevenue = monthAgg.total;
 
     // Ingresos mes anterior para comparar (trend up/down).
     const prevMonth = (() => {
@@ -148,9 +173,14 @@ export default function OverviewPanel() {
       const prev = new Date(Date.UTC(y, m - 2, 1));
       return `${prev.getUTCFullYear()}-${String(prev.getUTCMonth() + 1).padStart(2, "0")}`;
     })();
-    const prevMonthRevenue = allBookings
-      .filter((b) => b.status !== "cancelled" && monthKey(b.start) === prevMonth)
-      .reduce((sum, b) => sum + (Number(b.totalPrice) || 0), 0);
+    const prevMonthAgg = sumByCurrency(
+      allBookings
+        .filter((b) => b.status !== "cancelled" && monthKey(b.start) === prevMonth)
+        .map((b) => ({ amount: Number(b.totalPrice) || 0, currency: b.currency })),
+      tenantCurrency,
+      usdToLocalRate,
+    );
+    const prevMonthRevenue = prevMonthAgg.total;
 
     const revenueDelta = prevMonthRevenue > 0
       ? Math.round(((monthlyRevenue - prevMonthRevenue) / prevMonthRevenue) * 100)
@@ -182,11 +212,13 @@ export default function OverviewPanel() {
 
     return {
       monthlyRevenue,
+      monthlyRevenueMixed: monthAgg.hasMixedCurrencies,
+      monthlyRevenueSkipped: monthAgg.skipped,
       revenueDelta,
       activeCount: activeNow.length,
       occupancyPct,
     };
-  }, [allBookings, properties]);
+  }, [allBookings, properties, tenantCurrency, usdToLocalRate]);
 
   // ── Reservas recientes (últimas 5 por check_in desc) ────────────────────────
   const recentBookings = useMemo(() => {
@@ -226,32 +258,32 @@ export default function OverviewPanel() {
   }, [properties]);
 
   // ── Gráfico de ingresos por mes (últimos 12 meses) ─────────────────────────
+  // Cada barra ya está normalizada a tenantCurrency, así que el eje "Y" es
+  // comparable mes a mes incluso si hubo mezcla de monedas dentro de un mes.
   const revenueByMonth = useMemo(() => {
     const now = new Date();
-    const months: { label: string; ymKey: string; total: number }[] = [];
+    const months: { label: string; ymKey: string; items: { amount: number; currency: string }[] }[] = [];
     const LETRAS = ["E", "F", "M", "A", "M", "J", "J", "A", "S", "O", "N", "D"];
     for (let i = 11; i >= 0; i--) {
       const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
       const ymKey = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
-      months.push({ label: LETRAS[d.getMonth()], ymKey, total: 0 });
+      months.push({ label: LETRAS[d.getMonth()], ymKey, items: [] });
     }
     for (const b of allBookings) {
       if (b.status === "cancelled") continue;
       const k = monthKey(b.start);
       const bucket = months.find((m) => m.ymKey === k);
-      if (bucket) bucket.total += Number(b.totalPrice) || 0;
+      if (bucket) bucket.items.push({ amount: Number(b.totalPrice) || 0, currency: b.currency });
     }
-    const max = Math.max(1, ...months.map((m) => m.total));
-    return months.map((m) => ({ ...m, heightPct: Math.round((m.total / max) * 100) }));
-  }, [allBookings]);
+    const withTotals = months.map((m) => ({
+      label: m.label,
+      ymKey: m.ymKey,
+      total: sumByCurrency(m.items, tenantCurrency, usdToLocalRate).total,
+    }));
+    const max = Math.max(1, ...withTotals.map((m) => m.total));
+    return withTotals.map((m) => ({ ...m, heightPct: Math.round((m.total / max) * 100) }));
+  }, [allBookings, tenantCurrency, usdToLocalRate]);
 
-  // ───────────────────────────────────────────────────────────────────────────
-  // Moneda por defecto del tenant — los totales agregados se renderizan en esta
-  // moneda. Si el tenant tiene propiedades en monedas mixtas (DOP y USD), los
-  // totales actuales SUMAN números sin convertir; queda como deuda para PR de
-  // payouts agrupados por currency. Por ahora: mostrar el código de moneda
-  // explícito para que sea obvio si algo se ve raro.
-  const { currency: tenantCurrency } = useTenantCurrency();
   const currencyFmt = useMemo(
     () => ({
       format: (n: number) => formatMoney(n, tenantCurrency),
@@ -298,7 +330,15 @@ export default function OverviewPanel() {
   const statCards = [
     {
       title: "Ingresos del Mes",
-      value: currencyFmt.format(stats.monthlyRevenue),
+      // Prefijo "≈" cuando hubo conversión cross-currency. Tooltip explica.
+      value: `${stats.monthlyRevenueMixed ? "≈ " : ""}${currencyFmt.format(stats.monthlyRevenue)}`,
+      valueTitle: stats.monthlyRevenueMixed
+        ? `Incluye conversión a ${tenantCurrency} usando tasa USD↔local del tenant`
+        : undefined,
+      titleSuffix:
+        stats.monthlyRevenueSkipped > 0
+          ? ` (${stats.monthlyRevenueSkipped} sin FX)`
+          : null,
       change: stats.revenueDelta === null ? "—" : `${stats.revenueDelta >= 0 ? "+" : ""}${stats.revenueDelta}%`,
       trend: (stats.revenueDelta ?? 0) >= 0 ? "up" : "down",
       icon: DollarSign,
@@ -308,6 +348,8 @@ export default function OverviewPanel() {
     {
       title: "Reservas Activas",
       value: String(stats.activeCount),
+      valueTitle: undefined as string | undefined,
+      titleSuffix: null as string | null,
       change: `${properties.length} propiedades`,
       trend: "up",
       icon: Calendar,
@@ -317,6 +359,8 @@ export default function OverviewPanel() {
     {
       title: "Tasa de Ocupación",
       value: `${stats.occupancyPct}%`,
+      valueTitle: undefined as string | undefined,
+      titleSuffix: null as string | null,
       change: "últimos 30d",
       trend: stats.occupancyPct >= 50 ? "up" : "down",
       icon: TrendingUp,
@@ -339,6 +383,8 @@ export default function OverviewPanel() {
           return b.status !== "cancelled" && b.start > today && b.start <= in7;
         }).length
       ),
+      valueTitle: undefined as string | undefined,
+      titleSuffix: null as string | null,
       change: "7 días",
       trend: "up",
       icon: MessageSquare,
@@ -369,8 +415,15 @@ export default function OverviewPanel() {
                   {stat.change}
                 </div>
               </div>
-              <p className="text-2xl font-bold">{stat.value}</p>
-              <p className="text-sm text-muted-foreground">{stat.title}</p>
+              <p className="text-2xl font-bold" title={stat.valueTitle}>{stat.value}</p>
+              <p className="text-sm text-muted-foreground">
+                {stat.title}
+                {stat.titleSuffix && (
+                  <span className="ml-1 text-amber-600" title="Reservas omitidas por falta de tipo de cambio configurado">
+                    {stat.titleSuffix}
+                  </span>
+                )}
+              </p>
             </CardContent>
           </Card>
         ))}
@@ -400,7 +453,7 @@ export default function OverviewPanel() {
                   </div>
                   <div className="text-right">
                     <p className="font-semibold">
-                      {booking.totalPrice > 0 ? currencyFmt.format(booking.totalPrice) : "—"}
+                      {booking.totalPrice > 0 ? formatMoney(booking.totalPrice, booking.currency) : "—"}
                     </p>
                     <p className="text-xs text-muted-foreground">
                       {formatDateRange(booking.start, booking.end)}

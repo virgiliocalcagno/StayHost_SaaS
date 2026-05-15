@@ -167,7 +167,10 @@ export async function GET(req: NextRequest) {
     periodStart: p.period_start,
     periodEnd: p.period_end,
     totalAmount: Number(p.total_amount),
-    currency: p.currency,
+    // Fallback: payouts legacy generados antes de la migración multi-currency
+    // pueden tener currency=null. Sin esto el cleaner ve "null" en su
+    // historial de pagos. Mismo patrón que /api/payouts/route.ts.
+    currency: p.currency ?? "DOP",
     status: p.status,
     paymentMethod: p.payment_method,
     reference: p.reference,

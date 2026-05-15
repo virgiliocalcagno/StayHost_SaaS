@@ -37,7 +37,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { useState, useMemo, useEffect } from "react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
-import { formatMoney } from "@/lib/money/format";
+import { formatMoney, currencyLabel } from "@/lib/money/format";
 import { Sheet, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -64,25 +64,25 @@ const generateMockBookings = () => {
   };
 
   return [
-    { id: 1, name: "Pool + Free Shuttle to Beach", channel: "airbnb", price: 125, bookings: [
+    { id: 1, name: "Pool + Free Shuttle to Beach", channel: "airbnb", price: 125, currency: "USD", bookings: [
       { id: "b1", guest: "Maria Lopez", phone: null as string | null, phone4: null as string | null, bookingUrl: null as string | null, channelCode: null as string | null, phoneLast4: null as string | null, numGuests: 2, totalPrice: 625, note: "" as string | null, start: getDateStr(-5), end: getDateStr(-1), status: "confirmed", channel: "airbnb" },
       { id: "b2", guest: "Carlos Mendez", phone: null, phone4: null, bookingUrl: null, channelCode: null, phoneLast4: null, numGuests: 2, totalPrice: 500, note: null, start: getDateStr(2), end: getDateStr(6), status: "pending", channel: "direct" },
       { id: "b3", guest: "Ana Rodriguez", phone: null, phone4: null, bookingUrl: null, channelCode: null, phoneLast4: null, numGuests: 2, totalPrice: 625, note: null, start: getDateStr(9), end: getDateStr(14), status: "confirmed", channel: "airbnb" },
     ]},
-    { id: 2, name: "Apartamento Centro", channel: "booking", price: 89, bookings: [
+    { id: 2, name: "Apartamento Centro", channel: "booking", price: 89, currency: "USD", bookings: [
       { id: "b4", guest: "Pedro Sanchez", phone: null, phone4: null, bookingUrl: null, channelCode: null, phoneLast4: null, numGuests: 2, totalPrice: 267, note: null, start: getDateStr(0), end: getDateStr(3), status: "confirmed", channel: "booking" },
       { id: "b5", guest: "Luisa Gomez", phone: null, phone4: null, bookingUrl: null, channelCode: null, phoneLast4: null, numGuests: 2, totalPrice: 267, note: null, start: getDateStr(3), end: getDateStr(6), status: "confirmed", channel: "direct" },
     ]},
-    { id: 3, name: "Casa de Playa Sunset", channel: "vrbo", price: 210, bookings: [
+    { id: 3, name: "Casa de Playa Sunset", channel: "vrbo", price: 210, currency: "USD", bookings: [
       { id: "b6", guest: "Sofia Castro", phone: null, phone4: null, bookingUrl: null, channelCode: null, phoneLast4: null, numGuests: 2, totalPrice: 630, note: null, start: getDateStr(-2), end: getDateStr(1), status: "confirmed", channel: "vrbo" },
       { id: "b7", guest: "Jorge Diaz", phone: null, phone4: null, bookingUrl: null, channelCode: null, phoneLast4: null, numGuests: 2, totalPrice: 840, note: null, start: getDateStr(1), end: getDateStr(5), status: "confirmed", channel: "airbnb" },
       { id: "b7b", guest: "Mariano Suarez", phone: null, phone4: null, bookingUrl: null, channelCode: null, phoneLast4: null, numGuests: 2, totalPrice: 840, note: null, start: getDateStr(5), end: getDateStr(9), status: "pending", channel: "booking" },
     ]},
-    { id: 4, name: "Loft Moderno CDMX", channel: "airbnb", price: 145, bookings: [
+    { id: 4, name: "Loft Moderno CDMX", channel: "airbnb", price: 145, currency: "USD", bookings: [
       { id: "b8", guest: "Roberto Jimenez", phone: null, phone4: null, bookingUrl: null, channelCode: null, phoneLast4: null, numGuests: 2, totalPrice: 725, note: null, start: getDateStr(4), end: getDateStr(9), status: "pending", channel: "airbnb" },
     ]},
-    { id: 5, name: "Cabana en el Bosque", channel: "direct", price: 180, bookings: [] },
-    { id: 6, name: "Penthouse Vista al Mar", channel: "booking", price: 450, bookings: [
+    { id: 5, name: "Cabana en el Bosque", channel: "direct", price: 180, currency: "USD", bookings: [] },
+    { id: 6, name: "Penthouse Vista al Mar", channel: "booking", price: 450, currency: "USD", bookings: [
       { id: "b9", guest: "Fernanda Torres", phone: null, phone4: null, bookingUrl: null, channelCode: null, phoneLast4: null, numGuests: 2, totalPrice: 4050, note: null, start: getDateStr(-1), end: getDateStr(8), status: "confirmed", channel: "booking" },
     ]},
   ];
@@ -130,9 +130,14 @@ export default function MultiCalendarPanel() {
 
   const loadData = () => {
     // Tenant is resolved server-side from the session cookie.
+    // Siempre seteamos lo que el API devuelve (incluso array vacío) — antes
+    // sólo seteábamos si había props, lo que dejaba el mock visible para
+    // tenants nuevos sin propiedades. Ahora que cada item del mock tiene
+    // currency: "USD" hardcoded, eso pintaba precios en US$ ficticios al
+    // cleaner equivocado.
     fetch("/api/bookings", { credentials: "same-origin" })
       .then((r) => r.json())
-      .then((data) => { if (data.properties?.length) setProperties(data.properties); })
+      .then((data) => { setProperties(data.properties ?? []); })
       .catch(() => {});
   };
 
@@ -609,7 +614,9 @@ export default function MultiCalendarPanel() {
                   </div>
 
                   <div className="space-y-2">
-                    <Label htmlFor="price" className="text-[11px] font-bold text-muted-foreground uppercase tracking-[0.05em]">Precio Total (US$)</Label>
+                    <Label htmlFor="price" className="text-[11px] font-bold text-muted-foreground uppercase tracking-[0.05em]">
+                      Precio Total ({currencyLabel(properties.find((p) => String(p.id) === String(newBooking.propertyId))?.currency)})
+                    </Label>
                     <div className="relative">
                       <Input id="price" type="number" placeholder="Ej. 1500" value={newBooking.price || ""} onChange={e => setNewBooking({...newBooking, price: Number(e.target.value)})} className="h-11 bg-muted/30 border-border/50 rounded-xl pl-8" />
                       <DollarSign className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
@@ -796,7 +803,7 @@ export default function MultiCalendarPanel() {
                   <ChannelIcon channel={property.channel} className="mr-3 shrink-0" />
                   <div className="min-w-0">
                     <p className="font-bold truncate text-[11px] leading-tight group-hover:text-primary transition-colors text-foreground/90">{property.name}</p>
-                    <p className="text-[9px] text-muted-foreground font-medium">Desde {formatMoney(property.price, "USD")}/noche</p>
+                    <p className="text-[9px] text-muted-foreground font-medium">Desde {formatMoney(property.price, property.currency)}/noche</p>
                   </div>
                 </button>
               ))}
@@ -852,7 +859,7 @@ export default function MultiCalendarPanel() {
                               "text-[10px] font-black tracking-tighter relative z-10",
                               isBooked ? "text-rose-600/50 dark:text-rose-400/50 line-through" : "text-foreground/70"
                             )}>
-                              {formatMoney(property.price, "USD")}
+                              {formatMoney(property.price, property.currency)}
                             </span>
                             {/* Patrón rayado rosado dramático para bloqueo */}
                             {isBooked && (
@@ -997,7 +1004,7 @@ export default function MultiCalendarPanel() {
 
                           <div className="flex items-center justify-between font-black text-sm mb-4">
                             <span className="text-muted-foreground">Payout Est.</span>
-                            <span className="text-emerald-600 dark:text-emerald-400">{formatMoney(property.price * Math.max(1, Math.ceil((new Date(booking.end).getTime() - new Date(booking.start).getTime()) / (1000 * 3600 * 24))), "USD")}</span>
+                            <span className="text-emerald-600 dark:text-emerald-400">{formatMoney(property.price * Math.max(1, Math.ceil((new Date(booking.end).getTime() - new Date(booking.start).getTime()) / (1000 * 3600 * 24))), property.currency)}</span>
                           </div>
 
                           {booking.phone && (

@@ -453,7 +453,7 @@ export async function GET() {
 
   const { data: props } = await supabase
     .from("properties")
-    .select("id, name, address, price, ical_airbnb, ical_vrbo, ttlock_account_id, ttlock_lock_id, check_in_time, check_out_time")
+    .select("id, name, address, price, currency, ical_airbnb, ical_vrbo, ttlock_account_id, ttlock_lock_id, check_in_time, check_out_time")
     .eq("tenant_id", tenantId);
 
   if (!props?.length) return NextResponse.json({ properties: [] });
@@ -469,6 +469,7 @@ export async function GET() {
     name: string;
     address: string | null;
     price: number | null;
+    currency: string | null;
     ical_airbnb: string | null;
     ical_vrbo: string | null;
     ttlock_account_id: string | null;
@@ -477,11 +478,15 @@ export async function GET() {
     check_out_time: string | null;
   }[]).map((prop) => {
     const channel = prop.ical_airbnb ? "airbnb" : prop.ical_vrbo ? "vrbo" : "direct";
+    // Cada propiedad tiene su propia moneda — necesario para que el dashboard
+    // no sume DOP con USD a ciegas en agregaciones cross-property.
+    const propCurrency = prop.currency ?? "DOP";
     return {
       id: prop.id,
       name: prop.name,
       address: prop.address ?? "",
       price: prop.price ?? 0,
+      currency: propCurrency,
       channel,
       // TTLock info para que KeysPanel sepa si puede programar el PIN en la
       // cerradura directamente al mandar el código al huésped.
@@ -509,6 +514,10 @@ export async function GET() {
           bookingUrl: b.booking_url ?? null,
           sourceUid: b.source_uid ?? null,
           totalPrice: b.total_price ?? 0,
+          // El booking hereda la moneda de su propiedad. ReportsPanel hace
+          // flatMap sobre bookings y necesita la currency en cada item para
+          // agregaciones cross-property sin perder la asociación.
+          currency: propCurrency,
           numGuests: b.num_guests ?? 1,
           note: b.note ?? null,
           channelCode: b.channel_code ?? null,

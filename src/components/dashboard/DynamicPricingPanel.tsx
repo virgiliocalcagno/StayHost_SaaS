@@ -38,7 +38,8 @@ import {
   Search
 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { formatMoney } from "@/lib/money/format";
+import { formatMoney, sumByCurrency } from "@/lib/money/format";
+import { useTenantCurrency } from "@/lib/money/useTenantCurrency";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -177,6 +178,7 @@ const priceFactors: PriceFactor[] = [];
 const mockGapNights: GapNight[] = [];
 
 export default function DynamicPricingPanel() {
+  const { currency: tenantCurrency, usdToLocalRate } = useTenantCurrency();
   const [selectedProperty, setSelectedProperty] = useState("all");
   const [autoAdjust, setAutoAdjust] = useState(true);
   const [strategy, setStrategy] = useState<"conservative" | "recommended" | "aggressive">("recommended");
@@ -279,38 +281,66 @@ export default function DynamicPricingPanel() {
   };
 
   const portfolioMetrics = useMemo(() => {
-    const propList = properties.length > 0 ? properties : [
-      { id: "1", name: "Villa Mar Azul", basePrice: 200 },
-      { id: "2", name: "Apartamento Centro", basePrice: 80 },
-      { id: "3", name: "Casa de Playa", basePrice: 300 },
-      { id: "4", name: "Loft Moderno", basePrice: 100 },
+    const propList: Array<Property & { currency?: string }> = properties.length > 0 ? properties : [
+      { id: "1", name: "Villa Mar Azul", basePrice: 200, currency: tenantCurrency },
+      { id: "2", name: "Apartamento Centro", basePrice: 80, currency: tenantCurrency },
+      { id: "3", name: "Casa de Playa", basePrice: 300, currency: tenantCurrency },
+      { id: "4", name: "Loft Moderno", basePrice: 100, currency: tenantCurrency },
     ];
 
     const stratMultiplier = strategy === "conservative" ? 0.92 : strategy === "aggressive" ? 1.12 : 1.0;
     const baseOcc = strategy === "conservative" ? 88 : strategy === "aggressive" ? 68 : 79;
 
     return propList.map((p, i) => {
-      const base = (p.basePrice as number) || [200, 80, 300, 100][i % 4] || 120;
+      // `/api/properties` devuelve `price`, no `basePrice`. Aceptamos
+      // ambos para compatibilidad con los mocks de arriba; el fallback al
+      // array hardcoded sólo aplica si ni uno ni otro están definidos.
+      const rawBase = (p.basePrice ?? (p as Record<string, unknown>).price) as number | undefined;
+      const base = rawBase || [200, 80, 300, 100][i % 4] || 120;
       const suggested = Math.round(base * stratMultiplier * (1 + [0.22, 0.18, -0.07, 0.30][i % 4]));
       const occupancy = baseOcc + [-7, 8, -3, 11][i % 4];
       const change = ((suggested - base) / base) * 100;
-      return { ...p, base, suggested, occupancy, change };
+      const currency = String(p.currency ?? tenantCurrency);
+      return { ...p, base, suggested, occupancy, change, currency };
     });
-  }, [properties, strategy]);
+  }, [properties, strategy, tenantCurrency]);
 
   const kpis = useMemo(() => {
-    const adr = portfolioMetrics.reduce((s, p) => s + p.suggested, 0) / Math.max(portfolioMetrics.length, 1);
+    // ADR: promedio del suggested, pero normalizado a tenantCurrency primero.
+    // Si una prop está en USD y otra en DOP, sumar valores crudos da un
+    // número mezclado sin sentido — convertimos antes de promediar.
+    const adrAgg = sumByCurrency(
+      portfolioMetrics.map((p) => ({ amount: p.suggested, currency: p.currency })),
+      tenantCurrency,
+      usdToLocalRate,
+    );
+    const adr = adrAgg.total / Math.max(portfolioMetrics.length, 1);
+
     const avgOcc = portfolioMetrics.reduce((s, p) => s + p.occupancy, 0) / Math.max(portfolioMetrics.length, 1);
     const revpar = adr * (avgOcc / 100);
-    const revenueMTD = portfolioMetrics.reduce((s, p) => s + p.suggested * (p.occupancy / 100) * 30, 0);
+
+    // RevenueMTD: cada propiedad aporta suggested * occ * 30, en su moneda.
+    // Lo normalizamos a tenantCurrency para que el KPI sea sumable.
+    const revenueAgg = sumByCurrency(
+      portfolioMetrics.map((p) => ({
+        amount: p.suggested * (p.occupancy / 100) * 30,
+        currency: p.currency,
+      })),
+      tenantCurrency,
+      usdToLocalRate,
+    );
 
     return {
       adr: Math.round(adr),
+      adrMixed: adrAgg.hasMixedCurrencies,
       occupancy: Math.round(avgOcc),
       revpar: Math.round(revpar),
-      revenueMTD: Math.round(revenueMTD)
+      revparMixed: adrAgg.hasMixedCurrencies,
+      revenueMTD: Math.round(revenueAgg.total),
+      revenueMTDMixed: revenueAgg.hasMixedCurrencies,
+      revenueMTDSkipped: revenueAgg.skipped,
     };
-  }, [portfolioMetrics]);
+  }, [portfolioMetrics, tenantCurrency, usdToLocalRate]);
 
   return (
     <div className="space-y-6">
@@ -343,7 +373,16 @@ export default function DynamicPricingPanel() {
             <CardTitle className="text-sm font-medium text-blue-100 uppercase tracking-wider">RevPAR Estimado</CardTitle>
           </CardHeader>
           <CardContent>
-            <div className="text-3xl font-bold tracking-tight">{formatMoney(kpis.revpar, "USD")}</div>
+            <div
+              className="text-3xl font-bold tracking-tight"
+              title={
+                kpis.revparMixed
+                  ? `Incluye conversión a ${tenantCurrency} usando tasa USD↔local del tenant`
+                  : undefined
+              }
+            >
+              {kpis.revparMixed ? "≈ " : ""}{formatMoney(kpis.revpar, tenantCurrency)}
+            </div>
             <p className="text-xs text-blue-200 mt-2 flex items-center gap-1 font-medium bg-white/10 w-fit px-2 py-0.5 rounded-full">
               <TrendingUp className="h-3 w-3" /> +12.4% vs mes anterior
             </p>
@@ -365,7 +404,16 @@ export default function DynamicPricingPanel() {
             <CardTitle className="text-sm font-medium text-slate-500">Tarifa Media (ADR)</CardTitle>
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">{formatMoney(kpis.adr, "USD")}</div>
+            <div
+              className="text-2xl font-bold"
+              title={
+                kpis.adrMixed
+                  ? `Incluye conversión a ${tenantCurrency} usando tasa USD↔local del tenant`
+                  : undefined
+              }
+            >
+              {kpis.adrMixed ? "≈ " : ""}{formatMoney(kpis.adr, tenantCurrency)}
+            </div>
             <p className="text-xs text-slate-500 mt-1 flex items-center gap-1">
               <DollarSign className="h-3 w-3" /> Basado en {portfolioMetrics.length} propiedades
             </p>
@@ -373,10 +421,26 @@ export default function DynamicPricingPanel() {
         </Card>
         <Card>
           <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium text-slate-500">Ingresos Proyectados (MTD)</CardTitle>
+            <CardTitle className="text-sm font-medium text-slate-500">
+              Ingresos Proyectados (MTD)
+              {kpis.revenueMTDSkipped > 0 && (
+                <span className="ml-1 text-amber-600 text-xs" title="Propiedades omitidas por falta de tipo de cambio configurado">
+                  ({kpis.revenueMTDSkipped} sin FX)
+                </span>
+              )}
+            </CardTitle>
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">{formatMoney(kpis.revenueMTD, "USD")}</div>
+            <div
+              className="text-2xl font-bold"
+              title={
+                kpis.revenueMTDMixed
+                  ? `Incluye conversión a ${tenantCurrency} usando tasa USD↔local del tenant`
+                  : undefined
+              }
+            >
+              {kpis.revenueMTDMixed ? "≈ " : ""}{formatMoney(kpis.revenueMTD, tenantCurrency)}
+            </div>
             <p className="text-xs text-slate-500 mt-1 italic">Pronóstico basado en tendencia</p>
           </CardContent>
         </Card>
@@ -561,14 +625,14 @@ export default function DynamicPricingPanel() {
                         <h4 className="font-bold text-slate-900">{prop.name}</h4>
                         <div className="flex items-center gap-2">
                           <Badge variant="outline" className="text-[10px] h-4 px-1">{prop.occupancy}% Ocupación</Badge>
-                          <span className="text-xs text-slate-500">Base: {formatMoney(prop.base, "USD")}</span>
+                          <span className="text-xs text-slate-500">Base: {formatMoney(prop.base, prop.currency)}</span>
                         </div>
                       </div>
                     </div>
                     <div className="flex items-center gap-6">
                       <div className="text-right">
                         <div className="flex items-center justify-end gap-1">
-                          <p className="text-lg font-bold text-slate-900">{formatMoney(prop.suggested, "USD")}</p>
+                          <p className="text-lg font-bold text-slate-900">{formatMoney(prop.suggested, prop.currency)}</p>
                           <span className={cn(
                             "text-[10px] font-bold px-1 rounded",
                             prop.change > 0 ? "text-emerald-600 bg-emerald-50" : "text-amber-600 bg-amber-50"

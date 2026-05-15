@@ -73,7 +73,8 @@ import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { toast } from "sonner";
 import PricingOverridesEditor from "./PricingOverridesEditor";
-import { formatMoney } from "@/lib/money/format";
+import { formatMoney, sumByCurrency } from "@/lib/money/format";
+import { useTenantCurrency } from "@/lib/money/useTenantCurrency";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 interface ChannelLink {
@@ -699,6 +700,7 @@ function DevicesTabContent({ formData, setFormData }: { formData: any; setFormDa
 }
 
 export default function PropertiesPanel() {
+  const { currency: tenantCurrency, usdToLocalRate } = useTenantCurrency();
   const [viewMode, setViewMode] = useState<"grid" | "list">("grid");
   const [searchTerm, setSearchTerm] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
@@ -845,15 +847,30 @@ export default function PropertiesPanel() {
   }, [properties, searchTerm, statusFilter]);
 
   // ─── Stats ─────────────────────────────────────────────────────────────────
+  // totalRevenue normaliza a la moneda default del tenant. Si hay
+  // propiedades en USD y otras en DOP, las convierte usando usdToLocalRate.
+  // Cuando hay mezcla, el display muestra "≈" para dejar claro que el total
+  // incluye conversión (no es DOP/USD puro).
   const stats = useMemo(() => {
     const total = properties.length;
     const active = properties.filter((p) => p.status === "active").length;
     const avgOccupancy = total > 0
       ? Math.round(properties.reduce((a, p) => a + p.occupancy, 0) / total)
       : 0;
-    const totalRevenue = properties.reduce((a, p) => a + p.monthlyRevenue, 0);
-    return { total, active, avgOccupancy, totalRevenue };
-  }, [properties]);
+    const revenue = sumByCurrency(
+      properties.map((p) => ({ amount: p.monthlyRevenue, currency: p.currency })),
+      tenantCurrency,
+      usdToLocalRate,
+    );
+    return {
+      total,
+      active,
+      avgOccupancy,
+      totalRevenue: revenue.total,
+      revenueMixed: revenue.hasMixedCurrencies,
+      revenueSkipped: revenue.skipped,
+    };
+  }, [properties, tenantCurrency, usdToLocalRate]);
 
   // ─── Sync state ────────────────────────────────────────────────────────────
   const [syncingChannel, setSyncingChannel] = useState<string | null>(null);
@@ -1358,8 +1375,25 @@ export default function PropertiesPanel() {
               <DollarSign className="h-5 w-5 text-amber-500" />
             </div>
             <div>
-              <p className="text-2xl font-bold">{formatMoney(stats.totalRevenue / 1000, "USD", { maximumFractionDigits: 1, minimumFractionDigits: 1 })}k</p>
-              <p className="text-sm text-muted-foreground">Ingresos / mes</p>
+              <p
+                className="text-2xl font-bold"
+                title={
+                  stats.revenueMixed
+                    ? `Incluye conversión a ${tenantCurrency} usando tasa USD↔local del tenant`
+                    : undefined
+                }
+              >
+                {stats.revenueMixed ? "≈ " : ""}
+                {formatMoney(stats.totalRevenue / 1000, tenantCurrency, { maximumFractionDigits: 1, minimumFractionDigits: 1 })}k
+              </p>
+              <p className="text-sm text-muted-foreground">
+                Ingresos / mes
+                {stats.revenueSkipped > 0 && (
+                  <span className="ml-1 text-amber-600" title="Propiedades omitidas por falta de tipo de cambio configurado">
+                    ({stats.revenueSkipped} sin FX)
+                  </span>
+                )}
+              </p>
             </div>
           </CardContent>
         </Card>
@@ -1560,11 +1594,11 @@ export default function PropertiesPanel() {
                 {/* Footer */}
                 <div className="flex items-center justify-between pt-3 border-t">
                   <div>
-                    <span className="text-xl font-bold">{formatMoney(prop.price, "USD")}</span>
+                    <span className="text-xl font-bold">{formatMoney(prop.price, prop.currency)}</span>
                     <span className="text-muted-foreground text-sm"> /noche</span>
                   </div>
                   <div className="text-right">
-                    <p className="text-sm font-semibold text-emerald-600">{formatMoney(prop.monthlyRevenue / 1000, "USD", { maximumFractionDigits: 1, minimumFractionDigits: 1 })}k</p>
+                    <p className="text-sm font-semibold text-emerald-600">{formatMoney(prop.monthlyRevenue / 1000, prop.currency, { maximumFractionDigits: 1, minimumFractionDigits: 1 })}k</p>
                     <p className="text-[10px] text-muted-foreground uppercase tracking-wider">mes</p>
                   </div>
                 </div>
@@ -1630,7 +1664,7 @@ export default function PropertiesPanel() {
                         </div>
                       </td>
                       <td className="p-4">
-                        <span className="font-semibold">{formatMoney(prop.price, "USD")}</span>
+                        <span className="font-semibold">{formatMoney(prop.price, prop.currency)}</span>
                         <span className="text-muted-foreground text-xs">/noche</span>
                       </td>
                       <td className="p-4">
@@ -1640,7 +1674,7 @@ export default function PropertiesPanel() {
                         </div>
                       </td>
                       <td className="p-4">
-                        <span className="font-semibold text-emerald-600">{formatMoney(prop.monthlyRevenue, "USD")}</span>
+                        <span className="font-semibold text-emerald-600">{formatMoney(prop.monthlyRevenue, prop.currency)}</span>
                       </td>
                       <td className="p-4">{getStatusBadge(prop.status)}</td>
                       <td className="p-4">
@@ -1734,15 +1768,15 @@ export default function PropertiesPanel() {
                 <div className="grid grid-cols-2 gap-3">
                   <div className="p-4 rounded-lg border bg-emerald-50 dark:bg-emerald-900/10 border-emerald-200 dark:border-emerald-800">
                     <p className="text-xs text-muted-foreground mb-1">Ingreso Mensual</p>
-                    <p className="text-xl font-bold text-emerald-600">{formatMoney(selectedProperty.monthlyRevenue, "USD")}</p>
+                    <p className="text-xl font-bold text-emerald-600">{formatMoney(selectedProperty.monthlyRevenue, selectedProperty.currency)}</p>
                   </div>
                   <div className="p-4 rounded-lg border">
                     <p className="text-xs text-muted-foreground mb-1">Precio/Noche</p>
-                    <p className="text-xl font-bold">{formatMoney(selectedProperty.price, "USD")}</p>
+                    <p className="text-xl font-bold">{formatMoney(selectedProperty.price, selectedProperty.currency)}</p>
                   </div>
                   <div className="p-4 rounded-lg border">
                     <p className="text-xs text-muted-foreground mb-1">Pago Propietario</p>
-                    <p className="text-lg font-bold">{formatMoney(selectedProperty.ownerPayout, "USD")}</p>
+                    <p className="text-lg font-bold">{formatMoney(selectedProperty.ownerPayout, selectedProperty.currency)}</p>
                   </div>
                   <div className="p-4 rounded-lg border">
                     <p className="text-xs text-muted-foreground mb-1">Pago Staff</p>

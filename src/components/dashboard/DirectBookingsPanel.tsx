@@ -26,9 +26,9 @@ import {
   IdCard,
   Image as ImageIcon,
 } from "lucide-react";
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import { formatCurrency } from "@/lib/utils";
-import { formatMoney } from "@/lib/money/format";
+import { formatMoney, sumByCurrency } from "@/lib/money/format";
 import { useTenantCurrency } from "@/lib/money/useTenantCurrency";
 
 interface PropertyLite {
@@ -71,10 +71,13 @@ const INDIRECT_CHANNELS = new Set(["airbnb", "vrbo", "booking", "expedia", "ical
 export default function DirectBookingsPanel() {
   const [origin, setOrigin] = useState("");
   const [tenantId, setTenantId] = useState<string | null>(null);
-  const { currency: tenantCurrency } = useTenantCurrency();
+  const { currency: tenantCurrency, usdToLocalRate } = useTenantCurrency();
   const [properties, setProperties] = useState<PropertyLite[]>([]);
   const [directCount, setDirectCount] = useState(0);
-  const [directRevenue, setDirectRevenue] = useState(0);
+  // Items crudos de reservas directas del mes. Los normalizamos a
+  // tenantCurrency en un useMemo para que reaccione cuando el hook
+  // useTenantCurrency hidrate la rate FX (carga async tras montar).
+  const [revenueItems, setRevenueItems] = useState<{ amount: number; currency: string }[]>([]);
   const [loading, setLoading] = useState(true);
 
   // Solicitudes pendientes desde el Hub público (pending_review).
@@ -92,6 +95,10 @@ export default function DirectBookingsPanel() {
     checkIn: string;
     checkOut: string;
     total: number;
+    // Moneda de la reserva = moneda de la propiedad. Se usa para que el
+    // mensaje de WhatsApp no diga "US$ 15000" cuando la propiedad cobra
+    // en DOP.
+    currency: string;
     channelCode: string | null;
     payUrl: string | null;
   } | null>(null);
@@ -141,19 +148,28 @@ export default function DirectBookingsPanel() {
         const now = new Date();
         const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).toISOString().slice(0, 10);
         let count = 0;
-        let revenue = 0;
+        // Acumulamos { amount, currency } por reserva directa para luego
+        // normalizar todo a tenantCurrency en un useMemo. Antes se sumaba
+        // crudo y daba "RD$ 15200" para 200 USD + 15000 DOP.
+        const items: { amount: number; currency: string }[] = [];
         for (const prop of propsWithBookings) {
+          const propCurrency = String(prop.currency ?? "DOP");
           const bookings: BookingLite[] = Array.isArray(prop.bookings) ? prop.bookings : [];
           for (const b of bookings) {
             if (b.status === "cancelled" || b.status === "blocked") continue;
             if (INDIRECT_CHANNELS.has(b.channel)) continue;
             if (b.start < monthStart) continue;
             count += 1;
-            revenue += Number(b.totalPrice ?? 0);
+            items.push({
+              amount: Number(b.totalPrice ?? 0),
+              // El response ya incluye currency por booking; fallback a la
+              // de la propiedad por consistencia con OverviewPanel.
+              currency: (b as BookingLite & { currency?: string }).currency ?? propCurrency,
+            });
           }
         }
         setDirectCount(count);
-        setDirectRevenue(revenue);
+        setRevenueItems(items);
       } finally {
         setLoading(false);
       }
@@ -162,6 +178,14 @@ export default function DirectBookingsPanel() {
     fetchAll();
     loadRequests();
   }, [loadRequests]);
+
+  // Re-normaliza ante cambios del FX rate / tenantCurrency (el hook hidrata
+  // async). `mixed` indica si hubo conversión (prefijo "≈"), `skipped`
+  // cuenta bookings descartados por falta de FX rate configurado.
+  const directRevenue = useMemo(() => {
+    const agg = sumByCurrency(revenueItems, tenantCurrency, usdToLocalRate);
+    return { total: agg.total, mixed: agg.hasMixedCurrencies, skipped: agg.skipped };
+  }, [revenueItems, tenantCurrency, usdToLocalRate]);
 
   const handleApprove = async (req: BookingRequest) => {
     setActionError(null);
@@ -200,6 +224,7 @@ export default function DirectBookingsPanel() {
         checkIn: req.checkIn,
         checkOut: req.checkOut,
         total: price,
+        currency: req.propertyCurrency,
         channelCode: json.channelCode ?? null,
         payUrl,
       });
@@ -252,10 +277,19 @@ export default function DirectBookingsPanel() {
       hint: directCount === 0 && !loading ? "Sin reservas aún" : null,
     },
     {
+      // Prefijo "≈" si hubo conversión; sufijo "(N sin FX)" si quedaron
+      // bookings fuera por falta de tipo de cambio configurado.
       label: "Ingresos directos (mes)",
-      value: loading ? "—" : formatCurrency(directRevenue, tenantCurrency),
+      value: loading
+        ? "—"
+        : `${directRevenue.mixed ? "≈ " : ""}${formatCurrency(directRevenue.total, tenantCurrency)}`,
       icon: CreditCard,
-      hint: directRevenue === 0 && !loading ? "Sin ingresos aún" : null,
+      hint:
+        directRevenue.total === 0 && !loading
+          ? "Sin ingresos aún"
+          : directRevenue.skipped > 0
+            ? `${directRevenue.skipped} sin FX rate`
+            : null,
     },
     {
       label: "Visitas al sitio",
@@ -665,7 +699,7 @@ export default function DirectBookingsPanel() {
                     readOnly
                     rows={6}
                     className="w-full text-sm p-3 border rounded-xl bg-slate-50 font-mono"
-                    value={`Hola ${approvedInfo.guestName}! 👋\n\nTu reserva en ${approvedInfo.propertyName} fue aprobada:\n📅 ${approvedInfo.checkIn} → ${approvedInfo.checkOut}\n💰 Total: ${formatMoney(approvedInfo.total, "USD")}\n${approvedInfo.channelCode ? `🔑 Código: ${approvedInfo.channelCode}\n` : ""}${approvedInfo.payUrl ? `\nPagá tu reserva acá: ${approvedInfo.payUrl}\n` : ""}`}
+                    value={`Hola ${approvedInfo.guestName}! 👋\n\nTu reserva en ${approvedInfo.propertyName} fue aprobada:\n📅 ${approvedInfo.checkIn} → ${approvedInfo.checkOut}\n💰 Total: ${formatMoney(approvedInfo.total, approvedInfo.currency)}\n${approvedInfo.channelCode ? `🔑 Código: ${approvedInfo.channelCode}\n` : ""}${approvedInfo.payUrl ? `\nPagá tu reserva acá: ${approvedInfo.payUrl}\n` : ""}`}
                   />
                   <div className="flex gap-2">
                     <Button
@@ -675,7 +709,7 @@ export default function DirectBookingsPanel() {
                     >
                       <a
                         href={`https://wa.me/${approvedInfo.guestPhone.replace(/\D/g, "")}?text=${encodeURIComponent(
-                          `Hola ${approvedInfo.guestName}! Tu reserva en ${approvedInfo.propertyName} (${approvedInfo.checkIn} → ${approvedInfo.checkOut}) fue aprobada. Total: ${formatMoney(approvedInfo.total, "USD")}.${approvedInfo.channelCode ? ` Código: ${approvedInfo.channelCode}.` : ""}${approvedInfo.payUrl ? ` Pagá acá: ${approvedInfo.payUrl}` : ""}`
+                          `Hola ${approvedInfo.guestName}! Tu reserva en ${approvedInfo.propertyName} (${approvedInfo.checkIn} → ${approvedInfo.checkOut}) fue aprobada. Total: ${formatMoney(approvedInfo.total, approvedInfo.currency)}.${approvedInfo.channelCode ? ` Código: ${approvedInfo.channelCode}.` : ""}${approvedInfo.payUrl ? ` Pagá acá: ${approvedInfo.payUrl}` : ""}`
                         )}`}
                         target="_blank"
                         rel="noopener noreferrer"
