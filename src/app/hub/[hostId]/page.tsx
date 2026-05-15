@@ -84,6 +84,7 @@ export default function HostHubPage({ params }: { params: Promise<{ hostId: stri
   const [hubLogo, setHubLogo] = useState<string | null>(null);
   const [contactEmail, setContactEmail] = useState<string | null>(null);
   const [whatsapp, setWhatsapp] = useState<string | null>(null);
+  const [paypalEnabled, setPaypalEnabled] = useState(false);
   const [loading, setLoading] = useState(true);
   const [notFound, setNotFound] = useState(false);
   const [checkin, setCheckin] = useState("");
@@ -106,6 +107,7 @@ export default function HostHubPage({ params }: { params: Promise<{ hostId: stri
         if (data?.hub?.logo) setHubLogo(data.hub.logo);
         if (data?.hub?.contactEmail) setContactEmail(data.hub.contactEmail);
         if (data?.hub?.whatsapp) setWhatsapp(data.hub.whatsapp);
+        if (data?.hub?.paymentMethods?.paypal) setPaypalEnabled(true);
         if (Array.isArray(data?.properties)) setProperties(data.properties);
         if (Array.isArray(data?.experiences)) setExperiences(data.experiences);
       })
@@ -306,6 +308,7 @@ export default function HostHubPage({ params }: { params: Promise<{ hostId: stri
         hostWhatsapp={whatsapp}
         experiences={experiences}
         lang={lang}
+        paypalEnabled={paypalEnabled}
       />
 
       {/* ABOUT / FOOTER SECTION */}

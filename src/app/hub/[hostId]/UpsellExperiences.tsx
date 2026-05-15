@@ -136,6 +136,8 @@ interface Props {
   hostWhatsapp: string | null;
   experiences: HubUpsell[];
   lang: "es" | "en";
+  /** Si el host tiene PayPal habilitado, mostramos "Pagar online" además del WhatsApp manual. */
+  paypalEnabled: boolean;
 }
 
 export default function UpsellExperiences({
@@ -144,6 +146,7 @@ export default function UpsellExperiences({
   hostWhatsapp,
   experiences,
   lang,
+  paypalEnabled,
 }: Props) {
   const [cart, setCart] = useState<CartItem[]>([]);
   const [hydrated, setHydrated] = useState(false);
@@ -151,6 +154,10 @@ export default function UpsellExperiences({
   const [cartOpen, setCartOpen] = useState(false);
   const [guestName, setGuestName] = useState("");
   const [guestPhone, setGuestPhone] = useState("");
+  const [guestEmail, setGuestEmail] = useState("");
+  // Estados del checkout online (crear orden + redirigir a página de pago).
+  const [creatingOrder, setCreatingOrder] = useState(false);
+  const [orderError, setOrderError] = useState<string | null>(null);
 
   // Hidratar carrito tras el primer render (sessionStorage es client-only).
   useEffect(() => {
@@ -209,6 +216,59 @@ export default function UpsellExperiences({
     },
     [],
   );
+
+  // ── Crear orden + redirigir a página de pago ──
+  // Solo cuando paypalEnabled. Valida que guestName esté completo (server lo
+  // re-valida igual, pero corregimos UX antes de pegar al endpoint).
+  const handlePayOnline = useCallback(async () => {
+    if (creatingOrder || cart.length === 0) return;
+    if (!guestName.trim()) {
+      setOrderError(
+        lang === "es"
+          ? "Tu nombre es requerido para crear la orden."
+          : "Your name is required to create the order.",
+      );
+      return;
+    }
+    setOrderError(null);
+    setCreatingOrder(true);
+    try {
+      const r = await fetch(`/api/public/hub/${encodeURIComponent(hostId)}/service-order`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          guestName: guestName.trim(),
+          guestEmail: guestEmail.trim() || null,
+          guestPhone: guestPhone.trim() || null,
+          items: cart.map((it) => ({
+            upsellId: it.upsellId,
+            quantity: it.quantity,
+            serviceDate: it.serviceDate,
+          })),
+        }),
+      });
+      const j = (await r.json()) as {
+        ok?: boolean;
+        orderId?: string;
+        customerToken?: string;
+        error?: string;
+      };
+      if (!r.ok || !j.ok || !j.orderId || !j.customerToken) {
+        throw new Error(j.error ?? `HTTP ${r.status}`);
+      }
+      // Limpiamos el carrito antes de redirigir — la orden ya está en BD.
+      // Si el huésped cancela el pago, ve la página de la orden con resumen.
+      setCart([]);
+      saveCart(hostId, []);
+      window.location.href = `/hub/${encodeURIComponent(hostId)}/orden/${encodeURIComponent(
+        j.orderId,
+      )}?t=${encodeURIComponent(j.customerToken)}`;
+    } catch (err) {
+      setOrderError(err instanceof Error ? err.message : "Error creando orden");
+    } finally {
+      setCreatingOrder(false);
+    }
+  }, [cart, creatingOrder, guestName, guestEmail, guestPhone, hostId, lang]);
 
   // ── WhatsApp template ──
   const whatsappMessage = useMemo(() => {
@@ -449,7 +509,7 @@ export default function UpsellExperiences({
               <div className="space-y-3 pt-4 border-t">
                 <div className="space-y-1">
                   <Label className="text-xs">
-                    {lang === "es" ? "Tu nombre" : "Your name"}
+                    {lang === "es" ? "Tu nombre *" : "Your name *"}
                   </Label>
                   <Input
                     value={guestName}
@@ -457,43 +517,98 @@ export default function UpsellExperiences({
                     placeholder={lang === "es" ? "Ej: María López" : "Ex: Mary Smith"}
                   />
                 </div>
-                <div className="space-y-1">
-                  <Label className="text-xs">
-                    {lang === "es" ? "Tu WhatsApp (opcional)" : "Your WhatsApp (optional)"}
-                  </Label>
-                  <Input
-                    value={guestPhone}
-                    onChange={(e) => setGuestPhone(e.target.value)}
-                    placeholder="+1 809..."
-                  />
+                <div className="grid grid-cols-2 gap-2">
+                  <div className="space-y-1">
+                    <Label className="text-xs">
+                      {lang === "es" ? "WhatsApp" : "WhatsApp"}
+                    </Label>
+                    <Input
+                      value={guestPhone}
+                      onChange={(e) => setGuestPhone(e.target.value)}
+                      placeholder="+1 809..."
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <Label className="text-xs">
+                      {lang === "es" ? "Email" : "Email"}
+                    </Label>
+                    <Input
+                      type="email"
+                      value={guestEmail}
+                      onChange={(e) => setGuestEmail(e.target.value)}
+                      placeholder="tu@email.com"
+                    />
+                  </div>
                 </div>
               </div>
             </div>
           )}
 
           <SheetFooter className="mt-6 flex-col sm:flex-col gap-2">
+            {/* Opción A — Pago online si el host tiene PayPal */}
+            {paypalEnabled && (
+              <>
+                <Button
+                  type="button"
+                  disabled={cart.length === 0 || creatingOrder}
+                  onClick={handlePayOnline}
+                  className="w-full gradient-gold text-white"
+                >
+                  {creatingOrder
+                    ? (lang === "es" ? "Creando orden..." : "Creating order...")
+                    : (lang === "es" ? "Pagar online con PayPal" : "Pay online with PayPal")}
+                </Button>
+                {orderError && (
+                  <p className="text-[11px] text-rose-600 text-center">{orderError}</p>
+                )}
+                {whatsappLink && (
+                  <div className="flex items-center gap-2 my-1">
+                    <div className="flex-1 h-px bg-slate-200" />
+                    <span className="text-[10px] text-slate-400 uppercase">
+                      {lang === "es" ? "o" : "or"}
+                    </span>
+                    <div className="flex-1 h-px bg-slate-200" />
+                  </div>
+                )}
+              </>
+            )}
+
+            {/* Opción B — Solicitar al host por WhatsApp (siempre disponible
+                si hay número, sirve como fallback cuando no hay PayPal). */}
             {whatsappLink ? (
               <Button
                 asChild
                 disabled={cart.length === 0}
-                className="w-full bg-emerald-600 hover:bg-emerald-700 text-white"
+                variant={paypalEnabled ? "outline" : "default"}
+                className={
+                  paypalEnabled
+                    ? "w-full"
+                    : "w-full bg-emerald-600 hover:bg-emerald-700 text-white"
+                }
               >
                 <a href={whatsappLink} target="_blank" rel="noopener noreferrer">
                   <MessageCircle className="h-4 w-4 mr-2" />
-                  {lang === "es" ? "Enviar por WhatsApp" : "Send via WhatsApp"}
+                  {lang === "es"
+                    ? (paypalEnabled ? "Solicitar por WhatsApp" : "Enviar por WhatsApp")
+                    : (paypalEnabled ? "Request via WhatsApp" : "Send via WhatsApp")}
                 </a>
               </Button>
-            ) : (
+            ) : !paypalEnabled ? (
               <Button disabled className="w-full">
                 {lang === "es"
-                  ? "El host aún no configuró WhatsApp"
-                  : "Host hasn't set up WhatsApp yet"}
+                  ? "El host aún no configuró canales de pago"
+                  : "Host hasn't set up payment channels yet"}
               </Button>
-            )}
+            ) : null}
+
             <p className="text-[11px] text-center text-slate-500">
-              {lang === "es"
-                ? "El host responderá con instrucciones de pago."
-                : "The host will reply with payment instructions."}
+              {paypalEnabled
+                ? (lang === "es"
+                    ? "Pago seguro vía PayPal. El host coordina los detalles del servicio."
+                    : "Secure PayPal payment. Host coordinates service details.")
+                : (lang === "es"
+                    ? "El host responderá con instrucciones de pago."
+                    : "The host will reply with payment instructions.")}
             </p>
           </SheetFooter>
         </SheetContent>
