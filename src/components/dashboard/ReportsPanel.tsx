@@ -14,8 +14,7 @@ import {
   Loader2,
   ArrowUpRight,
 } from "lucide-react";
-import { formatMoney, sumByCurrency } from "@/lib/money/format";
-import { useTenantCurrency } from "@/lib/money/useTenantCurrency";
+import { formatMoney } from "@/lib/money/format";
 
 type Booking = {
   id: string;
@@ -23,8 +22,6 @@ type Booking = {
   start: string;
   end: string;
   totalPrice: number;
-  // Heredada de la propiedad — necesaria para no sumar DOP+USD a ciegas.
-  currency: string;
   status: string;
   channel: string;
 };
@@ -33,12 +30,10 @@ type Property = {
   id: string;
   name: string;
   city: string;
-  currency: string;
   bookings: Booking[];
 };
 
 export default function ReportsPanel() {
-  const { currency: tenantCurrency, usdToLocalRate } = useTenantCurrency();
   const [properties, setProperties] = useState<Property[]>([]);
   const [loading, setLoading] = useState(true);
 
@@ -46,28 +41,20 @@ export default function ReportsPanel() {
     fetch("/api/bookings")
       .then((r) => r.json())
       .then((data) => {
-        const props = (data.properties ?? []).map((p: Record<string, unknown>) => {
-          const propCurrency = String(p.currency ?? "DOP");
-          return {
-            id: p.id,
-            name: p.name,
-            city: p.city ?? "",
-            currency: propCurrency,
-            bookings: ((p.bookings as Record<string, unknown>[]) ?? []).map((b) => ({
-              id: b.id,
-              guest: b.guest ?? b.guest_name ?? "",
-              start: b.start ?? b.check_in ?? "",
-              end: b.end ?? b.check_out ?? "",
-              totalPrice: Number(b.totalPrice ?? b.total_price ?? 0),
-              // El endpoint ya propaga currency en cada booking, pero
-              // mantenemos el fallback a la moneda de la propiedad por si
-              // un cliente viejo devuelve bookings sin el campo.
-              currency: String(b.currency ?? propCurrency),
-              status: String(b.status ?? ""),
-              channel: String(b.channel ?? b.source ?? "direct"),
-            })),
-          };
-        });
+        const props = (data.properties ?? []).map((p: Record<string, unknown>) => ({
+          id: p.id,
+          name: p.name,
+          city: p.city ?? "",
+          bookings: ((p.bookings as Record<string, unknown>[]) ?? []).map((b) => ({
+            id: b.id,
+            guest: b.guest ?? b.guest_name ?? "",
+            start: b.start ?? b.check_in ?? "",
+            end: b.end ?? b.check_out ?? "",
+            totalPrice: Number(b.totalPrice ?? b.total_price ?? 0),
+            status: String(b.status ?? ""),
+            channel: String(b.channel ?? b.source ?? "direct"),
+          })),
+        }));
         setProperties(props);
       })
       .catch(() => {})
@@ -82,40 +69,33 @@ export default function ReportsPanel() {
     const allBookings = properties.flatMap((p) => p.bookings);
     const active = allBookings.filter((b) => b.status !== "cancelled");
 
-    // Helper local: agrega bookings cross-currency a tenantCurrency.
-    // Devuelve { total, hasMixedCurrencies, skipped } igual que sumByCurrency.
-    const aggregateBookings = (list: Booking[]) =>
-      sumByCurrency(
-        list.map((b) => ({ amount: b.totalPrice, currency: b.currency })),
-        tenantCurrency,
-        usdToLocalRate,
-      );
-
     // Revenue this month
-    const monthBookingsList = active.filter((b) => {
-      const d = new Date(b.start);
-      return d.getMonth() === thisMonth && d.getFullYear() === thisYear;
-    });
-    const monthAgg = aggregateBookings(monthBookingsList);
-    const monthRevenue = monthAgg.total;
+    const monthRevenue = active
+      .filter((b) => {
+        const d = new Date(b.start);
+        return d.getMonth() === thisMonth && d.getFullYear() === thisYear;
+      })
+      .reduce((sum, b) => sum + b.totalPrice, 0);
 
     // Revenue last month
     const lastMonth = thisMonth === 0 ? 11 : thisMonth - 1;
     const lastMonthYear = thisMonth === 0 ? thisYear - 1 : thisYear;
-    const lastMonthAgg = aggregateBookings(
-      active.filter((b) => {
+    const lastMonthRevenue = active
+      .filter((b) => {
         const d = new Date(b.start);
         return d.getMonth() === lastMonth && d.getFullYear() === lastMonthYear;
-      }),
-    );
-    const lastMonthRevenue = lastMonthAgg.total;
+      })
+      .reduce((sum, b) => sum + b.totalPrice, 0);
 
     const revenueChange = lastMonthRevenue > 0
       ? Math.round(((monthRevenue - lastMonthRevenue) / lastMonthRevenue) * 100)
       : 0;
 
     // Total bookings this month
-    const monthBookings = monthBookingsList.length;
+    const monthBookings = active.filter((b) => {
+      const d = new Date(b.start);
+      return d.getMonth() === thisMonth && d.getFullYear() === thisYear;
+    }).length;
 
     // Occupancy (30 days)
     const today = new Date();
@@ -133,8 +113,7 @@ export default function ReportsPanel() {
     }
     const occupancy = totalNights > 0 ? Math.round((bookedNights / totalNights) * 100) : 0;
 
-    // ADR (Average Daily Rate) — usa el monthRevenue ya normalizado a
-    // tenantCurrency, así no mezcla noches DOP con USD en la división.
+    // ADR (Average Daily Rate)
     const adr = bookedNights > 0 ? Math.round(monthRevenue / bookedNights) : 0;
 
     // Channel distribution
@@ -144,22 +123,21 @@ export default function ReportsPanel() {
       channels[ch] = (channels[ch] ?? 0) + 1;
     }
 
-    // Monthly revenue for chart (last 6 months) — cada barra también
-    // normalizada. hasMixed/skipped a nivel chart no se muestra (sería ruido
-    // visual); el badge global del KPI ya advierte si hay conversión.
+    // Monthly revenue for chart (last 6 months)
     const monthlyRevenue: { label: string; value: number }[] = [];
     for (let i = 5; i >= 0; i--) {
       const m = new Date(thisYear, thisMonth - i, 1);
       const label = m.toLocaleDateString("es-ES", { month: "short" });
-      const monthList = active.filter((b) => {
-        const d = new Date(b.start);
-        return d.getMonth() === m.getMonth() && d.getFullYear() === m.getFullYear();
-      });
-      monthlyRevenue.push({ label, value: aggregateBookings(monthList).total });
+      const value = active
+        .filter((b) => {
+          const d = new Date(b.start);
+          return d.getMonth() === m.getMonth() && d.getFullYear() === m.getFullYear();
+        })
+        .reduce((sum, b) => sum + b.totalPrice, 0);
+      monthlyRevenue.push({ label, value });
     }
 
-    // Per-property performance — cada propiedad usa su propia moneda en el
-    // display (no mezcla con tenantCurrency), así que aquí no hay conversión.
+    // Per-property performance
     const propPerformance = properties.map((p) => {
       const pActive = p.bookings.filter((b) => b.status !== "cancelled");
       const pRevenue = pActive
@@ -177,29 +155,11 @@ export default function ReportsPanel() {
         pNights += Math.max(0, Math.ceil((clampE.getTime() - clampS.getTime()) / 86400000));
       }
       const pOcc = Math.round((pNights / 30) * 100);
-      return {
-        name: p.name,
-        revenue: pRevenue,
-        currency: p.currency,
-        occupancy: pOcc,
-        bookings: pActive.length,
-      };
+      return { name: p.name, revenue: pRevenue, occupancy: pOcc, bookings: pActive.length };
     });
 
-    return {
-      monthRevenue,
-      monthRevenueMixed: monthAgg.hasMixedCurrencies,
-      monthRevenueSkipped: monthAgg.skipped,
-      revenueChange,
-      monthBookings,
-      occupancy,
-      adr,
-      channels,
-      monthlyRevenue,
-      propPerformance,
-      totalBookings: active.length,
-    };
-  }, [properties, thisMonth, thisYear, tenantCurrency, usdToLocalRate]);
+    return { monthRevenue, revenueChange, monthBookings, occupancy, adr, channels, monthlyRevenue, propPerformance, totalBookings: active.length };
+  }, [properties, thisMonth, thisYear]);
 
   const maxChartValue = Math.max(...metrics.monthlyRevenue.map((m) => m.value), 1);
 
@@ -232,25 +192,8 @@ export default function ReportsPanel() {
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         <Card>
           <CardContent className="pt-4 pb-3 px-4">
-            <p className="text-xs text-muted-foreground font-medium">
-              Ingresos del Mes
-              {metrics.monthRevenueSkipped > 0 && (
-                <span className="ml-1 text-amber-600" title="Reservas omitidas por falta de tipo de cambio configurado">
-                  ({metrics.monthRevenueSkipped} sin FX)
-                </span>
-              )}
-            </p>
-            <p
-              className="text-2xl font-black mt-1"
-              title={
-                metrics.monthRevenueMixed
-                  ? `Incluye conversión a ${tenantCurrency} usando tasa USD↔local del tenant`
-                  : undefined
-              }
-            >
-              {metrics.monthRevenueMixed ? "≈ " : ""}
-              {formatMoney(metrics.monthRevenue, tenantCurrency)}
-            </p>
+            <p className="text-xs text-muted-foreground font-medium">Ingresos del Mes</p>
+            <p className="text-2xl font-black mt-1">{formatMoney(metrics.monthRevenue, "USD")}</p>
             {metrics.revenueChange !== 0 && (
               <p className={`text-xs mt-1 flex items-center gap-0.5 ${metrics.revenueChange > 0 ? "text-emerald-600" : "text-red-500"}`}>
                 <ArrowUpRight className={`h-3 w-3 ${metrics.revenueChange < 0 ? "rotate-90" : ""}`} />
@@ -276,7 +219,7 @@ export default function ReportsPanel() {
         <Card>
           <CardContent className="pt-4 pb-3 px-4">
             <p className="text-xs text-muted-foreground font-medium">Tarifa Promedio/Noche</p>
-            <p className="text-2xl font-black mt-1">{formatMoney(metrics.adr, tenantCurrency)}</p>
+            <p className="text-2xl font-black mt-1">{formatMoney(metrics.adr, "USD")}</p>
             <p className="text-xs text-muted-foreground mt-1">ADR</p>
           </CardContent>
         </Card>
@@ -297,8 +240,8 @@ export default function ReportsPanel() {
                 <div key={m.label} className="flex-1 flex flex-col items-center gap-1">
                   <span className="text-[10px] text-muted-foreground font-medium">
                     {m.value > 999
-                      ? `${formatMoney(m.value / 1000, tenantCurrency, { maximumFractionDigits: 1, minimumFractionDigits: 1 })}k`
-                      : formatMoney(m.value, tenantCurrency)}
+                      ? `${formatMoney(m.value / 1000, "USD", { maximumFractionDigits: 1, minimumFractionDigits: 1 })}k`
+                      : formatMoney(m.value, "USD")}
                   </span>
                   <div
                     className="w-full rounded-t-md bg-primary/80 min-h-[4px] transition-all"
@@ -368,7 +311,7 @@ export default function ReportsPanel() {
                     <p className="text-sm font-semibold truncate">{p.name}</p>
                     <div className="flex items-center gap-3 text-xs text-muted-foreground mt-0.5">
                       <span className="flex items-center gap-1">
-                        <DollarSign className="h-3 w-3" />{formatMoney(p.revenue, p.currency)}
+                        <DollarSign className="h-3 w-3" />{formatMoney(p.revenue, "USD")}
                       </span>
                       <span className="flex items-center gap-1">
                         <Calendar className="h-3 w-3" />{p.bookings} reservas

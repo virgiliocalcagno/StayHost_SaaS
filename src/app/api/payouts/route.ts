@@ -110,10 +110,7 @@ export async function GET(req: NextRequest) {
     periodStart: r.period_start,
     periodEnd: r.period_end,
     totalAmount: Number(r.total_amount),
-    // Fallback: payouts legacy generados antes de la migración multi-currency
-    // pueden tener currency=null. Sin esto, el frontend agrupa por la clave
-    // string "null" y renderiza "NULL 12000".
-    currency: r.currency ?? "DOP",
+    currency: r.currency,
     status: r.status,
     paymentMethod: r.payment_method,
     reference: r.reference,
