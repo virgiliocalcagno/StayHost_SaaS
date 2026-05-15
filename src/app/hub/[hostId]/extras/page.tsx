@@ -203,8 +203,11 @@ export default function HubExtrasPage({ params }: { params: Promise<{ hostId: st
         </div>
       </nav>
 
-      {/* ── HERO con imagen + gradient + stats bar ───────────────────── */}
-      <section className="relative h-[68vh] min-h-[520px] w-full flex items-center justify-center overflow-hidden">
+      {/* ── HERO con imagen + gradient ───────────────────────────────── */}
+      {/* No usamos altura fija (causaba que la stats bar absoluta pisara los
+          CTAs en pantallas ~14"). Ahora el contenido fluye y la stats bar
+          vive en su propia sección con overlap negativo. */}
+      <section className="relative pt-20 pb-28 md:pb-36 w-full flex items-center justify-center overflow-hidden">
         <div className="absolute inset-0">
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img src={DEFAULT_HERO_IMAGE} alt="" className="w-full h-full object-cover" />
@@ -228,7 +231,7 @@ export default function HubExtrasPage({ params }: { params: Promise<{ hostId: st
               </>
             )}
           </h1>
-          <p className="text-lg md:text-xl text-white/95 font-medium max-w-2xl mx-auto drop-shadow-lg">
+          <p className="text-base md:text-xl text-white/95 font-medium max-w-2xl mx-auto drop-shadow-lg">
             {t("shopSubGeneric")}
           </p>
 
@@ -259,32 +262,32 @@ export default function HubExtrasPage({ params }: { params: Promise<{ hostId: st
             </div>
           )}
         </div>
+      </section>
 
-        {/* Stats bar al fondo del hero */}
-        <div className="absolute bottom-0 inset-x-0 z-10 pb-8">
-          <div className="max-w-5xl mx-auto px-6">
-            <div className="bg-white/95 backdrop-blur rounded-2xl shadow-2xl px-6 py-4 grid grid-cols-3 divide-x divide-slate-200">
-              <div className="text-center px-2">
-                <p className="text-2xl md:text-3xl font-extrabold text-amber-600">
-                  {experiences.length}
-                  {experiences.length >= 10 ? "+" : ""}
-                </p>
-                <p className="text-[11px] md:text-xs text-slate-600 font-semibold mt-1">
-                  {t("shopStatActivities")}
-                </p>
-              </div>
-              <div className="text-center px-2">
-                <p className="text-2xl md:text-3xl font-extrabold text-emerald-600">24/7</p>
-                <p className="text-[11px] md:text-xs text-slate-600 font-semibold mt-1">
-                  {t("shopStat247")}
-                </p>
-              </div>
-              <div className="text-center px-2 flex flex-col items-center justify-center">
-                <ShieldCheck className="w-6 h-6 text-blue-600 mb-1" />
-                <p className="text-[11px] md:text-xs text-slate-600 font-semibold">
-                  {t("shopStatSecure")}
-                </p>
-              </div>
+      {/* ── STATS BAR — float card con overlap negativo sobre el hero ─── */}
+      <section className="relative z-20 -mt-16 md:-mt-20 px-6">
+        <div className="max-w-5xl mx-auto">
+          <div className="bg-white/98 backdrop-blur rounded-2xl shadow-2xl border border-slate-100 px-4 py-5 md:px-8 md:py-6 grid grid-cols-3 divide-x divide-slate-200">
+            <div className="text-center px-2">
+              <p className="text-2xl md:text-3xl font-extrabold text-amber-600">
+                {experiences.length}
+                {experiences.length >= 10 ? "+" : ""}
+              </p>
+              <p className="text-[10px] md:text-xs text-slate-600 font-semibold mt-1">
+                {t("shopStatActivities")}
+              </p>
+            </div>
+            <div className="text-center px-2">
+              <p className="text-2xl md:text-3xl font-extrabold text-emerald-600">24/7</p>
+              <p className="text-[10px] md:text-xs text-slate-600 font-semibold mt-1">
+                {t("shopStat247")}
+              </p>
+            </div>
+            <div className="text-center px-2 flex flex-col items-center justify-center">
+              <ShieldCheck className="w-5 h-5 md:w-6 md:h-6 text-blue-600 mb-1" />
+              <p className="text-[10px] md:text-xs text-slate-600 font-semibold">
+                {t("shopStatSecure")}
+              </p>
             </div>
           </div>
         </div>
