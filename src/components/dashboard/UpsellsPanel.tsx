@@ -54,6 +54,7 @@ import {
   Star,
 } from "lucide-react";
 import { formatMoney } from "@/lib/money/format";
+import PhotoUploader from "@/components/dashboard/PhotoUploader";
 import type { Upsell, UpsellCategory, PricingModel } from "@/types/upsell";
 import { PRICING_MODEL_LABELS, PRICING_MODEL_SUFFIX, UPSELL_DEFAULT_ICON, UPSELL_CATEGORY_LABELS } from "@/types/upsell";
 import type { UpsellVendor, PaymentTerms, VendorPricingMethod } from "@/types/upsellVendor";
@@ -82,6 +83,8 @@ interface UpsellFormState {
   price: number;
   category: UpsellCategory;
   iconName: string;
+  heroPhoto: string | null;
+  galleryPhotos: string[];
   pricingModel: PricingModel;
   minQuantity: number;
   maxQuantity: string;
@@ -106,6 +109,8 @@ const emptyUpsellForm: UpsellFormState = {
   price: 0,
   category: "service",
   iconName: "Sparkles",
+  heroPhoto: null,
+  galleryPhotos: [],
   pricingModel: "fixed",
   minQuantity: 1,
   maxQuantity: "",
@@ -130,6 +135,7 @@ interface VendorFormState {
   rncCedula: string;
   category: UpsellCategory;
   description: string;
+  heroPhoto: string | null;
   languages: string[];
   // Método y valores asociados. Solo el valor del método activo importa
   // al guardar; los otros campos quedan ignorados (pero se preservan para
@@ -151,6 +157,7 @@ const emptyVendorForm: VendorFormState = {
   rncCedula: "",
   category: "excursion",
   description: "",
+  heroPhoto: null,
   languages: [],
   defaultPricingMethod: "commission",
   commissionPercent: 0,
@@ -165,8 +172,19 @@ export default function UpsellsPanel() {
   const [upsells, setUpsells] = useState<Upsell[]>([]);
   const [vendors, setVendors] = useState<UpsellVendor[]>([]);
   const [properties, setProperties] = useState<PropertyLite[]>([]);
+  // tenantId se usa para construir el path de las fotos en Storage. RLS
+  // path-based exige que el primer segmento sea el tenant del caller.
+  const [tenantId, setTenantId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+
+  // IDs temporales generados al abrir el form de creación. Permiten que
+  // el host suba fotos ANTES de guardar el producto/vendor (cuando aún no
+  // hay ID real en BD). Al guardar, las URLs van al body y quedan
+  // asociadas al producto creado. Si cancela, los archivos quedan
+  // huérfanos en Storage — el bucket free tier lo aguanta de sobra.
+  const [tempUpsellId, setTempUpsellId] = useState<string>("");
+  const [tempVendorId, setTempVendorId] = useState<string>("");
 
   // Upsell sheet
   const [upsellSheetOpen, setUpsellSheetOpen] = useState(false);
@@ -181,7 +199,10 @@ export default function UpsellsPanel() {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const [upsellsRes, vendorsRes, propsRes] = await Promise.all([
+      const [meRes, upsellsRes, vendorsRes, propsRes] = await Promise.all([
+        fetch("/api/me", { cache: "no-store", credentials: "include" })
+          .then((r) => (r.ok ? r.json() : null))
+          .catch(() => null),
         fetch("/api/upsells", { cache: "no-store", credentials: "include" })
           .then((r) => (r.ok ? r.json() : null))
           .catch(() => null),
@@ -193,6 +214,7 @@ export default function UpsellsPanel() {
           .catch(() => null),
       ]);
 
+      if (meRes?.tenantId) setTenantId(meRes.tenantId);
       if (Array.isArray(upsellsRes?.upsells)) setUpsells(upsellsRes.upsells);
       if (Array.isArray(vendorsRes?.vendors)) setVendors(vendorsRes.vendors);
       if (Array.isArray(propsRes?.properties)) {
@@ -238,6 +260,9 @@ export default function UpsellsPanel() {
   const handleAddUpsell = () => {
     setEditingUpsellId(null);
     setUpsellForm(emptyUpsellForm);
+    // ID temporal para el path de las fotos antes de tener el ID real
+    // del producto. Se descarta al cerrar sin guardar (archivos huérfanos).
+    setTempUpsellId(crypto.randomUUID());
     setUpsellSheetOpen(true);
   };
 
@@ -257,6 +282,8 @@ export default function UpsellsPanel() {
       price: u.price,
       category: u.category,
       iconName: u.iconName,
+      heroPhoto: u.heroPhoto,
+      galleryPhotos: u.galleryPhotos,
       pricingModel: u.pricingModel,
       minQuantity: u.minQuantity,
       maxQuantity: u.maxQuantity != null ? String(u.maxQuantity) : "",
@@ -320,6 +347,8 @@ export default function UpsellsPanel() {
         price: Number(upsellForm.price) || 0,
         category: upsellForm.category,
         iconName: upsellForm.iconName,
+        heroPhoto: upsellForm.heroPhoto,
+        galleryPhotos: upsellForm.galleryPhotos,
         pricingModel: upsellForm.pricingModel,
         minQuantity: Number(upsellForm.minQuantity) || 1,
         maxQuantity: upsellForm.maxQuantity ? Number(upsellForm.maxQuantity) : null,
@@ -383,6 +412,7 @@ export default function UpsellsPanel() {
   const handleAddVendor = () => {
     setEditingVendorId(null);
     setVendorForm(emptyVendorForm);
+    setTempVendorId(crypto.randomUUID());
     setVendorSheetOpen(true);
   };
 
@@ -396,6 +426,7 @@ export default function UpsellsPanel() {
       rncCedula: v.rncCedula ?? "",
       category: v.category,
       description: v.description ?? "",
+      heroPhoto: v.heroPhoto,
       languages: v.languages,
       defaultPricingMethod: v.defaultPricingMethod,
       commissionPercent: v.commissionPercent,
@@ -439,6 +470,7 @@ export default function UpsellsPanel() {
         rncCedula: vendorForm.rncCedula || null,
         category: vendorForm.category,
         description: vendorForm.description || null,
+        heroPhoto: vendorForm.heroPhoto,
         languages: vendorForm.languages,
         defaultPricingMethod: vendorForm.defaultPricingMethod,
         commissionPercent: Number(vendorForm.commissionPercent) || 0,
@@ -590,16 +622,37 @@ export default function UpsellsPanel() {
               {upsells.map((upsell) => {
                 const vName = vendorName(upsell.vendorId);
                 return (
-                  <Card key={upsell.id} className={`relative transition-all hover:shadow-md ${!upsell.active && "opacity-60"}`}>
-                    <CardContent className="p-6">
-                      <div className="flex items-start justify-between mb-4">
-                        <div className="p-3 rounded-xl bg-primary/10">
-                          {getIconComponent(upsell.iconName)}
-                        </div>
-                        <Badge variant={upsell.active ? "default" : "secondary"} className={upsell.active ? "bg-chart-2" : ""}>
+                  <Card key={upsell.id} className={`relative transition-all hover:shadow-md overflow-hidden ${!upsell.active && "opacity-60"}`}>
+                    {/* Hero photo: si hay foto, ocupa el top del card. Sin foto,
+                        cae al patrón viejo del icono + badge en row. */}
+                    {upsell.heroPhoto && (
+                      <div className="relative h-36 bg-muted">
+                        {/* eslint-disable-next-line @next/next/no-img-element */}
+                        <img
+                          src={upsell.heroPhoto}
+                          alt={upsell.name}
+                          className="w-full h-full object-cover"
+                          loading="lazy"
+                        />
+                        <Badge
+                          variant={upsell.active ? "default" : "secondary"}
+                          className={`absolute top-2 right-2 ${upsell.active ? "bg-chart-2" : ""}`}
+                        >
                           {upsell.active ? "Activo" : "Inactivo"}
                         </Badge>
                       </div>
+                    )}
+                    <CardContent className="p-6">
+                      {!upsell.heroPhoto && (
+                        <div className="flex items-start justify-between mb-4">
+                          <div className="p-3 rounded-xl bg-primary/10">
+                            {getIconComponent(upsell.iconName)}
+                          </div>
+                          <Badge variant={upsell.active ? "default" : "secondary"} className={upsell.active ? "bg-chart-2" : ""}>
+                            {upsell.active ? "Activo" : "Inactivo"}
+                          </Badge>
+                        </div>
+                      )}
 
                       <h3 className="font-semibold text-lg line-clamp-1" title={upsell.name}>{upsell.name}</h3>
                       <p className="text-sm text-muted-foreground mb-4 line-clamp-2 min-h-[40px]">
@@ -728,7 +781,18 @@ export default function UpsellsPanel() {
               {vendors.map((v) => {
                 const linkedCount = upsells.filter((u) => u.vendorId === v.id).length;
                 return (
-                  <Card key={v.id} className={`hover:shadow-md transition-all ${!v.active && "opacity-60"}`}>
+                  <Card key={v.id} className={`hover:shadow-md transition-all overflow-hidden ${!v.active && "opacity-60"}`}>
+                    {v.heroPhoto && (
+                      <div className="relative h-24 bg-muted">
+                        {/* eslint-disable-next-line @next/next/no-img-element */}
+                        <img
+                          src={v.heroPhoto}
+                          alt={v.displayName ?? v.name}
+                          className="w-full h-full object-cover"
+                          loading="lazy"
+                        />
+                      </div>
+                    )}
                     <CardContent className="p-4">
                       <div className="flex items-start justify-between mb-2">
                         <div className="min-w-0 flex-1">
@@ -879,6 +943,20 @@ export default function UpsellsPanel() {
           </SheetHeader>
 
           <div className="space-y-6">
+            {/* Foto principal — primero porque visualmente ancla el producto */}
+            {tenantId && (
+              <div className="space-y-2">
+                <Label>Foto principal</Label>
+                <PhotoUploader
+                  pathPrefix={`${tenantId}/upsell/${editingUpsellId ?? tempUpsellId}`}
+                  value={upsellForm.heroPhoto}
+                  onChange={(url) => setUpsellForm({ ...upsellForm, heroPhoto: url })}
+                  label="Subir foto"
+                  hint="Recomendado: foto del catamarán, buggy, etc. Se redimensiona y comprime automático."
+                />
+              </div>
+            )}
+
             <div className="space-y-2">
               <Label htmlFor="name">Nombre del Producto</Label>
               <Input
@@ -1319,6 +1397,19 @@ export default function UpsellsPanel() {
           </SheetHeader>
 
           <div className="space-y-5">
+            {tenantId && (
+              <div className="space-y-2">
+                <Label>Foto / logo del proveedor</Label>
+                <PhotoUploader
+                  pathPrefix={`${tenantId}/vendor/${editingVendorId ?? tempVendorId}`}
+                  value={vendorForm.heroPhoto}
+                  onChange={(url) => setVendorForm({ ...vendorForm, heroPhoto: url })}
+                  label="Subir foto"
+                  hint="Logo o foto representativa del vendor. Se muestra en el Hub al huésped."
+                />
+              </div>
+            )}
+
             <div className="space-y-2">
               <Label htmlFor="vname">Nombre (interno)</Label>
               <Input

@@ -114,6 +114,17 @@ async function validatePropertiesBelongToTenant(
   return propertyIds.every((id) => found.includes(id));
 }
 
+// Validador de URL de foto: debe apuntar al bucket público del tenant.
+// Sin esto un caller malicioso puede meter URL arbitraria de tracking,
+// malware o leakeo cross-tenant (las URLs de otros tenants son públicas
+// también, por diseño del Hub).
+function isOwnUpsellPhotoUrl(url: string, tenantId: string): boolean {
+  const base = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  if (!base) return false;
+  const expectedPrefix = `${base}/storage/v1/object/public/upsell-photos/${tenantId}/`;
+  return url.startsWith(expectedPrefix);
+}
+
 type UpsellRow = {
   id: string;
   vendor_id: string | null;
@@ -123,6 +134,8 @@ type UpsellRow = {
   icon_name: string;
   price: string | number;
   currency: string;
+  hero_photo: string | null;
+  gallery_photos: unknown;
   pricing_model: string;
   min_quantity: number;
   max_quantity: number | null;
@@ -153,6 +166,8 @@ function rowToUpsell(row: UpsellRow): Upsell {
     iconName: row.icon_name,
     price: Number(row.price),
     currency: row.currency,
+    heroPhoto: row.hero_photo,
+    galleryPhotos: Array.isArray(row.gallery_photos) ? (row.gallery_photos as string[]) : [],
     pricingModel: isValidPricingModel(row.pricing_model) ? row.pricing_model : "fixed",
     minQuantity: row.min_quantity,
     maxQuantity: row.max_quantity,
@@ -343,6 +358,26 @@ export async function POST(req: NextRequest) {
     }
   }
 
+  // Fotos: heroPhoto null válido, galleryPhotos array de strings. Validamos
+  // que cada URL apunte al bucket del tenant — sin esto, un caller malicioso
+  // puede meter https://tracker.com/x.gif y lo serviríamos al huésped.
+  let heroPhoto: string | null = null;
+  if (typeof body.heroPhoto === "string" && body.heroPhoto) {
+    if (!isOwnUpsellPhotoUrl(body.heroPhoto, tenantId)) {
+      return NextResponse.json({ error: "heroPhoto URL inválida" }, { status: 422 });
+    }
+    heroPhoto = body.heroPhoto;
+  }
+  const galleryRaw = Array.isArray(body.galleryPhotos)
+    ? (body.galleryPhotos as unknown[]).filter((v): v is string => typeof v === "string")
+    : [];
+  for (const url of galleryRaw) {
+    if (!isOwnUpsellPhotoUrl(url, tenantId)) {
+      return NextResponse.json({ error: "galleryPhotos contiene URL inválida" }, { status: 422 });
+    }
+  }
+  const galleryPhotos = galleryRaw;
+
   const insertRow: Record<string, unknown> = {
     tenant_id: tenantId,
     vendor_id: vendorId,
@@ -352,6 +387,8 @@ export async function POST(req: NextRequest) {
     icon_name: typeof body.iconName === "string" && body.iconName ? body.iconName : "Sparkles",
     price,
     currency: typeof body.currency === "string" ? body.currency : "USD",
+    hero_photo: heroPhoto,
+    gallery_photos: galleryPhotos,
     pricing_model: pricingModel,
     min_quantity: minQuantity,
     max_quantity: maxQuantity,
@@ -419,6 +456,27 @@ export async function PATCH(req: NextRequest) {
   }
   if (body.iconName !== undefined) {
     patch.icon_name = typeof body.iconName === "string" ? body.iconName : "Sparkles";
+  }
+  if (body.heroPhoto !== undefined) {
+    if (typeof body.heroPhoto === "string" && body.heroPhoto) {
+      if (!isOwnUpsellPhotoUrl(body.heroPhoto, tenantId)) {
+        return NextResponse.json({ error: "heroPhoto URL inválida" }, { status: 422 });
+      }
+      patch.hero_photo = body.heroPhoto;
+    } else {
+      patch.hero_photo = null;
+    }
+  }
+  if (body.galleryPhotos !== undefined) {
+    const arr = Array.isArray(body.galleryPhotos)
+      ? (body.galleryPhotos as unknown[]).filter((v): v is string => typeof v === "string")
+      : [];
+    for (const url of arr) {
+      if (!isOwnUpsellPhotoUrl(url, tenantId)) {
+        return NextResponse.json({ error: "galleryPhotos contiene URL inválida" }, { status: 422 });
+      }
+    }
+    patch.gallery_photos = arr;
   }
   if (body.price !== undefined) {
     const p = typeof body.price === "number" ? body.price : Number(body.price);
@@ -619,6 +677,15 @@ export async function DELETE(req: NextRequest) {
   const id = req.nextUrl.searchParams.get("id");
   if (!id) return NextResponse.json({ error: "id required" }, { status: 400 });
 
+  // Leer las URLs de fotos antes de borrar el row, para limpiar Storage
+  // después. Best-effort — si Storage falla, igual se elimina el upsell.
+  const { data: photoRow } = await supabase
+    .from("upsells")
+    .select("hero_photo, gallery_photos")
+    .eq("id", id)
+    .eq("tenant_id", tenantId)
+    .maybeSingle();
+
   // Defensa en profundidad: doble filtro (RLS + tenant_id explícito).
   const { error, count } = await supabase
     .from("upsells")
@@ -628,5 +695,30 @@ export async function DELETE(req: NextRequest) {
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
   if (!count) return NextResponse.json({ error: "Not found" }, { status: 404 });
+
+  // Cleanup de Storage. Extrae el path interno del bucket desde la URL.
+  if (photoRow) {
+    const row = photoRow as { hero_photo: string | null; gallery_photos: unknown };
+    const urls: string[] = [];
+    if (row.hero_photo) urls.push(row.hero_photo);
+    if (Array.isArray(row.gallery_photos)) {
+      for (const u of row.gallery_photos as unknown[]) {
+        if (typeof u === "string") urls.push(u);
+      }
+    }
+    const paths = urls
+      .map((url) => {
+        const marker = "/storage/v1/object/public/upsell-photos/";
+        const idx = url.indexOf(marker);
+        return idx >= 0 ? url.slice(idx + marker.length) : null;
+      })
+      .filter((p): p is string => !!p);
+    if (paths.length > 0) {
+      await supabase.storage.from("upsell-photos").remove(paths).catch((e) => {
+        console.warn("[/api/upsells DELETE] Storage cleanup failed (non-fatal):", e);
+      });
+    }
+  }
+
   return NextResponse.json({ ok: true });
 }

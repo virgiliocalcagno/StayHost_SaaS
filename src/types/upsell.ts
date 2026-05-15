@@ -33,6 +33,11 @@ export interface Upsell {
   price: number;                  // precio público (lo que paga el huésped)
   currency: string;
 
+  // Fotos (Sprint 2). hero_photo es la principal que se muestra en cards y
+  // hero del detalle. gallery son fotos adicionales para el Hub público.
+  heroPhoto: string | null;
+  galleryPhotos: string[];
+
   // Pricing + capacidad
   pricingModel: PricingModel;
   minQuantity: number;

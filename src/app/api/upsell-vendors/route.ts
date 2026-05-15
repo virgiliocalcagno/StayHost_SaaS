@@ -61,6 +61,14 @@ function parseNumericNullable(raw: unknown): number | null | undefined {
   return n;
 }
 
+// Validador de URL de foto: debe apuntar al bucket público del tenant.
+function isOwnUpsellPhotoUrl(url: string, tenantId: string): boolean {
+  const base = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  if (!base) return false;
+  const expectedPrefix = `${base}/storage/v1/object/public/upsell-photos/${tenantId}/`;
+  return url.startsWith(expectedPrefix);
+}
+
 const MANAGE_ROLES = new Set(["owner", "admin", "manager", "co_host"]);
 async function viewerCanManage(
   supabase: SupabaseClient,
@@ -238,6 +246,15 @@ export async function POST(req: NextRequest) {
     ? (body.languages as unknown[]).filter((v): v is string => typeof v === "string")
     : [];
 
+  // Validar URL de foto: debe apuntar al bucket del tenant.
+  let heroPhotoUrl: string | null = null;
+  if (typeof body.heroPhoto === "string" && body.heroPhoto) {
+    if (!isOwnUpsellPhotoUrl(body.heroPhoto, tenantId)) {
+      return NextResponse.json({ error: "heroPhoto URL inválida" }, { status: 422 });
+    }
+    heroPhotoUrl = body.heroPhoto;
+  }
+
   const insertRow: Record<string, unknown> = {
     tenant_id: tenantId,
     name,
@@ -247,7 +264,7 @@ export async function POST(req: NextRequest) {
     rnc_cedula: typeof body.rncCedula === "string" ? body.rncCedula : null,
     category,
     display_name: typeof body.displayName === "string" ? body.displayName : null,
-    hero_photo: typeof body.heroPhoto === "string" ? body.heroPhoto : null,
+    hero_photo: heroPhotoUrl,
     description: typeof body.description === "string" ? body.description : null,
     languages,
     default_pricing_method: defaultPricingMethod,
@@ -307,7 +324,16 @@ export async function PATCH(req: NextRequest) {
     patch.category = body.category;
   }
   if (body.displayName !== undefined) patch.display_name = typeof body.displayName === "string" ? body.displayName : null;
-  if (body.heroPhoto !== undefined) patch.hero_photo = typeof body.heroPhoto === "string" ? body.heroPhoto : null;
+  if (body.heroPhoto !== undefined) {
+    if (typeof body.heroPhoto === "string" && body.heroPhoto) {
+      if (!isOwnUpsellPhotoUrl(body.heroPhoto, tenantId)) {
+        return NextResponse.json({ error: "heroPhoto URL inválida" }, { status: 422 });
+      }
+      patch.hero_photo = body.heroPhoto;
+    } else {
+      patch.hero_photo = null;
+    }
+  }
   if (body.description !== undefined) patch.description = typeof body.description === "string" ? body.description : null;
   if (body.languages !== undefined) {
     patch.languages = Array.isArray(body.languages)
@@ -381,6 +407,14 @@ export async function DELETE(req: NextRequest) {
   const id = req.nextUrl.searchParams.get("id");
   if (!id) return NextResponse.json({ error: "id required" }, { status: 400 });
 
+  // Pre-leer hero_photo para cleanup post-delete.
+  const { data: photoRow } = await supabase
+    .from("upsell_vendors")
+    .select("hero_photo")
+    .eq("id", id)
+    .eq("tenant_id", tenantId)
+    .maybeSingle();
+
   const { error, count } = await supabase
     .from("upsell_vendors")
     .delete({ count: "exact" })
@@ -389,5 +423,18 @@ export async function DELETE(req: NextRequest) {
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
   if (!count) return NextResponse.json({ error: "Not found" }, { status: 404 });
+
+  const heroUrl = (photoRow as { hero_photo: string | null } | null)?.hero_photo;
+  if (heroUrl) {
+    const marker = "/storage/v1/object/public/upsell-photos/";
+    const idx = heroUrl.indexOf(marker);
+    if (idx >= 0) {
+      const path = heroUrl.slice(idx + marker.length);
+      await supabase.storage.from("upsell-photos").remove([path]).catch((e) => {
+        console.warn("[/api/upsell-vendors DELETE] Storage cleanup failed:", e);
+      });
+    }
+  }
+
   return NextResponse.json({ ok: true });
 }
