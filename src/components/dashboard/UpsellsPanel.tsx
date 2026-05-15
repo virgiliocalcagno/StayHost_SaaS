@@ -55,6 +55,7 @@ import {
 } from "lucide-react";
 import { formatMoney } from "@/lib/money/format";
 import PhotoUploader from "@/components/dashboard/PhotoUploader";
+import OrdersTab from "@/components/dashboard/OrdersTab";
 import type { Upsell, UpsellCategory, PricingModel } from "@/types/upsell";
 import { PRICING_MODEL_LABELS, PRICING_MODEL_SUFFIX, UPSELL_DEFAULT_ICON, UPSELL_CATEGORY_LABELS } from "@/types/upsell";
 import type { UpsellVendor, PaymentTerms, VendorPricingMethod } from "@/types/upsellVendor";
@@ -548,9 +549,10 @@ export default function UpsellsPanel() {
       </div>
 
       <Tabs defaultValue="inventory" className="w-full">
-        <TabsList className="grid w-full grid-cols-3 md:w-[600px]">
+        <TabsList className="grid w-full grid-cols-4 md:w-[700px]">
           <TabsTrigger value="inventory">Productos</TabsTrigger>
           <TabsTrigger value="vendors">Proveedores</TabsTrigger>
+          <TabsTrigger value="orders">Pedidos</TabsTrigger>
           <TabsTrigger value="hub-config">Hub público</TabsTrigger>
         </TabsList>
 
@@ -899,7 +901,12 @@ export default function UpsellsPanel() {
           )}
         </TabsContent>
 
-        {/* ─── TAB 3: HUB CONFIG ────────────────────────────────────────── */}
+        {/* ─── TAB 3: PEDIDOS ───────────────────────────────────────────── */}
+        <TabsContent value="orders" className="mt-6">
+          <OrdersTab />
+        </TabsContent>
+
+        {/* ─── TAB 4: HUB CONFIG ────────────────────────────────────────── */}
         <TabsContent value="hub-config" className="mt-6">
           <Card className="max-w-3xl">
             <CardHeader>

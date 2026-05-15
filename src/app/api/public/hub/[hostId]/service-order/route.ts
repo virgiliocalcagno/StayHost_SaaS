@@ -27,6 +27,35 @@
  */
 import { NextRequest, NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabase/admin";
+import { DEFAULT_TENANT_TZ } from "@/lib/datetime/tenant-time";
+
+/**
+ * Convierte una fecha YYYY-MM-DD en el timestamp del inicio del día en
+ * el timezone dado. Sin esto un host en Santo Domingo (UTC-4) con cutoff
+ * de 24h para servicio del 16/05 rechazaría órdenes legítimas porque
+ * compara contra UTC midnight (que es 20:00 del 15/05 en hora local).
+ */
+function tenantDateToStartOfDayTs(dateStr: string, tz: string): number {
+  const [y, m, d] = dateStr.split("-").map(Number);
+  const utcMidnight = Date.UTC(y, m - 1, d);
+  // Offset del tz para esa fecha (positivo si tz adelantado, negativo si
+  // atrasado vs UTC). Para UTC-4: offset = -4h, así que start-of-day local
+  // en UTC = utcMidnight + 4h.
+  const dtf = new Intl.DateTimeFormat("en-US", {
+    timeZone: tz,
+    year: "numeric", month: "2-digit", day: "2-digit",
+    hour: "2-digit", minute: "2-digit", second: "2-digit",
+    hour12: false,
+  });
+  const parts = dtf.formatToParts(new Date(utcMidnight));
+  const get = (t: string) => Number(parts.find((p) => p.type === t)?.value ?? "0");
+  const asLocal = Date.UTC(
+    get("year"), get("month") - 1, get("day"),
+    get("hour"), get("minute"), get("second"),
+  );
+  const offsetMs = asLocal - utcMidnight;
+  return utcMidnight - offsetMs;
+}
 
 interface ItemInput {
   upsellId?: string;
@@ -50,6 +79,7 @@ type UpsellSnapshot = {
   pricing_model: string;
   min_quantity: number;
   max_quantity: number | null;
+  capacity_per_slot: number | null;
   cutoff_hours: number;
   active: boolean;
   vendor_id: string | null;
@@ -114,9 +144,19 @@ export async function POST(
     return NextResponse.json({ error: "Ningún upsellId válido" }, { status: 400 });
   }
 
+  // Tenant timezone — necesario para que `cutoff_hours` se compare contra
+  // el inicio del día en hora local del host, no UTC. Sprint Z manda.
+  const { data: tenantRow } = await supabaseAdmin
+    .from("tenants")
+    .select("timezone")
+    .eq("id", hostId)
+    .maybeSingle();
+  const tenantTz =
+    (tenantRow as { timezone: string | null } | null)?.timezone || DEFAULT_TENANT_TZ;
+
   const { data: upsellRows, error: upErr } = await supabaseAdmin
     .from("upsells")
-    .select("id, name, price, currency, pricing_model, min_quantity, max_quantity, cutoff_hours, active, vendor_id")
+    .select("id, name, price, currency, pricing_model, min_quantity, max_quantity, capacity_per_slot, cutoff_hours, active, vendor_id")
     .eq("tenant_id", hostId)
     .in("id", upsellIds);
 
@@ -211,9 +251,10 @@ export async function POST(
           { status: 422 },
         );
       }
-      // Comparar timestamp: serviceDate como inicio del día UTC. Si el
-      // huésped intenta una fecha más cerca que el cutoff, rechazar.
-      const serviceTs = new Date(serviceDate + "T00:00:00Z").getTime();
+      // Comparar contra inicio del día EN HORA LOCAL del tenant. Antes
+      // usábamos UTC midnight, lo que rechazaba fechas legítimas cuando
+      // el tenant estaba en UTC- (Punta Cana es UTC-4).
+      const serviceTs = tenantDateToStartOfDayTs(serviceDate, tenantTz);
       const cutoffTs = now.getTime() + snap.cutoff_hours * 3600 * 1000;
       if (serviceTs < cutoffTs) {
         return NextResponse.json(
@@ -253,6 +294,54 @@ export async function POST(
   }
   const orderCurrency = validatedItems[0].currency;
   const totalAmount = validatedItems.reduce((s, i) => s + i.lineTotal, 0);
+
+  // ── Anti-overbook (Fase B.2) ────────────────────────────────────────────
+  // Para cada item con capacity_per_slot y serviceDate, consultamos cuántas
+  // unidades YA están reservadas para ese (upsell, fecha) sumando items de
+  // órdenes en estado pending/paid/completed. Si sumando el pedido actual
+  // supera la capacidad, rechazamos.
+  //
+  // pending también consume capacidad: el huésped está pagando ahora, no
+  // queremos que otro huésped concurrente lo overbookee mientras tipea su
+  // tarjeta. Si la orden expira sin pagar, el host puede cancelarla manual.
+  const capacityChecks = validatedItems.filter((i) => {
+    const snap = upsellMap.get(i.upsellId);
+    return snap?.capacity_per_slot != null && i.serviceDate != null;
+  });
+  for (const item of capacityChecks) {
+    const snap = upsellMap.get(item.upsellId)!;
+    const cap = snap.capacity_per_slot as number;
+    // Items ya reservados en la misma fecha (todos los tenants y órdenes).
+    // RLS no aplica (supabaseAdmin) — filtramos manualmente por tenant.
+    const { data: rows } = await supabaseAdmin
+      .from("service_order_items")
+      .select("quantity, service_orders!inner(tenant_id, status)")
+      .eq("upsell_id", item.upsellId)
+      .eq("service_date", item.serviceDate);
+    type RowJoin = {
+      quantity: number;
+      service_orders: { tenant_id: string; status: string } | { tenant_id: string; status: string }[];
+    };
+    const ACTIVE_STATUS = new Set(["pending", "paid", "completed"]);
+    let alreadyReserved = 0;
+    for (const r of ((rows ?? []) as RowJoin[])) {
+      // Supabase a veces devuelve el join como array, a veces como objeto.
+      const so = Array.isArray(r.service_orders) ? r.service_orders[0] : r.service_orders;
+      if (!so) continue;
+      if (so.tenant_id !== hostId) continue;
+      if (!ACTIVE_STATUS.has(so.status)) continue;
+      alreadyReserved += r.quantity;
+    }
+    if (alreadyReserved + item.quantity > cap) {
+      const available = Math.max(0, cap - alreadyReserved);
+      return NextResponse.json(
+        {
+          error: `${snap.name}: capacidad agotada para esa fecha. ${available > 0 ? `Quedan ${available}.` : "Sin disponibilidad."}`,
+        },
+        { status: 409 },
+      );
+    }
+  }
 
   // Insertar order + items. Como no hay transacción multi-statement en el
   // client de Supabase, hacemos best-effort: insert orden, si falla retorna

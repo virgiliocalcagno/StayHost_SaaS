@@ -15,6 +15,7 @@ import { supabaseAdmin } from "@/lib/supabase/admin";
 import { capturePaypalOrder } from "@/lib/paypal/client";
 import { sendEmail } from "@/lib/email/send";
 import { renderServiceOrderPaidHostEmail } from "@/lib/email/templates/service-order-paid-host";
+import { renderServiceOrderPaidGuestEmail } from "@/lib/email/templates/service-order-paid-guest";
 
 export async function POST(
   req: NextRequest,
@@ -155,8 +156,10 @@ export async function POST(
     console.error("[service-order/paypal/capture] update failed:", upErr);
   }
 
-  // Email al host — best-effort. SOLO si esta llamada fue la que escribió
-  // paid_at (evita emails duplicados en concurrencia).
+  // Emails post-pago — best-effort. SOLO si esta llamada fue la que
+  // escribió paid_at (evita emails duplicados en concurrencia).
+  // Mandamos 2 emails: al host (notificación operativa) y al huésped
+  // (confirmación + datos contacto del host).
   if (updatedThisRequest) {
     try {
       const [{ data: items }, { data: tenant }] = await Promise.all([
@@ -167,22 +170,37 @@ export async function POST(
           .order("created_at", { ascending: true }),
         supabaseAdmin
           .from("tenants")
-          .select("name, company, contact_email, email")
+          .select("name, company, contact_email, owner_whatsapp, email")
           .eq("id", order.tenant_id)
           .maybeSingle(),
       ]);
 
       const tenantRow = tenant as {
         name: string | null; company: string | null;
-        contact_email: string | null; email: string;
+        contact_email: string | null; owner_whatsapp: string | null; email: string;
       } | null;
       const hostName = tenantRow?.company || tenantRow?.name || "Tu host";
       // Email del host: preferimos contact_email pero si no, caemos al email
       // de cuenta. Notificación interna — no se expone al huésped.
       const hostEmail = tenantRow?.contact_email ?? tenantRow?.email ?? null;
+      const hostWhatsapp = tenantRow?.owner_whatsapp ?? null;
       const baseUrl = process.env.NEXT_PUBLIC_APP_URL ?? new URL(req.url).origin;
 
-      if (hostEmail && items) {
+      const itemsMapped = ((items ?? []) as Array<{
+        name: string; quantity: number; pricing_model: string;
+        unit_price: string | number; line_total: string | number;
+        service_date: string | null;
+      }>).map((it) => ({
+        name: it.name,
+        quantity: it.quantity,
+        pricingModel: it.pricing_model,
+        unitPrice: Number(it.unit_price),
+        lineTotal: Number(it.line_total),
+        serviceDate: it.service_date,
+      }));
+
+      // 1) Email al host (notificación)
+      if (hostEmail && itemsMapped.length > 0) {
         const { subject, html } = renderServiceOrderPaidHostEmail({
           hostName,
           guestName: order.guest_name,
@@ -191,18 +209,7 @@ export async function POST(
           total: Number(order.total_amount),
           currency: order.currency,
           paymentId: captureResult.id,
-          items: ((items ?? []) as Array<{
-            name: string; quantity: number; pricing_model: string;
-            unit_price: string | number; line_total: string | number;
-            service_date: string | null;
-          }>).map((it) => ({
-            name: it.name,
-            quantity: it.quantity,
-            pricingModel: it.pricing_model,
-            unitPrice: Number(it.unit_price),
-            lineTotal: Number(it.line_total),
-            serviceDate: it.service_date,
-          })),
+          items: itemsMapped,
           notes: order.notes,
           dashboardUrl: `${baseUrl}/dashboard?panel=upsells`,
         });
@@ -212,6 +219,27 @@ export async function POST(
           html,
           replyTo: order.guest_email,
           fromName: "StayHost",
+        });
+      }
+
+      // 2) Email al huésped (confirmación) — solo si dejó email.
+      if (order.guest_email && itemsMapped.length > 0) {
+        const { subject, html } = renderServiceOrderPaidGuestEmail({
+          guestName: order.guest_name,
+          hostName,
+          hostWhatsapp,
+          hostEmail,
+          total: Number(order.total_amount),
+          currency: order.currency,
+          paymentId: captureResult.id,
+          items: itemsMapped,
+        });
+        await sendEmail({
+          to: order.guest_email,
+          subject,
+          html,
+          replyTo: hostEmail,
+          fromName: `${hostName} via StayHost`,
         });
       }
     } catch (emailErr) {
