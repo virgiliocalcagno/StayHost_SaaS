@@ -1031,11 +1031,11 @@ export default function UpsellsPanel() {
                 </div>
               </div>
 
-              {/* URL 2: Solo Ventas Extras — sin sección de propiedades */}
+              {/* URL 2: Tienda Local — sin sección de propiedades */}
               <div className="p-4 border rounded-xl bg-amber-50/40 border-amber-200/60 space-y-3">
                 <div>
                   <Label className="flex items-center gap-2">
-                    <span>Solo Ventas Extras</span>
+                    <span>Tienda Local</span>
                     <Badge className="bg-amber-100 text-amber-800 text-[10px] hover:bg-amber-100">
                       Sin propiedades
                     </Badge>

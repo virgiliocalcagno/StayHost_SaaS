@@ -141,15 +141,15 @@ export default function HubExtrasPage({ params }: { params: Promise<{ hostId: st
       <section className="px-6 pt-16 pb-12 text-center max-w-3xl mx-auto">
         <Badge className="bg-amber-100 text-amber-700 hover:bg-amber-100 mb-4 border-amber-200/60 px-4 py-1 text-sm">
           <ShoppingBag className="w-3.5 h-3.5 mr-1.5" />
-          {lang === "es" ? "Servicios y experiencias" : "Services & experiences"}
+          {lang === "es" ? "Tienda local" : "Local shop"}
         </Badge>
         <h1 className="text-4xl md:text-5xl font-extrabold text-slate-900 tracking-tight mb-4">
-          {lang === "es" ? "Vive lo mejor del destino" : "Live the best of the destination"}
+          {lang === "es" ? `La tienda local de ${hubName}` : `${hubName}'s local shop`}
         </h1>
         <p className="text-lg text-slate-600 leading-relaxed">
           {lang === "es"
-            ? `Excursiones, transporte, chef privado y más — curados por ${hubName} para que tu estadía sea inolvidable.`
-            : `Excursions, transport, private chef and more — curated by ${hubName} so your stay is unforgettable.`}
+            ? "Excursiones, transporte, chef privado y más — curados para que vivas lo mejor del destino."
+            : "Excursions, transport, private chef and more — curated so you can live the best of the destination."}
         </p>
         {welcomeMessage && (
           <p className="mt-8 text-base text-slate-700 italic max-w-2xl mx-auto leading-relaxed">
