@@ -12,12 +12,19 @@ import { NextRequest, NextResponse } from "next/server";
 import { getAuthenticatedTenant } from "@/lib/supabase/server";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Upsell, UpsellCategory, PricingModel } from "@/types/upsell";
+import type { VendorPricingMethod } from "@/types/upsellShared";
 
+// 10 categorías unificadas con upsell_vendors.
 const VALID_CATEGORIES = new Set<UpsellCategory>([
-  "service",
-  "experience",
+  "excursion",
   "transport",
   "food",
+  "laundry",
+  "spa",
+  "concierge",
+  "rental",
+  "connectivity",
+  "service",
   "other",
 ]);
 const isValidCategory = (v: unknown): v is UpsellCategory =>
@@ -32,6 +39,23 @@ const VALID_PRICING_MODELS = new Set<PricingModel>([
 ]);
 const isValidPricingModel = (v: unknown): v is PricingModel =>
   typeof v === "string" && (VALID_PRICING_MODELS as Set<string>).has(v);
+
+const VALID_VENDOR_PRICING_METHODS = new Set<VendorPricingMethod>([
+  "commission",
+  "fixed_cost",
+  "flat_fee",
+]);
+const isValidVendorPricingMethod = (v: unknown): v is VendorPricingMethod =>
+  typeof v === "string" && (VALID_VENDOR_PRICING_METHODS as Set<string>).has(v);
+
+// Parser numérico nullable: null/""/undefined → null. valor inválido → undefined.
+function parseNumericNullable(raw: unknown, max?: number): number | null | undefined {
+  if (raw === null || raw === undefined || raw === "") return null;
+  const n = typeof raw === "number" ? raw : Number(raw);
+  if (!Number.isFinite(n) || n < 0) return undefined;
+  if (max !== undefined && n > max) return undefined;
+  return n;
+}
 
 // Roles que pueden gestionar el catálogo de ventas extras. Staff de bajo
 // privilegio (cleaner/maintenance) no debería ni ver este panel; el guard
@@ -104,6 +128,10 @@ type UpsellRow = {
   max_quantity: number | null;
   capacity_per_slot: number | null;
   cutoff_hours: number;
+  vendor_pricing_method: string | null;
+  vendor_cost: string | number | null;
+  vendor_commission_percent: string | number | null;
+  vendor_flat_fee: string | number | null;
   is_global: boolean;
   linked_property_ids: unknown;
   active: boolean;
@@ -130,6 +158,13 @@ function rowToUpsell(row: UpsellRow): Upsell {
     maxQuantity: row.max_quantity,
     capacityPerSlot: row.capacity_per_slot,
     cutoffHours: row.cutoff_hours,
+    vendorPricingMethod: isValidVendorPricingMethod(row.vendor_pricing_method)
+      ? row.vendor_pricing_method
+      : null,
+    vendorCost: row.vendor_cost != null ? Number(row.vendor_cost) : null,
+    vendorCommissionPercent:
+      row.vendor_commission_percent != null ? Number(row.vendor_commission_percent) : null,
+    vendorFlatFee: row.vendor_flat_fee != null ? Number(row.vendor_flat_fee) : null,
     isGlobal: row.is_global,
     linkedPropertyIds,
     active: row.active,
@@ -269,6 +304,45 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "cutoffHours debe ser entero >= 0" }, { status: 400 });
   }
 
+  // Override opcional del trato con el vendor. Política de consistencia:
+  // sin método override, NINGÚN valor de override aplica (se borran todos).
+  // Con método override, solo el valor del método activo se conserva — los
+  // otros se nulifican para que un toggle commission→fixed_cost no deje
+  // restos del valor anterior.
+  let vendorPricingMethodOverride: VendorPricingMethod | null = null;
+  if (body.vendorPricingMethod !== undefined && body.vendorPricingMethod !== null) {
+    if (!isValidVendorPricingMethod(body.vendorPricingMethod)) {
+      return NextResponse.json({ error: "vendorPricingMethod inválido" }, { status: 400 });
+    }
+    vendorPricingMethodOverride = body.vendorPricingMethod;
+  }
+
+  let vendorCost: number | null = null;
+  let vendorCommissionPercent: number | null = null;
+  let vendorFlatFee: number | null = null;
+
+  if (vendorPricingMethodOverride !== null) {
+    if (vendorPricingMethodOverride === "fixed_cost") {
+      const v = parseNumericNullable(body.vendorCost);
+      if (v === undefined) {
+        return NextResponse.json({ error: "vendorCost inválido" }, { status: 400 });
+      }
+      vendorCost = v;
+    } else if (vendorPricingMethodOverride === "commission") {
+      const v = parseNumericNullable(body.vendorCommissionPercent, 100);
+      if (v === undefined) {
+        return NextResponse.json({ error: "vendorCommissionPercent inválido" }, { status: 400 });
+      }
+      vendorCommissionPercent = v;
+    } else if (vendorPricingMethodOverride === "flat_fee") {
+      const v = parseNumericNullable(body.vendorFlatFee);
+      if (v === undefined) {
+        return NextResponse.json({ error: "vendorFlatFee inválido" }, { status: 400 });
+      }
+      vendorFlatFee = v;
+    }
+  }
+
   const insertRow: Record<string, unknown> = {
     tenant_id: tenantId,
     vendor_id: vendorId,
@@ -283,6 +357,10 @@ export async function POST(req: NextRequest) {
     max_quantity: maxQuantity,
     capacity_per_slot: capacityPerSlot,
     cutoff_hours: cutoffHours,
+    vendor_pricing_method: vendorPricingMethodOverride,
+    vendor_cost: vendorCost,
+    vendor_commission_percent: vendorCommissionPercent,
+    vendor_flat_fee: vendorFlatFee,
     is_global: body.isGlobal !== false,
     linked_property_ids: linkedPropertyIds,
     active: body.active !== false,
@@ -439,6 +517,61 @@ export async function PATCH(req: NextRequest) {
       return NextResponse.json({ error: "cutoffHours inválido" }, { status: 400 });
     }
     patch.cutoff_hours = c;
+  }
+  // Override del trato con vendor — política de consistencia:
+  // Si el patch incluye vendorPricingMethod (cualquiera de los 4 fields del
+  // override), reseteamos los 4 según el método final. Esto evita estados
+  // sucios tipo "method=commission pero vendor_cost=50".
+  const overrideKeys = ["vendorPricingMethod", "vendorCost", "vendorCommissionPercent", "vendorFlatFee"];
+  const touchesOverride = overrideKeys.some((k) => k in body);
+  if (touchesOverride) {
+    let methodFinal: VendorPricingMethod | null = null;
+    if (body.vendorPricingMethod !== undefined) {
+      if (body.vendorPricingMethod === null) {
+        methodFinal = null;
+      } else if (isValidVendorPricingMethod(body.vendorPricingMethod)) {
+        methodFinal = body.vendorPricingMethod;
+      } else {
+        return NextResponse.json({ error: "vendorPricingMethod inválido" }, { status: 400 });
+      }
+    } else {
+      // Si tocan los valores pero no el método, leemos el método actual de BD
+      const { data: row } = await supabase
+        .from("upsells")
+        .select("vendor_pricing_method")
+        .eq("id", id)
+        .eq("tenant_id", tenantId)
+        .maybeSingle();
+      methodFinal = (row as { vendor_pricing_method: string | null } | null)?.vendor_pricing_method as
+        | VendorPricingMethod
+        | null
+        ?? null;
+    }
+    patch.vendor_pricing_method = methodFinal;
+    patch.vendor_cost = null;
+    patch.vendor_commission_percent = null;
+    patch.vendor_flat_fee = null;
+    if (methodFinal === "fixed_cost" && body.vendorCost !== undefined) {
+      const v = parseNumericNullable(body.vendorCost);
+      if (v === undefined) {
+        return NextResponse.json({ error: "vendorCost inválido" }, { status: 400 });
+      }
+      patch.vendor_cost = v;
+    }
+    if (methodFinal === "commission" && body.vendorCommissionPercent !== undefined) {
+      const v = parseNumericNullable(body.vendorCommissionPercent, 100);
+      if (v === undefined) {
+        return NextResponse.json({ error: "vendorCommissionPercent inválido" }, { status: 400 });
+      }
+      patch.vendor_commission_percent = v;
+    }
+    if (methodFinal === "flat_fee" && body.vendorFlatFee !== undefined) {
+      const v = parseNumericNullable(body.vendorFlatFee);
+      if (v === undefined) {
+        return NextResponse.json({ error: "vendorFlatFee inválido" }, { status: 400 });
+      }
+      patch.vendor_flat_fee = v;
+    }
   }
   if (body.isGlobal !== undefined) patch.is_global = !!body.isGlobal;
   if (body.linkedPropertyIds !== undefined) {

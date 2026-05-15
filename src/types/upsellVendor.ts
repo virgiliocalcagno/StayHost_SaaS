@@ -2,17 +2,16 @@
 //
 // Separado de service_vendors (mantenimiento/insumos/utilities) porque el
 // dominio es distinto: estos son los que entregan el servicio al huésped
-// (capitán catamarán, conductor PUJ, spa, chef privado). Tienen campos de
-// marca pública, comisión y contrato que el directorio operativo no necesita.
+// (capitán catamarán, conductor PUJ, spa, chef privado).
 
-export type UpsellVendorCategory =
-  | "excursion"      // tours, catamarán, buggy, snorkel, parasailing
-  | "transport"      // shuttle aeropuerto, traslados internos
-  | "food"           // chef privado, catering, barman
-  | "laundry"        // lavandería, recogida domicilio
-  | "spa"            // masajes, manicura, peluquería
-  | "concierge"      // niñera, médico, reservas, guía
-  | "other";
+import type { UpsellCategory, VendorPricingMethod } from "./upsellShared";
+
+export type { UpsellCategory as UpsellVendorCategory, VendorPricingMethod };
+export {
+  UPSELL_CATEGORY_LABELS as UPSELL_VENDOR_CATEGORY_LABELS,
+  VENDOR_PRICING_METHOD_LABELS,
+  VENDOR_PRICING_VALUE_LABEL,
+} from "./upsellShared";
 
 export type PaymentTerms = "on_completion" | "pre_paid" | "split";
 
@@ -23,20 +22,28 @@ export interface UpsellVendor {
   // Identidad
   name: string;
   contactName: string | null;
-  phone: string | null;          // E.164 para WhatsApp deep-link
+  phone: string | null;
   email: string | null;
-  rncCedula: string | null;      // facturación
+  rncCedula: string | null;
 
-  category: UpsellVendorCategory;
+  category: UpsellCategory;
 
   // Cara pública (Hub)
-  displayName: string | null;    // si null, usa `name`
-  heroPhoto: string | null;      // URL Storage (Sprint 2)
+  displayName: string | null;
+  heroPhoto: string | null;
   description: string | null;
-  languages: string[];           // ["es", "en", "fr"]
+  languages: string[];
 
-  // Comercial
-  commissionPercent: number;     // 0..100. % que retiene el host del precio
+  // Comercial — defaults del trato.
+  //   - default_pricing_method dice CÓMO le cobra al host por venta.
+  //   - commission_percent (legacy, mantenido) se usa cuando method=commission.
+  //   - default_fixed_cost se usa cuando method=fixed_cost.
+  //   - default_flat_fee se usa cuando method=flat_fee.
+  //   Cada producto puede override estos valores por su cuenta.
+  defaultPricingMethod: VendorPricingMethod;
+  commissionPercent: number;
+  defaultFixedCost: number | null;
+  defaultFlatFee: number | null;
   paymentTerms: PaymentTerms;
 
   // Contrato (Sprint 5)
@@ -47,7 +54,7 @@ export interface UpsellVendor {
   acceptedByIdDoc: string | null;
 
   // Operativo
-  rating: number | null;         // 1.0..5.0, promedio reviews
+  rating: number | null;
   totalOrders: number;
   active: boolean;
   notes: string | null;
@@ -55,16 +62,6 @@ export interface UpsellVendor {
   createdAt: string;
   updatedAt: string;
 }
-
-export const UPSELL_VENDOR_CATEGORY_LABELS: Record<UpsellVendorCategory, string> = {
-  excursion: "🌴 Excursiones",
-  transport: "🚗 Transporte",
-  food: "🍽️ Gastronomía",
-  laundry: "🧺 Lavandería",
-  spa: "💆 Spa / Bienestar",
-  concierge: "🛎️ Concierge",
-  other: "📦 Otro",
-};
 
 export const PAYMENT_TERMS_LABELS: Record<PaymentTerms, string> = {
   on_completion: "Al completar servicio",

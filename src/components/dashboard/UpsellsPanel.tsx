@@ -55,9 +55,9 @@ import {
 } from "lucide-react";
 import { formatMoney } from "@/lib/money/format";
 import type { Upsell, UpsellCategory, PricingModel } from "@/types/upsell";
-import { PRICING_MODEL_LABELS, PRICING_MODEL_SUFFIX, UPSELL_DEFAULT_ICON } from "@/types/upsell";
-import type { UpsellVendor, UpsellVendorCategory, PaymentTerms } from "@/types/upsellVendor";
-import { UPSELL_VENDOR_CATEGORY_LABELS, PAYMENT_TERMS_LABELS } from "@/types/upsellVendor";
+import { PRICING_MODEL_LABELS, PRICING_MODEL_SUFFIX, UPSELL_DEFAULT_ICON, UPSELL_CATEGORY_LABELS } from "@/types/upsell";
+import type { UpsellVendor, PaymentTerms, VendorPricingMethod } from "@/types/upsellVendor";
+import { PAYMENT_TERMS_LABELS, VENDOR_PRICING_METHOD_LABELS, VENDOR_PRICING_VALUE_LABEL } from "@/types/upsellVendor";
 
 interface PropertyLite {
   id: string;
@@ -84,9 +84,16 @@ interface UpsellFormState {
   iconName: string;
   pricingModel: PricingModel;
   minQuantity: number;
-  maxQuantity: string;       // string para permitir vacío en el input
+  maxQuantity: string;
   capacityPerSlot: string;
   cutoffHours: number;
+  // Override del trato con el vendor. Si overrideVendorAgreement=false, los
+  // campos se ignoran al guardar y el producto hereda los defaults del vendor.
+  overrideVendorAgreement: boolean;
+  vendorPricingMethod: VendorPricingMethod;
+  vendorCost: string;
+  vendorCommissionPercent: string;
+  vendorFlatFee: string;
   isGlobal: boolean;
   linkedPropertyIds: string[];
   vendorId: string | null;
@@ -104,6 +111,11 @@ const emptyUpsellForm: UpsellFormState = {
   maxQuantity: "",
   capacityPerSlot: "",
   cutoffHours: 0,
+  overrideVendorAgreement: false,
+  vendorPricingMethod: "commission",
+  vendorCost: "",
+  vendorCommissionPercent: "",
+  vendorFlatFee: "",
   isGlobal: true,
   linkedPropertyIds: [],
   vendorId: null,
@@ -116,10 +128,16 @@ interface VendorFormState {
   phone: string;
   email: string;
   rncCedula: string;
-  category: UpsellVendorCategory;
+  category: UpsellCategory;
   description: string;
   languages: string[];
+  // Método y valores asociados. Solo el valor del método activo importa
+  // al guardar; los otros campos quedan ignorados (pero se preservan para
+  // que cambiar de método y volver no pierda lo tipeado).
+  defaultPricingMethod: VendorPricingMethod;
   commissionPercent: number;
+  defaultFixedCost: string;
+  defaultFlatFee: string;
   paymentTerms: PaymentTerms;
   notes: string;
   active: boolean;
@@ -134,7 +152,10 @@ const emptyVendorForm: VendorFormState = {
   category: "excursion",
   description: "",
   languages: [],
+  defaultPricingMethod: "commission",
   commissionPercent: 0,
+  defaultFixedCost: "",
+  defaultFlatFee: "",
   paymentTerms: "on_completion",
   notes: "",
   active: true,
@@ -222,6 +243,14 @@ export default function UpsellsPanel() {
 
   const handleEditUpsell = (u: Upsell) => {
     setEditingUpsellId(u.id);
+    // Si CUALQUIER override está seteado, abrimos el form con el switch en
+    // "override personalizado". Si los 4 son null, el producto hereda del
+    // vendor y arrancamos colapsado.
+    const hasOverride =
+      u.vendorPricingMethod !== null ||
+      u.vendorCost !== null ||
+      u.vendorCommissionPercent !== null ||
+      u.vendorFlatFee !== null;
     setUpsellForm({
       name: u.name,
       description: u.description ?? "",
@@ -233,6 +262,12 @@ export default function UpsellsPanel() {
       maxQuantity: u.maxQuantity != null ? String(u.maxQuantity) : "",
       capacityPerSlot: u.capacityPerSlot != null ? String(u.capacityPerSlot) : "",
       cutoffHours: u.cutoffHours,
+      overrideVendorAgreement: hasOverride,
+      vendorPricingMethod: u.vendorPricingMethod ?? "commission",
+      vendorCost: u.vendorCost != null ? String(u.vendorCost) : "",
+      vendorCommissionPercent:
+        u.vendorCommissionPercent != null ? String(u.vendorCommissionPercent) : "",
+      vendorFlatFee: u.vendorFlatFee != null ? String(u.vendorFlatFee) : "",
       isGlobal: u.isGlobal,
       linkedPropertyIds: u.linkedPropertyIds,
       vendorId: u.vendorId,
@@ -255,8 +290,30 @@ export default function UpsellsPanel() {
   const handleSaveUpsell = async () => {
     if (saving) return;
     if (!upsellForm.name.trim()) return;
+
+    // Validación cliente: si override está ON, el valor del método activo
+    // no puede estar vacío — sino el margen calculado es engañoso.
+    if (upsellForm.overrideVendorAgreement) {
+      const valueByMethod: Record<VendorPricingMethod, string> = {
+        commission: upsellForm.vendorCommissionPercent,
+        fixed_cost: upsellForm.vendorCost,
+        flat_fee: upsellForm.vendorFlatFee,
+      };
+      const value = valueByMethod[upsellForm.vendorPricingMethod];
+      if (!value || Number.isNaN(Number(value))) {
+        alert(
+          "Completá el valor del método de pricing override (comisión %, costo o fee) o desactivá el override.",
+        );
+        return;
+      }
+    }
+
     setSaving(true);
     try {
+      // Si override está OFF, mandamos los 4 campos en null para que el
+      // producto herede del vendor. Si está ON, solo seteamos el campo del
+      // método activo y el resto null — patrón "campo activo gana".
+      const override = upsellForm.overrideVendorAgreement;
       const payload = {
         name: upsellForm.name.trim(),
         description: upsellForm.description || null,
@@ -268,6 +325,19 @@ export default function UpsellsPanel() {
         maxQuantity: upsellForm.maxQuantity ? Number(upsellForm.maxQuantity) : null,
         capacityPerSlot: upsellForm.capacityPerSlot ? Number(upsellForm.capacityPerSlot) : null,
         cutoffHours: Number(upsellForm.cutoffHours) || 0,
+        vendorPricingMethod: override ? upsellForm.vendorPricingMethod : null,
+        vendorCost:
+          override && upsellForm.vendorPricingMethod === "fixed_cost" && upsellForm.vendorCost
+            ? Number(upsellForm.vendorCost)
+            : null,
+        vendorCommissionPercent:
+          override && upsellForm.vendorPricingMethod === "commission" && upsellForm.vendorCommissionPercent
+            ? Number(upsellForm.vendorCommissionPercent)
+            : null,
+        vendorFlatFee:
+          override && upsellForm.vendorPricingMethod === "flat_fee" && upsellForm.vendorFlatFee
+            ? Number(upsellForm.vendorFlatFee)
+            : null,
         isGlobal: upsellForm.isGlobal,
         linkedPropertyIds: upsellForm.isGlobal ? [] : upsellForm.linkedPropertyIds,
         vendorId: upsellForm.vendorId,
@@ -327,7 +397,10 @@ export default function UpsellsPanel() {
       category: v.category,
       description: v.description ?? "",
       languages: v.languages,
+      defaultPricingMethod: v.defaultPricingMethod,
       commissionPercent: v.commissionPercent,
+      defaultFixedCost: v.defaultFixedCost != null ? String(v.defaultFixedCost) : "",
+      defaultFlatFee: v.defaultFlatFee != null ? String(v.defaultFlatFee) : "",
       paymentTerms: v.paymentTerms,
       notes: v.notes ?? "",
       active: v.active,
@@ -367,7 +440,10 @@ export default function UpsellsPanel() {
         category: vendorForm.category,
         description: vendorForm.description || null,
         languages: vendorForm.languages,
+        defaultPricingMethod: vendorForm.defaultPricingMethod,
         commissionPercent: Number(vendorForm.commissionPercent) || 0,
+        defaultFixedCost: vendorForm.defaultFixedCost ? Number(vendorForm.defaultFixedCost) : null,
+        defaultFlatFee: vendorForm.defaultFlatFee ? Number(vendorForm.defaultFlatFee) : null,
         paymentTerms: vendorForm.paymentTerms,
         notes: vendorForm.notes || null,
         active: vendorForm.active,
@@ -562,7 +638,7 @@ export default function UpsellsPanel() {
                             <MapPin className="h-3 w-3 mr-1" /> {upsell.linkedPropertyIds.length} prop.
                           </Badge>
                         )}
-                        <Badge variant="secondary" className="text-xs uppercase">{upsell.category}</Badge>
+                        <Badge variant="secondary" className="text-xs">{UPSELL_CATEGORY_LABELS[upsell.category] ?? upsell.category}</Badge>
                         {vName && (
                           <Badge variant="outline" className="text-xs">
                             👤 {vName}
@@ -670,7 +746,7 @@ export default function UpsellsPanel() {
                       </div>
 
                       <Badge variant="secondary" className="text-[10px] mb-3">
-                        {UPSELL_VENDOR_CATEGORY_LABELS[v.category]}
+                        {UPSELL_CATEGORY_LABELS[v.category]}
                       </Badge>
 
                       {v.description && (
@@ -700,7 +776,15 @@ export default function UpsellsPanel() {
 
                       <div className="flex items-center justify-between text-[11px] pt-3 border-t">
                         <span className="text-muted-foreground">
-                          Comisión: <strong className="text-foreground">{v.commissionPercent}%</strong>
+                          {v.defaultPricingMethod === "commission" && (
+                            <>Comisión: <strong className="text-foreground">{v.commissionPercent}%</strong></>
+                          )}
+                          {v.defaultPricingMethod === "fixed_cost" && (
+                            <>Costo unitario: <strong className="text-foreground">{formatMoney(v.defaultFixedCost ?? 0, "USD")}</strong></>
+                          )}
+                          {v.defaultPricingMethod === "flat_fee" && (
+                            <>Fee por orden: <strong className="text-foreground">{formatMoney(v.defaultFlatFee ?? 0, "USD")}</strong></>
+                          )}
                         </span>
                         <span className="text-muted-foreground">
                           {linkedCount} producto{linkedCount === 1 ? "" : "s"}
@@ -937,11 +1021,9 @@ export default function UpsellsPanel() {
                   <SelectValue placeholder="Categoría" />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="service">🔧 Servicio</SelectItem>
-                  <SelectItem value="experience">🌴 Experiencia</SelectItem>
-                  <SelectItem value="food">🍽️ Gastronomía</SelectItem>
-                  <SelectItem value="transport">🚗 Transporte</SelectItem>
-                  <SelectItem value="other">📦 Otro</SelectItem>
+                  {(Object.keys(UPSELL_CATEGORY_LABELS) as UpsellCategory[]).map((c) => (
+                    <SelectItem key={c} value={c}>{UPSELL_CATEGORY_LABELS[c]}</SelectItem>
+                  ))}
                 </SelectContent>
               </Select>
             </div>
@@ -971,6 +1053,157 @@ export default function UpsellsPanel() {
                 </p>
               )}
             </div>
+
+            {/* Acuerdo con vendor — solo visible si hay vendor seleccionado.
+                Sin vendor el host entrega directo y no hay margen vs costo
+                que calcular: vende a 100% margen. */}
+            {upsellForm.vendorId && (() => {
+              const selectedVendor = vendors.find((v) => v.id === upsellForm.vendorId);
+              if (!selectedVendor) return null;
+
+              // Resolución del trato efectivo: si override está OFF, usa los
+              // defaults del vendor. Si ON, usa el método y valor del form.
+              const effectiveMethod: VendorPricingMethod = upsellForm.overrideVendorAgreement
+                ? upsellForm.vendorPricingMethod
+                : selectedVendor.defaultPricingMethod;
+
+              const effectiveValue: number = (() => {
+                if (effectiveMethod === "commission") {
+                  if (upsellForm.overrideVendorAgreement) {
+                    return Number(upsellForm.vendorCommissionPercent) || 0;
+                  }
+                  return selectedVendor.commissionPercent;
+                }
+                if (effectiveMethod === "fixed_cost") {
+                  if (upsellForm.overrideVendorAgreement) {
+                    return Number(upsellForm.vendorCost) || 0;
+                  }
+                  return selectedVendor.defaultFixedCost ?? 0;
+                }
+                // flat_fee
+                if (upsellForm.overrideVendorAgreement) {
+                  return Number(upsellForm.vendorFlatFee) || 0;
+                }
+                return selectedVendor.defaultFlatFee ?? 0;
+              })();
+
+              // Margen del host por unidad vendida según el método efectivo.
+              const margin: number = (() => {
+                const publicPrice = Number(upsellForm.price) || 0;
+                if (effectiveMethod === "commission") {
+                  return (publicPrice * effectiveValue) / 100;
+                }
+                if (effectiveMethod === "fixed_cost") {
+                  return Math.max(0, publicPrice - effectiveValue);
+                }
+                // flat_fee
+                return Math.max(0, publicPrice - effectiveValue);
+              })();
+
+              return (
+                <div className="space-y-4 p-4 border rounded-xl bg-amber-50/50 dark:bg-amber-950/10 border-amber-200/50">
+                  <div className="flex items-center justify-between">
+                    <h4 className="font-medium text-sm">Acuerdo con {selectedVendor.displayName ?? selectedVendor.name}</h4>
+                    <label className="flex items-center gap-2 text-xs cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={upsellForm.overrideVendorAgreement}
+                        onChange={(e) =>
+                          setUpsellForm({ ...upsellForm, overrideVendorAgreement: e.target.checked })
+                        }
+                        className="rounded"
+                      />
+                      Override de este producto
+                    </label>
+                  </div>
+
+                  {!upsellForm.overrideVendorAgreement ? (
+                    <p className="text-xs text-muted-foreground">
+                      Hereda los defaults del proveedor:{" "}
+                      <strong>{VENDOR_PRICING_METHOD_LABELS[selectedVendor.defaultPricingMethod]}</strong>
+                      {" · "}
+                      <strong>
+                        {selectedVendor.defaultPricingMethod === "commission"
+                          ? `${selectedVendor.commissionPercent}%`
+                          : selectedVendor.defaultPricingMethod === "fixed_cost"
+                            ? formatMoney(selectedVendor.defaultFixedCost ?? 0, "USD")
+                            : formatMoney(selectedVendor.defaultFlatFee ?? 0, "USD")}
+                      </strong>
+                    </p>
+                  ) : (
+                    <div className="space-y-3">
+                      <div className="space-y-1">
+                        <Label className="text-xs">Cómo cobra para este producto</Label>
+                        <Select
+                          value={upsellForm.vendorPricingMethod}
+                          onValueChange={(v) => setUpsellForm({ ...upsellForm, vendorPricingMethod: v as VendorPricingMethod })}
+                        >
+                          <SelectTrigger><SelectValue /></SelectTrigger>
+                          <SelectContent>
+                            {(Object.keys(VENDOR_PRICING_METHOD_LABELS) as VendorPricingMethod[]).map((m) => (
+                              <SelectItem key={m} value={m}>{VENDOR_PRICING_METHOD_LABELS[m]}</SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
+
+                      {upsellForm.vendorPricingMethod === "commission" && (
+                        <div className="space-y-1">
+                          <Label className="text-xs">{VENDOR_PRICING_VALUE_LABEL.commission}</Label>
+                          <Input
+                            type="number"
+                            min={0}
+                            max={100}
+                            value={upsellForm.vendorCommissionPercent}
+                            onChange={(e) => setUpsellForm({ ...upsellForm, vendorCommissionPercent: e.target.value })}
+                            placeholder={`Default vendor: ${selectedVendor.commissionPercent}%`}
+                          />
+                        </div>
+                      )}
+                      {upsellForm.vendorPricingMethod === "fixed_cost" && (
+                        <div className="space-y-1">
+                          <Label className="text-xs">{VENDOR_PRICING_VALUE_LABEL.fixed_cost}</Label>
+                          <Input
+                            type="number"
+                            min={0}
+                            value={upsellForm.vendorCost}
+                            onChange={(e) => setUpsellForm({ ...upsellForm, vendorCost: e.target.value })}
+                            placeholder={`Default vendor: ${formatMoney(selectedVendor.defaultFixedCost ?? 0, "USD")}`}
+                          />
+                        </div>
+                      )}
+                      {upsellForm.vendorPricingMethod === "flat_fee" && (
+                        <div className="space-y-1">
+                          <Label className="text-xs">{VENDOR_PRICING_VALUE_LABEL.flat_fee}</Label>
+                          <Input
+                            type="number"
+                            min={0}
+                            value={upsellForm.vendorFlatFee}
+                            onChange={(e) => setUpsellForm({ ...upsellForm, vendorFlatFee: e.target.value })}
+                            placeholder={`Default vendor: ${formatMoney(selectedVendor.defaultFlatFee ?? 0, "USD")}`}
+                          />
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Margen calculado en vivo */}
+                  <div className="pt-3 border-t border-amber-200/50 text-xs">
+                    <div className="flex items-center justify-between">
+                      <span className="text-muted-foreground">Tu margen por venta</span>
+                      <span className="font-bold text-emerald-600">{formatMoney(margin, "USD")}</span>
+                    </div>
+                    <p className="text-[10px] text-muted-foreground mt-1">
+                      {effectiveMethod === "commission"
+                        ? `${effectiveValue}% de ${formatMoney(Number(upsellForm.price) || 0, "USD")}`
+                        : effectiveMethod === "fixed_cost"
+                          ? `${formatMoney(Number(upsellForm.price) || 0, "USD")} público − ${formatMoney(effectiveValue, "USD")} costo`
+                          : `${formatMoney(Number(upsellForm.price) || 0, "USD")} público − ${formatMoney(effectiveValue, "USD")} fee fijo`}
+                    </p>
+                  </div>
+                </div>
+              );
+            })()}
 
             <div className="space-y-2">
               <Label>Icono / Visual</Label>
@@ -1099,11 +1332,11 @@ export default function UpsellsPanel() {
 
             <div className="space-y-2">
               <Label>Categoría</Label>
-              <Select value={vendorForm.category} onValueChange={(v) => setVendorForm({ ...vendorForm, category: v as UpsellVendorCategory })}>
+              <Select value={vendorForm.category} onValueChange={(v) => setVendorForm({ ...vendorForm, category: v as UpsellCategory })}>
                 <SelectTrigger><SelectValue /></SelectTrigger>
                 <SelectContent>
-                  {(Object.keys(UPSELL_VENDOR_CATEGORY_LABELS) as UpsellVendorCategory[]).map((c) => (
-                    <SelectItem key={c} value={c}>{UPSELL_VENDOR_CATEGORY_LABELS[c]}</SelectItem>
+                  {(Object.keys(UPSELL_CATEGORY_LABELS) as UpsellCategory[]).map((c) => (
+                    <SelectItem key={c} value={c}>{UPSELL_CATEGORY_LABELS[c]}</SelectItem>
                   ))}
                 </SelectContent>
               </Select>
@@ -1157,31 +1390,90 @@ export default function UpsellsPanel() {
               />
             </div>
 
-            <div className="grid grid-cols-2 gap-3">
+            {/* Modelo de pricing por defecto del vendor. Cada producto puede
+                override estos valores en su propio formulario. */}
+            <div className="space-y-3 p-3 border rounded-xl bg-muted/20">
+              <h5 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                Cómo te cobra (por defecto)
+              </h5>
+
               <div className="space-y-2">
-                <Label>Comisión (%)</Label>
-                <div className="relative">
+                <Label className="text-xs">Método</Label>
+                <Select
+                  value={vendorForm.defaultPricingMethod}
+                  onValueChange={(v) =>
+                    setVendorForm({ ...vendorForm, defaultPricingMethod: v as VendorPricingMethod })
+                  }
+                >
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    {(Object.keys(VENDOR_PRICING_METHOD_LABELS) as VendorPricingMethod[]).map((m) => (
+                      <SelectItem key={m} value={m}>{VENDOR_PRICING_METHOD_LABELS[m]}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+
+              {vendorForm.defaultPricingMethod === "commission" && (
+                <div className="space-y-1">
+                  <Label className="text-xs">{VENDOR_PRICING_VALUE_LABEL.commission}</Label>
                   <Input
                     type="number"
                     min={0}
                     max={100}
                     value={vendorForm.commissionPercent}
-                    onChange={(e) => setVendorForm({ ...vendorForm, commissionPercent: Math.max(0, Math.min(100, Number(e.target.value) || 0)) })}
+                    onChange={(e) =>
+                      setVendorForm({
+                        ...vendorForm,
+                        commissionPercent: Math.max(0, Math.min(100, Number(e.target.value) || 0)),
+                      })
+                    }
                   />
+                  <p className="text-[10px] text-muted-foreground">% que retenés del precio público</p>
                 </div>
-                <p className="text-[10px] text-muted-foreground">% que retenés del precio</p>
-              </div>
-              <div className="space-y-2">
-                <Label>Pago al vendor</Label>
-                <Select value={vendorForm.paymentTerms} onValueChange={(v) => setVendorForm({ ...vendorForm, paymentTerms: v as PaymentTerms })}>
-                  <SelectTrigger><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    {(Object.keys(PAYMENT_TERMS_LABELS) as PaymentTerms[]).map((pt) => (
-                      <SelectItem key={pt} value={pt}>{PAYMENT_TERMS_LABELS[pt]}</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
+              )}
+              {vendorForm.defaultPricingMethod === "fixed_cost" && (
+                <div className="space-y-1">
+                  <Label className="text-xs">{VENDOR_PRICING_VALUE_LABEL.fixed_cost}</Label>
+                  <Input
+                    type="number"
+                    min={0}
+                    value={vendorForm.defaultFixedCost}
+                    onChange={(e) => setVendorForm({ ...vendorForm, defaultFixedCost: e.target.value })}
+                    placeholder="Ej: 60"
+                  />
+                  <p className="text-[10px] text-muted-foreground">
+                    Lo que el vendor te cobra por unidad — vos decidís el precio público.
+                  </p>
+                </div>
+              )}
+              {vendorForm.defaultPricingMethod === "flat_fee" && (
+                <div className="space-y-1">
+                  <Label className="text-xs">{VENDOR_PRICING_VALUE_LABEL.flat_fee}</Label>
+                  <Input
+                    type="number"
+                    min={0}
+                    value={vendorForm.defaultFlatFee}
+                    onChange={(e) => setVendorForm({ ...vendorForm, defaultFlatFee: e.target.value })}
+                    placeholder="Ej: 30"
+                  />
+                  <p className="text-[10px] text-muted-foreground">
+                    Cobro fijo por orden — sin importar precio público.
+                  </p>
+                </div>
+              )}
+            </div>
+
+            <div className="space-y-2">
+              <Label>Cuándo le pagás al vendor</Label>
+              <Select value={vendorForm.paymentTerms} onValueChange={(v) => setVendorForm({ ...vendorForm, paymentTerms: v as PaymentTerms })}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {(Object.keys(PAYMENT_TERMS_LABELS) as PaymentTerms[]).map((pt) => (
+                    <SelectItem key={pt} value={pt}>{PAYMENT_TERMS_LABELS[pt]}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             </div>
 
             <div className="space-y-2">

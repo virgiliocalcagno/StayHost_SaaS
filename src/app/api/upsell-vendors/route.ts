@@ -17,6 +17,7 @@ import type {
   UpsellVendor,
   UpsellVendorCategory,
   PaymentTerms,
+  VendorPricingMethod,
 } from "@/types/upsellVendor";
 
 const VALID_CATEGORIES = new Set<UpsellVendorCategory>([
@@ -26,6 +27,9 @@ const VALID_CATEGORIES = new Set<UpsellVendorCategory>([
   "laundry",
   "spa",
   "concierge",
+  "rental",
+  "connectivity",
+  "service",
   "other",
 ]);
 const isValidCategory = (v: unknown): v is UpsellVendorCategory =>
@@ -38,6 +42,24 @@ const VALID_PAYMENT_TERMS = new Set<PaymentTerms>([
 ]);
 const isValidPaymentTerms = (v: unknown): v is PaymentTerms =>
   typeof v === "string" && (VALID_PAYMENT_TERMS as Set<string>).has(v);
+
+const VALID_PRICING_METHODS = new Set<VendorPricingMethod>([
+  "commission",
+  "fixed_cost",
+  "flat_fee",
+]);
+const isValidPricingMethod = (v: unknown): v is VendorPricingMethod =>
+  typeof v === "string" && (VALID_PRICING_METHODS as Set<string>).has(v);
+
+// Parser defensivo: numeric nullable. Permite null, "", undefined → null.
+// Si llega valor, valida que sea número finito >= 0. Devuelve undefined si
+// inválido (caller decide qué hacer).
+function parseNumericNullable(raw: unknown): number | null | undefined {
+  if (raw === null || raw === undefined || raw === "") return null;
+  const n = typeof raw === "number" ? raw : Number(raw);
+  if (!Number.isFinite(n) || n < 0) return undefined;
+  return n;
+}
 
 const MANAGE_ROLES = new Set(["owner", "admin", "manager", "co_host"]);
 async function viewerCanManage(
@@ -70,7 +92,10 @@ type VendorRow = {
   hero_photo: string | null;
   description: string | null;
   languages: unknown;
+  default_pricing_method: string;
   commission_percent: string | number;
+  default_fixed_cost: string | number | null;
+  default_flat_fee: string | number | null;
   payment_terms: string;
   agreement_accepted_at: string | null;
   agreement_version: string | null;
@@ -100,7 +125,12 @@ function rowToVendor(row: VendorRow): UpsellVendor {
     heroPhoto: row.hero_photo,
     description: row.description,
     languages: langs,
+    defaultPricingMethod: isValidPricingMethod(row.default_pricing_method)
+      ? row.default_pricing_method
+      : "commission",
     commissionPercent: Number(row.commission_percent),
+    defaultFixedCost: row.default_fixed_cost != null ? Number(row.default_fixed_cost) : null,
+    defaultFlatFee: row.default_flat_fee != null ? Number(row.default_flat_fee) : null,
     paymentTerms: isValidPaymentTerms(row.payment_terms) ? row.payment_terms : "on_completion",
     agreementAcceptedAt: row.agreement_accepted_at,
     agreementVersion: row.agreement_version,
@@ -188,6 +218,22 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "commissionPercent fuera de rango" }, { status: 400 });
   }
 
+  // Método de pricing por defecto del vendor + valores asociados. Si el
+  // método es 'commission' usa commission_percent (legacy). Si 'fixed_cost'
+  // o 'flat_fee', se valida el numérico correspondiente.
+  const defaultPricingMethod: VendorPricingMethod = isValidPricingMethod(body.defaultPricingMethod)
+    ? body.defaultPricingMethod
+    : "commission";
+
+  const defaultFixedCost = parseNumericNullable(body.defaultFixedCost);
+  if (defaultFixedCost === undefined) {
+    return NextResponse.json({ error: "defaultFixedCost inválido" }, { status: 400 });
+  }
+  const defaultFlatFee = parseNumericNullable(body.defaultFlatFee);
+  if (defaultFlatFee === undefined) {
+    return NextResponse.json({ error: "defaultFlatFee inválido" }, { status: 400 });
+  }
+
   const languages = Array.isArray(body.languages)
     ? (body.languages as unknown[]).filter((v): v is string => typeof v === "string")
     : [];
@@ -204,7 +250,10 @@ export async function POST(req: NextRequest) {
     hero_photo: typeof body.heroPhoto === "string" ? body.heroPhoto : null,
     description: typeof body.description === "string" ? body.description : null,
     languages,
+    default_pricing_method: defaultPricingMethod,
     commission_percent: commission,
+    default_fixed_cost: defaultFixedCost,
+    default_flat_fee: defaultFlatFee,
     payment_terms: paymentTerms,
     notes: typeof body.notes === "string" ? body.notes : null,
     active: body.active !== false,
@@ -271,6 +320,26 @@ export async function PATCH(req: NextRequest) {
       return NextResponse.json({ error: "commissionPercent fuera de rango" }, { status: 400 });
     }
     patch.commission_percent = c;
+  }
+  if (body.defaultPricingMethod !== undefined) {
+    if (!isValidPricingMethod(body.defaultPricingMethod)) {
+      return NextResponse.json({ error: "defaultPricingMethod inválido" }, { status: 400 });
+    }
+    patch.default_pricing_method = body.defaultPricingMethod;
+  }
+  if (body.defaultFixedCost !== undefined) {
+    const v = parseNumericNullable(body.defaultFixedCost);
+    if (v === undefined) {
+      return NextResponse.json({ error: "defaultFixedCost inválido" }, { status: 400 });
+    }
+    patch.default_fixed_cost = v;
+  }
+  if (body.defaultFlatFee !== undefined) {
+    const v = parseNumericNullable(body.defaultFlatFee);
+    if (v === undefined) {
+      return NextResponse.json({ error: "defaultFlatFee inválido" }, { status: 400 });
+    }
+    patch.default_flat_fee = v;
   }
   if (body.paymentTerms !== undefined) {
     if (!isValidPaymentTerms(body.paymentTerms)) {
