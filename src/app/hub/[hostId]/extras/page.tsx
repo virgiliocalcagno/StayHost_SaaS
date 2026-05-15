@@ -59,6 +59,11 @@ interface StoredUpsell {
   minQuantity: number;
   maxQuantity: number | null;
   cutoffHours: number;
+  // Sprint 5
+  requiresTime: boolean;
+  requiresPickupLocation: boolean;
+  requiresFlightNumber: boolean;
+  notesPlaceholder: string | null;
   isGlobal: boolean;
   linkedPropertyIds: string[];
   vendor: { name: string; photo: string | null } | null;

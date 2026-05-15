@@ -84,6 +84,11 @@ interface UpsellFormState {
   vendorCost: string;
   vendorCommissionPercent: string;
   vendorFlatFee: string;
+  // Sprint 5 — qué info pedirle al huésped al comprar este producto.
+  requiresTime: boolean;
+  requiresPickupLocation: boolean;
+  requiresFlightNumber: boolean;
+  notesPlaceholder: string;
   isGlobal: boolean;
   linkedPropertyIds: string[];
   vendorId: string | null;
@@ -108,6 +113,10 @@ const emptyUpsellForm: UpsellFormState = {
   vendorCost: "",
   vendorCommissionPercent: "",
   vendorFlatFee: "",
+  requiresTime: false,
+  requiresPickupLocation: false,
+  requiresFlightNumber: false,
+  notesPlaceholder: "",
   isGlobal: true,
   linkedPropertyIds: [],
   vendorId: null,
@@ -359,6 +368,10 @@ export default function UpsellsPanel() {
       vendorCommissionPercent:
         u.vendorCommissionPercent != null ? String(u.vendorCommissionPercent) : "",
       vendorFlatFee: u.vendorFlatFee != null ? String(u.vendorFlatFee) : "",
+      requiresTime: u.requiresTime,
+      requiresPickupLocation: u.requiresPickupLocation,
+      requiresFlightNumber: u.requiresFlightNumber,
+      notesPlaceholder: u.notesPlaceholder ?? "",
       isGlobal: u.isGlobal,
       linkedPropertyIds: u.linkedPropertyIds,
       vendorId: u.vendorId,
@@ -432,6 +445,11 @@ export default function UpsellsPanel() {
           override && upsellForm.vendorPricingMethod === "flat_fee" && upsellForm.vendorFlatFee
             ? Number(upsellForm.vendorFlatFee)
             : null,
+        // Sprint 5 — info del servicio que se le pedirá al huésped.
+        requiresTime: upsellForm.requiresTime,
+        requiresPickupLocation: upsellForm.requiresPickupLocation,
+        requiresFlightNumber: upsellForm.requiresFlightNumber,
+        notesPlaceholder: upsellForm.notesPlaceholder.trim() || null,
         isGlobal: upsellForm.isGlobal,
         linkedPropertyIds: upsellForm.isGlobal ? [] : upsellForm.linkedPropertyIds,
         vendorId: upsellForm.vendorId,
@@ -1549,6 +1567,82 @@ export default function UpsellsPanel() {
                   ))}
                 </SelectContent>
               </Select>
+            </div>
+
+            {/* Sprint 5 — info del servicio que se le pedirá al huésped */}
+            <div className="space-y-3 p-4 border rounded-xl bg-blue-50/30 border-blue-100">
+              <div>
+                <h4 className="font-medium text-sm">¿Qué necesitás saber del huésped?</h4>
+                <p className="text-[11px] text-muted-foreground mt-0.5">
+                  Marcá los datos que el huésped tiene que indicar al comprar este producto.
+                </p>
+              </div>
+              <div className="space-y-2">
+                <label className="flex items-start gap-2 text-sm cursor-pointer hover:bg-white/60 p-2 rounded-md">
+                  <input
+                    type="checkbox"
+                    checked={upsellForm.requiresTime}
+                    onChange={(e) => setUpsellForm({ ...upsellForm, requiresTime: e.target.checked })}
+                    className="h-4 w-4 mt-0.5 text-primary"
+                  />
+                  <span>
+                    <strong className="block font-medium">🕒 Hora del servicio</strong>
+                    <span className="text-muted-foreground text-xs block">
+                      Ej: excursión, masaje, chef, lavandería con horario.
+                    </span>
+                  </span>
+                </label>
+                <label className="flex items-start gap-2 text-sm cursor-pointer hover:bg-white/60 p-2 rounded-md">
+                  <input
+                    type="checkbox"
+                    checked={upsellForm.requiresPickupLocation}
+                    onChange={(e) =>
+                      setUpsellForm({ ...upsellForm, requiresPickupLocation: e.target.checked })
+                    }
+                    className="h-4 w-4 mt-0.5 text-primary"
+                  />
+                  <span>
+                    <strong className="block font-medium">📍 Punto de recogida</strong>
+                    <span className="text-muted-foreground text-xs block">
+                      Ej: excursiones, transporte, alquiler de bicis.
+                    </span>
+                  </span>
+                </label>
+                <label className="flex items-start gap-2 text-sm cursor-pointer hover:bg-white/60 p-2 rounded-md">
+                  <input
+                    type="checkbox"
+                    checked={upsellForm.requiresFlightNumber}
+                    onChange={(e) =>
+                      setUpsellForm({ ...upsellForm, requiresFlightNumber: e.target.checked })
+                    }
+                    className="h-4 w-4 mt-0.5 text-primary"
+                  />
+                  <span>
+                    <strong className="block font-medium">✈️ Número de vuelo</strong>
+                    <span className="text-muted-foreground text-xs block">
+                      Ideal para shuttle aeropuerto. El panel arma link a Google Flights automático.
+                    </span>
+                  </span>
+                </label>
+              </div>
+              <div className="space-y-1 pt-2 border-t border-blue-100">
+                <Label htmlFor="notesPlaceholder" className="text-xs">
+                  💬 Notas extras del huésped (placeholder)
+                </Label>
+                <Input
+                  id="notesPlaceholder"
+                  value={upsellForm.notesPlaceholder}
+                  onChange={(e) =>
+                    setUpsellForm({ ...upsellForm, notesPlaceholder: e.target.value })
+                  }
+                  maxLength={280}
+                  placeholder='Ej: "Alergias, restricciones dietéticas, preferencias..."'
+                />
+                <p className="text-[10px] text-muted-foreground">
+                  Si lo dejás vacío, el campo de notas no se muestra al huésped. Si tipeás algo,
+                  aparece como placeholder de una textarea opcional.
+                </p>
+              </div>
             </div>
 
             <div className="space-y-4 p-4 border rounded-xl bg-muted/20">

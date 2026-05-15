@@ -51,6 +51,12 @@ interface HubUpsell {
   minQuantity: number;
   maxQuantity: number | null;
   cutoffHours: number;
+  // Sprint 5 — info del servicio que pide el host. El detail modal y el
+  // cart renderizan inputs dinámicos según estos flags.
+  requiresTime: boolean;
+  requiresPickupLocation: boolean;
+  requiresFlightNumber: boolean;
+  notesPlaceholder: string | null;
   isGlobal: boolean;
   linkedPropertyIds: string[];
   vendor: { name: string; photo: string | null } | null;
@@ -64,6 +70,11 @@ interface CartItem {
   quantity: number;
   currency: string;
   serviceDate: string | null; // YYYY-MM-DD
+  // Sprint 5
+  serviceTime: string | null;
+  pickupLocation: string | null;
+  flightNumber: string | null;
+  extraNotes: string | null;
 }
 
 const PRICING_SUFFIX: Record<PricingModel, string> = {
@@ -281,6 +292,10 @@ export default function UpsellExperiences({
             upsellId: it.upsellId,
             quantity: it.quantity,
             serviceDate: it.serviceDate,
+            serviceTime: it.serviceTime,
+            pickupLocation: it.pickupLocation,
+            flightNumber: it.flightNumber,
+            extraNotes: it.extraNotes,
           })),
         }),
       });
@@ -535,6 +550,19 @@ export default function UpsellExperiences({
                           </span>
                         )}
                       </div>
+                      {/* Sprint 5 — display de los datos extras capturados */}
+                      {(it.serviceTime || it.pickupLocation || it.flightNumber || it.extraNotes) && (
+                        <div className="mt-1.5 space-y-0.5 text-[10px] text-slate-500 leading-tight">
+                          {it.serviceTime && <p>🕒 {it.serviceTime}</p>}
+                          {it.pickupLocation && (
+                            <p className="line-clamp-1">📍 {it.pickupLocation}</p>
+                          )}
+                          {it.flightNumber && <p className="font-mono">✈️ {it.flightNumber}</p>}
+                          {it.extraNotes && (
+                            <p className="line-clamp-2 italic">💬 {it.extraNotes}</p>
+                          )}
+                        </div>
+                      )}
                       <div className="flex items-center gap-2 mt-2">
                         <button
                           type="button"
@@ -700,6 +728,13 @@ function UpsellDetail({ upsell, lang, onClose, onAdd }: DetailProps) {
   const [serviceDate, setServiceDate] = useState("");
   const [activePhotoIdx, setActivePhotoIdx] = useState(0);
 
+  // Sprint 5 — campos dinámicos según los flags del upsell. Default vacío;
+  // se validan abajo en `canAdd` solo si requires_X=true.
+  const [serviceTime, setServiceTime] = useState("");
+  const [pickupLocation, setPickupLocation] = useState("");
+  const [flightNumber, setFlightNumber] = useState("");
+  const [extraNotes, setExtraNotes] = useState("");
+
   const photos = useMemo(() => {
     const list: string[] = [];
     if (upsell.heroPhoto) list.push(upsell.heroPhoto);
@@ -724,7 +759,13 @@ function UpsellDetail({ upsell, lang, onClose, onAdd }: DetailProps) {
   //     permiten fecha vacía.
   const quantityOk = upsell.pricingModel === "fixed" || (quantity >= min && quantity <= max);
   const dateOk = upsell.cutoffHours === 0 || !!serviceDate;
-  const canAdd = quantityOk && dateOk;
+  // Sprint 5 — campos obligatorios cuando el host los pidió.
+  const timeOk = !upsell.requiresTime || !!serviceTime;
+  const pickupOk = !upsell.requiresPickupLocation || pickupLocation.trim().length > 0;
+  // Flight number: relajamos en cliente (server hace la validación estricta).
+  // Solo exigimos no-vacío acá.
+  const flightOk = !upsell.requiresFlightNumber || flightNumber.trim().length > 0;
+  const canAdd = quantityOk && dateOk && timeOk && pickupOk && flightOk;
 
   return (
     <Sheet open={true} onOpenChange={(o) => !o && onClose()}>
@@ -867,6 +908,86 @@ function UpsellDetail({ upsell, lang, onClose, onAdd }: DetailProps) {
                 </p>
               )}
             </div>
+
+            {/* Sprint 5 — campos dinámicos según lo que el host pidió */}
+            {upsell.requiresTime && (
+              <div className="space-y-2">
+                <Label className="text-xs">
+                  🕒 {lang === "es" ? "Hora del servicio" : "Service time"}
+                  <span className="text-amber-600 ml-1">
+                    {lang === "es" ? "(requerida)" : "(required)"}
+                  </span>
+                </Label>
+                <Input
+                  type="time"
+                  value={serviceTime}
+                  onChange={(e) => setServiceTime(e.target.value)}
+                />
+              </div>
+            )}
+
+            {upsell.requiresPickupLocation && (
+              <div className="space-y-2">
+                <Label className="text-xs">
+                  📍 {lang === "es" ? "Punto de recogida" : "Pickup location"}
+                  <span className="text-amber-600 ml-1">
+                    {lang === "es" ? "(requerido)" : "(required)"}
+                  </span>
+                </Label>
+                <Input
+                  value={pickupLocation}
+                  onChange={(e) => setPickupLocation(e.target.value)}
+                  placeholder={
+                    lang === "es"
+                      ? "Ej: Hotel Riu Bávaro, lobby principal"
+                      : "Ex: Hotel Riu Bávaro, main lobby"
+                  }
+                  maxLength={500}
+                />
+              </div>
+            )}
+
+            {upsell.requiresFlightNumber && (
+              <div className="space-y-2">
+                <Label className="text-xs">
+                  ✈️ {lang === "es" ? "Número de vuelo" : "Flight number"}
+                  <span className="text-amber-600 ml-1">
+                    {lang === "es" ? "(requerido)" : "(required)"}
+                  </span>
+                </Label>
+                <Input
+                  value={flightNumber}
+                  onChange={(e) => setFlightNumber(e.target.value.toUpperCase())}
+                  placeholder="AA1234"
+                  maxLength={10}
+                  className="uppercase font-mono"
+                />
+                <p className="text-[10px] text-slate-500">
+                  {lang === "es"
+                    ? "Te seguimos el vuelo en tiempo real para coordinar el recojo."
+                    : "We'll track the flight in real time to coordinate the pickup."}
+                </p>
+              </div>
+            )}
+
+            {upsell.notesPlaceholder && (
+              <div className="space-y-2">
+                <Label className="text-xs">
+                  💬 {lang === "es" ? "Notas adicionales" : "Extra notes"}
+                  <span className="text-slate-400 ml-1">
+                    {lang === "es" ? "(opcional)" : "(optional)"}
+                  </span>
+                </Label>
+                <textarea
+                  value={extraNotes}
+                  onChange={(e) => setExtraNotes(e.target.value)}
+                  placeholder={upsell.notesPlaceholder}
+                  maxLength={1000}
+                  rows={3}
+                  className="flex min-h-[60px] w-full rounded-md border border-input bg-background px-3 py-2 text-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500"
+                />
+              </div>
+            )}
           </div>
         </div>
 
@@ -883,6 +1004,10 @@ function UpsellDetail({ upsell, lang, onClose, onAdd }: DetailProps) {
                 quantity: upsell.pricingModel === "fixed" ? 1 : quantity,
                 currency: upsell.currency,
                 serviceDate: serviceDate || null,
+                serviceTime: serviceTime || null,
+                pickupLocation: pickupLocation.trim() || null,
+                flightNumber: flightNumber.trim() || null,
+                extraNotes: extraNotes.trim() || null,
               })
             }
             className="w-full gradient-gold text-white"

@@ -150,6 +150,7 @@ export async function GET(
       id, name, description, category, icon_name,
       price, currency, hero_photo, gallery_photos,
       pricing_model, min_quantity, max_quantity, cutoff_hours,
+      requires_time, requires_pickup_location, requires_flight_number, notes_placeholder,
       is_global, linked_property_ids,
       vendor_id
     `)
@@ -165,6 +166,10 @@ export async function GET(
     pricing_model: string;
     min_quantity: number; max_quantity: number | null;
     cutoff_hours: number;
+    requires_time: boolean | null;
+    requires_pickup_location: boolean | null;
+    requires_flight_number: boolean | null;
+    notes_placeholder: string | null;
     is_global: boolean; linked_property_ids: unknown;
     vendor_id: string | null;
   };
@@ -210,6 +215,12 @@ export async function GET(
       minQuantity: u.min_quantity,
       maxQuantity: u.max_quantity,
       cutoffHours: u.cutoff_hours,
+      // Sprint 5: flags de info del servicio. El hub público los renderiza
+      // como inputs dinámicos en el modal de detalle.
+      requiresTime: !!u.requires_time,
+      requiresPickupLocation: !!u.requires_pickup_location,
+      requiresFlightNumber: !!u.requires_flight_number,
+      notesPlaceholder: u.notes_placeholder,
       isGlobal: u.is_global,
       linkedPropertyIds: linked,
       // Vendor: solo info de cara pública. Nada del trato comercial ni PII.

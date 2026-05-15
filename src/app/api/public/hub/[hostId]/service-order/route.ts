@@ -61,6 +61,11 @@ interface ItemInput {
   upsellId?: string;
   quantity?: number | string;
   serviceDate?: string | null;
+  // Sprint 5: info adicional del servicio capturada al checkout.
+  serviceTime?: string | null;
+  pickupLocation?: string | null;
+  flightNumber?: string | null;
+  extraNotes?: string | null;
 }
 
 interface OrderBody {
@@ -83,6 +88,11 @@ type UpsellSnapshot = {
   cutoff_hours: number;
   active: boolean;
   vendor_id: string | null;
+  // Sprint 5: flags de info del servicio
+  requires_time: boolean | null;
+  requires_pickup_location: boolean | null;
+  requires_flight_number: boolean | null;
+  notes_placeholder: string | null;
 };
 
 const VALID_PRICING_MODELS = new Set([
@@ -156,7 +166,7 @@ export async function POST(
 
   const { data: upsellRows, error: upErr } = await supabaseAdmin
     .from("upsells")
-    .select("id, name, price, currency, pricing_model, min_quantity, max_quantity, capacity_per_slot, cutoff_hours, active, vendor_id")
+    .select("id, name, price, currency, pricing_model, min_quantity, max_quantity, capacity_per_slot, cutoff_hours, active, vendor_id, requires_time, requires_pickup_location, requires_flight_number, notes_placeholder")
     .eq("tenant_id", hostId)
     .in("id", upsellIds);
 
@@ -180,6 +190,11 @@ export async function POST(
     serviceDate: string | null;
     lineTotal: number;
     currency: string;
+    // Sprint 5 — info del servicio capturada por el huésped
+    serviceTime: string | null;
+    pickupLocation: string | null;
+    flightNumber: string | null;
+    extraNotes: string | null;
   }> = [];
 
   for (const item of body.items) {
@@ -266,6 +281,83 @@ export async function POST(
       }
     }
 
+    // Sprint 5 — validar info del servicio según los flags del upsell.
+    // Si requires_X=true, el campo es OBLIGATORIO. Si false, lo ignoramos
+    // aunque venga (sanitización: el huésped no puede meter notas si el
+    // host no las pidió — coherencia BD).
+    let serviceTime: string | null = null;
+    if (snap.requires_time) {
+      const raw = typeof item.serviceTime === "string" ? item.serviceTime.trim() : "";
+      if (!raw) {
+        return NextResponse.json(
+          { error: `${snap.name}: indicá la hora del servicio` },
+          { status: 422 },
+        );
+      }
+      if (raw.length > 50) {
+        return NextResponse.json(
+          { error: `${snap.name}: hora demasiado larga` },
+          { status: 400 },
+        );
+      }
+      serviceTime = raw;
+    }
+
+    let pickupLocation: string | null = null;
+    if (snap.requires_pickup_location) {
+      const raw = typeof item.pickupLocation === "string" ? item.pickupLocation.trim() : "";
+      if (!raw) {
+        return NextResponse.json(
+          { error: `${snap.name}: indicá el punto de recogida` },
+          { status: 422 },
+        );
+      }
+      if (raw.length > 500) {
+        return NextResponse.json(
+          { error: `${snap.name}: punto de recogida demasiado largo` },
+          { status: 400 },
+        );
+      }
+      pickupLocation = raw;
+    }
+
+    let flightNumber: string | null = null;
+    if (snap.requires_flight_number) {
+      const raw = typeof item.flightNumber === "string" ? item.flightNumber.trim().toUpperCase() : "";
+      if (!raw) {
+        return NextResponse.json(
+          { error: `${snap.name}: indicá tu número de vuelo` },
+          { status: 422 },
+        );
+      }
+      // Validación tolerante — 2-3 letras de aerolínea + 1-5 dígitos
+      // (ej AA1234, IB5544). Aceptamos también espacios/guiones internos.
+      const normalized = raw.replace(/[\s-]/g, "");
+      if (!/^[A-Z0-9]{3,10}$/.test(normalized)) {
+        return NextResponse.json(
+          { error: `${snap.name}: número de vuelo inválido (ej AA1234)` },
+          { status: 400 },
+        );
+      }
+      flightNumber = normalized;
+    }
+
+    // Notas extras: aceptamos solo si el host las pidió (notes_placeholder
+    // no null). Si vienen sin que el host lo configure, las ignoramos.
+    let extraNotes: string | null = null;
+    if (snap.notes_placeholder && typeof item.extraNotes === "string") {
+      const raw = item.extraNotes.trim();
+      if (raw.length > 0) {
+        if (raw.length > 1000) {
+          return NextResponse.json(
+            { error: `${snap.name}: notas demasiado largas (máx 1000)` },
+            { status: 400 },
+          );
+        }
+        extraNotes = raw;
+      }
+    }
+
     const unitPrice = Number(snap.price);
     const lineTotal = snap.pricing_model === "fixed"
       ? unitPrice * requestedQty
@@ -280,6 +372,10 @@ export async function POST(
       serviceDate,
       lineTotal,
       currency: snap.currency || "USD",
+      serviceTime,
+      pickupLocation,
+      flightNumber,
+      extraNotes,
     });
   }
 
@@ -379,6 +475,11 @@ export async function POST(
     quantity: i.quantity,
     service_date: i.serviceDate,
     line_total: i.lineTotal,
+    // Sprint 5
+    service_time: i.serviceTime,
+    pickup_location: i.pickupLocation,
+    flight_number: i.flightNumber,
+    extra_notes: i.extraNotes,
   }));
   const { error: itemsErr } = await supabaseAdmin
     .from("service_order_items")

@@ -58,6 +58,11 @@ type ItemRow = {
   quantity: number;
   service_date: string | null;
   line_total: string | number;
+  // Sprint 5: info del servicio capturada al checkout
+  service_time: string | null;
+  pickup_location: string | null;
+  flight_number: string | null;
+  extra_notes: string | null;
 };
 
 export async function GET(req: NextRequest) {
@@ -165,6 +170,10 @@ export async function GET(req: NextRequest) {
         quantity: i.quantity,
         serviceDate: i.service_date,
         lineTotal: Number(i.line_total),
+        serviceTime: i.service_time,
+        pickupLocation: i.pickup_location,
+        flightNumber: i.flight_number,
+        extraNotes: i.extra_notes,
       }));
     return {
       id: o.id,

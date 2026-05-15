@@ -29,6 +29,10 @@ import {
   ChevronDown,
   ChevronUp,
   Calendar,
+  Clock,
+  MapPin,
+  Plane,
+  ExternalLink,
   Store,
   AlertCircle,
 } from "lucide-react";
@@ -52,6 +56,11 @@ interface OrderItem {
   quantity: number;
   serviceDate: string | null;
   lineTotal: number;
+  // Sprint 5 — info del servicio capturada al checkout
+  serviceTime: string | null;
+  pickupLocation: string | null;
+  flightNumber: string | null;
+  extraNotes: string | null;
 }
 
 interface Order {
@@ -379,13 +388,34 @@ export default function OrdersTab() {
                             ? (it.quantity > 1 ? ` × ${it.quantity}` : "")
                             : ` × ${it.quantity}${suffix ? ` ${suffix}` : ""}`;
 
-                          // WhatsApp template al vendor con todo lo necesario
-                          // para que coordine: nombre del huésped, fecha,
-                          // detalles del servicio. Cantidad + total + tel.
+                          // Google Flights search link — gratis, sin API. Google
+                          // detecta el formato del vuelo y lo trackea en vivo.
+                          const flightLink = it.flightNumber
+                            ? `https://www.google.com/search?q=vuelo+${encodeURIComponent(it.flightNumber)}`
+                            : null;
+
+                          // WhatsApp template al vendor: incluye hora, pickup,
+                          // vuelo y notas. Antes solo iba la fecha — el vendor
+                          // tenía que ir a buscar el resto en el panel.
+                          const buildVendorMsg = () => {
+                            const lines = [
+                              `Hola ${it.vendor!.name}! Tenemos una reserva confirmada:`,
+                              "",
+                              `• ${it.name}${qtyLabel}`,
+                            ];
+                            if (it.serviceDate) lines.push(`📅 ${it.serviceDate}`);
+                            if (it.serviceTime) lines.push(`🕒 ${it.serviceTime}`);
+                            if (it.pickupLocation) lines.push(`📍 ${it.pickupLocation}`);
+                            if (it.flightNumber) lines.push(`✈️ Vuelo ${it.flightNumber}`);
+                            if (it.extraNotes) lines.push(`💬 ${it.extraNotes}`);
+                            lines.push("");
+                            lines.push(`👤 ${o.guestName}${o.guestPhone ? ` · ${o.guestPhone}` : ""}`);
+                            lines.push("");
+                            lines.push("¿Podés confirmar?");
+                            return lines.join("\n");
+                          };
                           const vendorWaText = it.vendor?.phone && o.status === "paid"
-                            ? encodeURIComponent(
-                                `Hola ${it.vendor.name}! Tenemos una reserva confirmada:\n\n• ${it.name}${qtyLabel}${it.serviceDate ? `\n📅 ${it.serviceDate}` : ""}\n👤 ${o.guestName}${o.guestPhone ? ` · ${o.guestPhone}` : ""}\n\n¿Podés confirmar?`
-                              )
+                            ? encodeURIComponent(buildVendorMsg())
                             : null;
                           const vendorWaLink = it.vendor?.phone && vendorWaText
                             ? `https://wa.me/${it.vendor.phone.replace(/\D/g, "")}?text=${vendorWaText}`
@@ -401,10 +431,51 @@ export default function OrdersTab() {
                                   {it.serviceDate && (
                                     <p className="text-[11px] text-muted-foreground flex items-center gap-1 mt-1">
                                       <Calendar className="h-3 w-3" /> {it.serviceDate}
+                                      {it.serviceTime && (
+                                        <>
+                                          <span className="text-slate-300">·</span>
+                                          <Clock className="h-3 w-3" /> {it.serviceTime}
+                                        </>
+                                      )}
+                                    </p>
+                                  )}
+                                  {!it.serviceDate && it.serviceTime && (
+                                    <p className="text-[11px] text-muted-foreground flex items-center gap-1 mt-1">
+                                      <Clock className="h-3 w-3" /> {it.serviceTime}
+                                    </p>
+                                  )}
+                                  {it.pickupLocation && (
+                                    <p className="text-[11px] text-muted-foreground flex items-start gap-1 mt-1">
+                                      <MapPin className="h-3 w-3 mt-0.5 shrink-0" />
+                                      <span>{it.pickupLocation}</span>
+                                    </p>
+                                  )}
+                                  {it.flightNumber && (
+                                    <p className="text-[11px] text-muted-foreground flex items-center gap-1 mt-1">
+                                      <Plane className="h-3 w-3" />
+                                      <span className="font-mono font-semibold text-slate-700">
+                                        {it.flightNumber}
+                                      </span>
+                                      {flightLink && (
+                                        <a
+                                          href={flightLink}
+                                          target="_blank"
+                                          rel="noopener noreferrer"
+                                          className="text-amber-600 hover:underline ml-1 inline-flex items-center gap-0.5"
+                                        >
+                                          tracking
+                                          <ExternalLink className="h-2.5 w-2.5" />
+                                        </a>
+                                      )}
+                                    </p>
+                                  )}
+                                  {it.extraNotes && (
+                                    <p className="text-[11px] text-slate-700 mt-1.5 p-2 bg-amber-50/60 border border-amber-100 rounded italic">
+                                      💬 {it.extraNotes}
                                     </p>
                                   )}
                                   {it.vendor && (
-                                    <p className="text-[11px] text-muted-foreground flex items-center gap-1 mt-1">
+                                    <p className="text-[11px] text-muted-foreground flex items-center gap-1 mt-1.5">
                                       <Store className="h-3 w-3" /> {it.vendor.name}
                                       {it.vendor.phone && ` · ${it.vendor.phone}`}
                                     </p>

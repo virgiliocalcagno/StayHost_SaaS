@@ -145,6 +145,11 @@ type UpsellRow = {
   vendor_cost: string | number | null;
   vendor_commission_percent: string | number | null;
   vendor_flat_fee: string | number | null;
+  // Sprint 5: info del servicio
+  requires_time: boolean;
+  requires_pickup_location: boolean;
+  requires_flight_number: boolean;
+  notes_placeholder: string | null;
   is_global: boolean;
   linked_property_ids: unknown;
   active: boolean;
@@ -180,6 +185,10 @@ function rowToUpsell(row: UpsellRow): Upsell {
     vendorCommissionPercent:
       row.vendor_commission_percent != null ? Number(row.vendor_commission_percent) : null,
     vendorFlatFee: row.vendor_flat_fee != null ? Number(row.vendor_flat_fee) : null,
+    requiresTime: !!row.requires_time,
+    requiresPickupLocation: !!row.requires_pickup_location,
+    requiresFlightNumber: !!row.requires_flight_number,
+    notesPlaceholder: row.notes_placeholder,
     isGlobal: row.is_global,
     linkedPropertyIds,
     active: row.active,
@@ -378,6 +387,25 @@ export async function POST(req: NextRequest) {
   }
   const galleryPhotos = galleryRaw;
 
+  // Info del servicio (Sprint 5). Flags + placeholder de notas. Defaults
+  // a false / null → comportamiento legacy si el caller no manda nada.
+  const requiresTime = body.requiresTime === true;
+  const requiresPickupLocation = body.requiresPickupLocation === true;
+  const requiresFlightNumber = body.requiresFlightNumber === true;
+  let notesPlaceholder: string | null = null;
+  if (typeof body.notesPlaceholder === "string") {
+    const v = body.notesPlaceholder.trim();
+    if (v.length > 0) {
+      if (v.length > 280) {
+        return NextResponse.json(
+          { error: "notesPlaceholder demasiado largo (máx 280)" },
+          { status: 400 },
+        );
+      }
+      notesPlaceholder = v;
+    }
+  }
+
   const insertRow: Record<string, unknown> = {
     tenant_id: tenantId,
     vendor_id: vendorId,
@@ -398,6 +426,10 @@ export async function POST(req: NextRequest) {
     vendor_cost: vendorCost,
     vendor_commission_percent: vendorCommissionPercent,
     vendor_flat_fee: vendorFlatFee,
+    requires_time: requiresTime,
+    requires_pickup_location: requiresPickupLocation,
+    requires_flight_number: requiresFlightNumber,
+    notes_placeholder: notesPlaceholder,
     is_global: body.isGlobal !== false,
     linked_property_ids: linkedPropertyIds,
     active: body.active !== false,
@@ -631,6 +663,29 @@ export async function PATCH(req: NextRequest) {
       patch.vendor_flat_fee = v;
     }
   }
+  // Info del servicio (Sprint 5).
+  if (body.requiresTime !== undefined) patch.requires_time = !!body.requiresTime;
+  if (body.requiresPickupLocation !== undefined) {
+    patch.requires_pickup_location = !!body.requiresPickupLocation;
+  }
+  if (body.requiresFlightNumber !== undefined) {
+    patch.requires_flight_number = !!body.requiresFlightNumber;
+  }
+  if (body.notesPlaceholder !== undefined) {
+    if (body.notesPlaceholder === null || body.notesPlaceholder === "") {
+      patch.notes_placeholder = null;
+    } else if (typeof body.notesPlaceholder === "string") {
+      const v = body.notesPlaceholder.trim();
+      if (v.length > 280) {
+        return NextResponse.json(
+          { error: "notesPlaceholder demasiado largo (máx 280)" },
+          { status: 400 },
+        );
+      }
+      patch.notes_placeholder = v || null;
+    }
+  }
+
   if (body.isGlobal !== undefined) patch.is_global = !!body.isGlobal;
   if (body.linkedPropertyIds !== undefined) {
     const ids = Array.isArray(body.linkedPropertyIds)

@@ -53,6 +53,15 @@ export interface Upsell {
   vendorCommissionPercent: number | null;
   vendorFlatFee: number | null;
 
+  // Info del servicio (Sprint 5). Flags que indican qué datos extra
+  // pedirle al huésped al momento de comprar. Si todos están en false y
+  // notesPlaceholder es null, el flujo es el actual (solo cantidad + fecha).
+  requiresTime: boolean;
+  requiresPickupLocation: boolean;
+  requiresFlightNumber: boolean;
+  /** Hint del textarea de notas al huésped. Si null, el campo no se muestra. */
+  notesPlaceholder: string | null;
+
   isGlobal: boolean;
   linkedPropertyIds: string[];
   active: boolean;
