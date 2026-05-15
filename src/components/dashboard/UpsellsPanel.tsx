@@ -193,7 +193,9 @@ export default function UpsellsPanel() {
   const [hubWelcome, setHubWelcome] = useState<string>("");
   const [hubSaving, setHubSaving] = useState(false);
   const [hubSaved, setHubSaved] = useState(false);
-  const [hubCopied, setHubCopied] = useState(false);
+  // Estado de "¡Copiado!" por URL. El host comparte dos enlaces distintos:
+  // hub completo (/hub/{id}) y solo-ventas-extras (/hub/{id}/extras).
+  const [copiedKey, setCopiedKey] = useState<"full" | "extras" | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -247,6 +249,14 @@ export default function UpsellsPanel() {
     return `${window.location.origin}/hub/${tenantId}`;
   }, [tenantId]);
 
+  // URL "solo ventas extras": misma data del hub pero sin la sección de
+  // propiedades. Pensada para huéspedes que ya reservaron por Airbnb/
+  // Booking/VRBO y solo quieren comprar excursiones/transporte/comida.
+  const hubExtrasUrl = useMemo(() => {
+    if (!hubUrl) return null;
+    return `${hubUrl}/extras`;
+  }, [hubUrl]);
+
   const saveHubConfig = async () => {
     if (hubSaving) return;
     setHubSaving(true);
@@ -277,15 +287,15 @@ export default function UpsellsPanel() {
     }
   };
 
-  const copyHubUrl = async () => {
-    if (!hubUrl) return;
+  const copyHubUrl = async (key: "full" | "extras", url: string | null) => {
+    if (!url) return;
     try {
-      await navigator.clipboard.writeText(hubUrl);
-      setHubCopied(true);
-      setTimeout(() => setHubCopied(false), 2000);
+      await navigator.clipboard.writeText(url);
+      setCopiedKey(key);
+      setTimeout(() => setCopiedKey((cur) => (cur === key ? null : cur)), 2000);
     } catch {
       // Fallback: prompt para que el usuario copie manualmente.
-      prompt("Copiá la URL del Hub:", hubUrl);
+      prompt("Copiá la URL del Hub:", url);
     }
   };
 
@@ -975,38 +985,95 @@ export default function UpsellsPanel() {
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-6">
-              <div className="p-4 border rounded-xl bg-muted/30 flex flex-col md:flex-row justify-between items-center gap-4">
-                <div className="flex-1 overflow-hidden w-full">
-                  <Label>Enlace Público (URL Compartible)</Label>
-                  <p className="text-sm font-mono text-muted-foreground flex items-center bg-background border rounded-md p-2 mt-2 w-full truncate">
-                    {hubUrl ?? "Cargando…"}
+              {/* URL 1: Hub completo — propiedades + experiencias */}
+              <div className="p-4 border rounded-xl bg-muted/30 space-y-3">
+                <div>
+                  <Label className="flex items-center gap-2">
+                    <span>Hub completo</span>
+                    <Badge variant="outline" className="text-[10px]">
+                      Reservas Directas
+                    </Badge>
+                  </Label>
+                  <p className="text-[11px] text-muted-foreground mt-1">
+                    Tus propiedades + servicios extra. Compartilo con quien busca alojarse directo con vos.
                   </p>
                 </div>
-                <div className="flex gap-2 md:mt-6 shrink-0">
-                  <Button
-                    variant="outline"
-                    disabled={!hubUrl}
-                    onClick={copyHubUrl}
-                    title="Copiar URL al portapapeles"
-                  >
-                    <Copy className="h-4 w-4 mr-2" />
-                    {hubCopied ? "¡Copiado!" : "Copiar"}
-                  </Button>
-                  <Button
-                    asChild={!!hubUrl}
-                    disabled={!hubUrl}
-                    title="Abrir el Hub en una pestaña nueva"
-                  >
-                    {hubUrl ? (
-                      <a href={hubUrl} target="_blank" rel="noopener noreferrer">
-                        <ExternalLink className="h-4 w-4 mr-2" /> Visitar
-                      </a>
-                    ) : (
-                      <span>
-                        <ExternalLink className="h-4 w-4 mr-2" /> Visitar
-                      </span>
-                    )}
-                  </Button>
+                <div className="flex flex-col md:flex-row gap-2">
+                  <p className="flex-1 text-sm font-mono text-muted-foreground bg-background border rounded-md p-2 truncate">
+                    {hubUrl ?? "Cargando…"}
+                  </p>
+                  <div className="flex gap-2 shrink-0">
+                    <Button
+                      variant="outline"
+                      disabled={!hubUrl}
+                      onClick={() => copyHubUrl("full", hubUrl)}
+                      title="Copiar URL al portapapeles"
+                    >
+                      <Copy className="h-4 w-4 mr-2" />
+                      {copiedKey === "full" ? "¡Copiado!" : "Copiar"}
+                    </Button>
+                    <Button
+                      asChild={!!hubUrl}
+                      disabled={!hubUrl}
+                      title="Abrir el Hub completo en una pestaña nueva"
+                    >
+                      {hubUrl ? (
+                        <a href={hubUrl} target="_blank" rel="noopener noreferrer">
+                          <ExternalLink className="h-4 w-4 mr-2" /> Visitar
+                        </a>
+                      ) : (
+                        <span>
+                          <ExternalLink className="h-4 w-4 mr-2" /> Visitar
+                        </span>
+                      )}
+                    </Button>
+                  </div>
+                </div>
+              </div>
+
+              {/* URL 2: Solo Ventas Extras — sin sección de propiedades */}
+              <div className="p-4 border rounded-xl bg-amber-50/40 border-amber-200/60 space-y-3">
+                <div>
+                  <Label className="flex items-center gap-2">
+                    <span>Solo Ventas Extras</span>
+                    <Badge className="bg-amber-100 text-amber-800 text-[10px] hover:bg-amber-100">
+                      Sin propiedades
+                    </Badge>
+                  </Label>
+                  <p className="text-[11px] text-muted-foreground mt-1">
+                    Solo el catálogo de servicios y experiencias. Ideal para huéspedes que ya reservaron por Airbnb / Booking / VRBO o turistas que no se hospedan con vos.
+                  </p>
+                </div>
+                <div className="flex flex-col md:flex-row gap-2">
+                  <p className="flex-1 text-sm font-mono text-muted-foreground bg-background border rounded-md p-2 truncate">
+                    {hubExtrasUrl ?? "Cargando…"}
+                  </p>
+                  <div className="flex gap-2 shrink-0">
+                    <Button
+                      variant="outline"
+                      disabled={!hubExtrasUrl}
+                      onClick={() => copyHubUrl("extras", hubExtrasUrl)}
+                      title="Copiar URL al portapapeles"
+                    >
+                      <Copy className="h-4 w-4 mr-2" />
+                      {copiedKey === "extras" ? "¡Copiado!" : "Copiar"}
+                    </Button>
+                    <Button
+                      asChild={!!hubExtrasUrl}
+                      disabled={!hubExtrasUrl}
+                      title="Abrir la tienda de extras en una pestaña nueva"
+                    >
+                      {hubExtrasUrl ? (
+                        <a href={hubExtrasUrl} target="_blank" rel="noopener noreferrer">
+                          <ExternalLink className="h-4 w-4 mr-2" /> Visitar
+                        </a>
+                      ) : (
+                        <span>
+                          <ExternalLink className="h-4 w-4 mr-2" /> Visitar
+                        </span>
+                      )}
+                    </Button>
+                  </div>
                 </div>
               </div>
 
