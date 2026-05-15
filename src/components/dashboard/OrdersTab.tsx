@@ -68,6 +68,11 @@ interface Order {
   notes: string | null;
   createdAt: string;
   updatedAt: string;
+  // Datos de refund (Sprint 4 polish) — nulos hasta que se procese refund.
+  refundedAt: string | null;
+  refundAmount: number | null;
+  refundPaymentId: string | null;
+  refundNote: string | null;
   items: OrderItem[];
 }
 
@@ -142,11 +147,13 @@ export default function OrdersTab() {
     });
   };
 
-  // Transición allow-list — coincide con server-side. Sirve para decidir
-  // qué botones mostrar.
+  // Transición allow-list — coincide con server-side de PATCH. Sirve para
+  // decidir qué botones de cambio-de-status mostrar. "refunded" NO está en
+  // esta lista porque ya no es un flip de estado — es una acción real via
+  // POST /refund (botón aparte abajo cuando paymentProvider='paypal').
   const allowedTransitions = (status: string): string[] => {
     if (status === "pending") return ["cancelled"];
-    if (status === "paid") return ["completed", "refunded"];
+    if (status === "paid") return ["completed"];
     return [];
   };
 
@@ -434,8 +441,33 @@ export default function OrdersTab() {
                         </div>
                       )}
 
+                      {/* Detalle del refund cuando aplicable */}
+                      {o.status === "refunded" && o.refundedAt && (
+                        <div className="p-3 bg-purple-50 border border-purple-200 rounded-lg space-y-1">
+                          <p className="text-[11px] font-bold uppercase tracking-wider text-purple-800">
+                            ↩️ Reembolsado
+                          </p>
+                          <p className="text-sm text-slate-700">
+                            {formatMoney(o.refundAmount ?? o.totalAmount, o.currency)}
+                            <span className="text-[11px] text-purple-600 ml-2">
+                              {new Date(o.refundedAt).toLocaleString("es-ES", { dateStyle: "short", timeStyle: "short" })}
+                            </span>
+                          </p>
+                          {o.refundPaymentId && (
+                            <p className="text-[11px] text-muted-foreground">
+                              ID refund PayPal: <code className="font-mono">{o.refundPaymentId}</code>
+                            </p>
+                          )}
+                          {o.refundNote && (
+                            <p className="text-[11px] text-slate-600 italic">
+                              Nota al huésped: &quot;{o.refundNote}&quot;
+                            </p>
+                          )}
+                        </div>
+                      )}
+
                       {/* Acciones */}
-                      {allowed.length > 0 && (
+                      {(allowed.length > 0 || (o.status === "paid" && o.paymentProvider === "paypal")) && (
                         <div className="flex flex-wrap gap-2 pt-2 border-t">
                           {allowed.includes("completed") && (
                             <Button
@@ -447,7 +479,7 @@ export default function OrdersTab() {
                               <CheckCircle2 className="h-3 w-3 mr-1" /> Marcar completado
                             </Button>
                           )}
-                          {allowed.includes("refunded") && o.paymentProvider === "paypal" && (
+                          {o.status === "paid" && o.paymentProvider === "paypal" && (
                             <Button
                               size="sm"
                               variant="outline"

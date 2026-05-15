@@ -117,11 +117,11 @@ const DEFAULT_IMAGES = [
   "https://images.unsplash.com/photo-1600607687939-ce8a6c25118c?w=800&q=80",
 ];
 
-const DEFAULT_UPSELLS: StoredUpsell[] = [
-  { id: "u1", name: "Check-in Anticipado", description: "Llegada a partir de las 10:00 AM", price: 35, iconName: "Sparkles" },
-  { id: "u2", name: "Check-out Tardío", description: "Salida hasta las 4:00 PM", price: 40, iconName: "Coffee" },
-  { id: "u3", name: "Traslado Aeropuerto VIP", description: "Transporte privado en SUV", price: 85, iconName: "Car" },
-];
+// Antes había DEFAULT_UPSELLS con IDs ficticios "u1"/"u2"/"u3" que se
+// mostraban al huésped pero al hacer submit el backend los rechazaba — el
+// huésped veía un total que NO coincidía con lo que iba a cobrarse. Ahora
+// los upsells vienen del endpoint público del hub filtrados por esta
+// propiedad.
 
 function diffNights(checkin: string, checkout: string): number {
   if (!checkin || !checkout) return 0;
@@ -147,8 +147,7 @@ export default function PropertyPage({ params }: { params: Promise<{ hostId: str
   // Sprint 3.1 los construye).
   const [property, setProperty] = useState<StoredProperty | null>(null);
   const [propertyLoading, setPropertyLoading] = useState(true);
-  const [upsells, setUpsells] = useState<StoredUpsell[]>(DEFAULT_UPSELLS);
-  void setUpsells;
+  const [upsells, setUpsells] = useState<StoredUpsell[]>([]);
   const [coupons] = useState<Coupon[]>([]);
   // Fechas no disponibles para esta propiedad (confirmed/blocked) — vienen
   // del endpoint público y se usan para deshabilitar fechas en el picker
@@ -181,6 +180,36 @@ export default function PropertyPage({ params }: { params: Promise<{ hostId: str
             .filter((u) => u.propertyId === propertyId)
             .map((u) => ({ checkIn: u.checkIn, checkOut: u.checkOut, status: u.status }));
           setUnavailableRanges(filtered);
+        }
+        // Upsells del host: globales (van a todo el hub) + linkeados a esta
+        // propiedad específica. Antes esto eran 3 IDs ficticios hardcodeados
+        // — el huésped los seleccionaba, el total se computaba, pero al
+        // submit los IDs no existían en BD.
+        if (Array.isArray(data.experiences)) {
+          const propUpsells = (data.experiences as Array<{
+            id: string;
+            name: string;
+            description: string | null;
+            price: number;
+            category: string;
+            iconName: string;
+            isGlobal: boolean;
+            linkedPropertyIds: string[];
+          }>)
+            .filter(
+              (e) =>
+                e.isGlobal ||
+                (Array.isArray(e.linkedPropertyIds) && e.linkedPropertyIds.includes(propertyId)),
+            )
+            .map((e) => ({
+              id: e.id,
+              name: e.name,
+              description: e.description ?? undefined,
+              price: Number(e.price),
+              category: e.category,
+              iconName: e.iconName,
+            }));
+          setUpsells(propUpsells);
         }
       })
       .catch(() => {})
@@ -707,6 +736,7 @@ export default function PropertyPage({ params }: { params: Promise<{ hostId: str
             </div>
 
             {/* ── UPSELLS ──────────────────────────────────────────────────── */}
+            {upsells.length > 0 && (
             <div className="py-8 border-b border-slate-200 bg-amber-50/50 -mx-6 px-6 sm:mx-0 sm:rounded-3xl border sm:border-amber-100 my-8">
               <Badge className="bg-amber-100 text-amber-700 font-bold mb-3 border-none uppercase tracking-wider text-[10px]">{t("powerYourExp")}</Badge>
               <h3 className="text-2xl font-bold text-slate-900 mb-2">{t("exclusiveServices")}</h3>
@@ -743,6 +773,7 @@ export default function PropertyPage({ params }: { params: Promise<{ hostId: str
                 })}
               </div>
             </div>
+            )}
 
           </div>
 

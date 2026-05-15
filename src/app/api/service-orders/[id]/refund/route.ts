@@ -206,6 +206,10 @@ export async function POST(
     });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
+    // El detalle COMPLETO queda en logs del servidor — puede contener capture
+    // IDs, mensajes internos de PayPal y otra info que NO debe llegar al
+    // browser del host (y mucho menos al huésped si por algún bug el error
+    // se propaga).
     console.error("[refund] PayPal refund failed:", msg);
     // CAPTURE_FULLY_REFUNDED: PayPal dice que ya está reembolsado, sincronizamos.
     if (msg.includes("CAPTURE_FULLY_REFUNDED")) {
@@ -225,8 +229,21 @@ export async function POST(
         warning: "PayPal reporta este capture ya reembolsado. Sincronizamos el estado local.",
       });
     }
-    // Otros errores: devolvemos el mensaje sanitizado al UI. El detalle queda en logs.
-    return NextResponse.json({ error: msg }, { status: 502 });
+    // Map a mensaje sanitizado por código conocido. NUNCA exponer `msg`
+    // crudo — puede contener IDs internos de PayPal o detalles del merchant.
+    let safeMsg = "Error procesando el reembolso en PayPal. Revisalo en tu dashboard PayPal.";
+    if (msg.includes("PERMISSION_DENIED")) {
+      safeMsg = "PayPal denegó el reembolso (las credenciales no tienen permiso sobre este capture).";
+    } else if (msg.includes("INVALID_REFUND_AMOUNT")) {
+      safeMsg = "Monto del reembolso inválido (excede lo capturado o ya fue parcialmente reembolsado).";
+    } else if (msg.includes("REFUND_TIME_LIMIT_EXCEEDED")) {
+      safeMsg = "Pasó el plazo de PayPal para reembolsos automáticos (~180 días). Procesalo manualmente.";
+    } else if (msg.includes("TRANSACTION_REFUSED") || msg.includes("INSTRUMENT_DECLINED")) {
+      safeMsg = "PayPal rechazó la operación. Probá de nuevo o procesala desde tu dashboard PayPal.";
+    } else if (msg.includes("invalid_client") || msg.includes("OAuth")) {
+      safeMsg = "Credenciales PayPal del host inválidas. Revisá Configuración → Pagos.";
+    }
+    return NextResponse.json({ error: safeMsg }, { status: 502 });
   }
 
   // PayPal devuelve status COMPLETED en refunds aprobados al instante.

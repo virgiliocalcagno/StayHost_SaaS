@@ -40,6 +40,11 @@ type OrderRow = {
   notes: string | null;
   created_at: string;
   updated_at: string;
+  // Refund (Sprint 4 polish): se completan al disparar POST /refund.
+  refunded_at: string | null;
+  refund_amount: string | number | null;
+  refund_payment_id: string | null;
+  refund_note: string | null;
 };
 
 type ItemRow = {
@@ -175,6 +180,10 @@ export async function GET(req: NextRequest) {
       notes: o.notes,
       createdAt: o.created_at,
       updatedAt: o.updated_at,
+      refundedAt: o.refunded_at,
+      refundAmount: o.refund_amount != null ? Number(o.refund_amount) : null,
+      refundPaymentId: o.refund_payment_id,
+      refundNote: o.refund_note,
       items: orderItems,
     };
   });

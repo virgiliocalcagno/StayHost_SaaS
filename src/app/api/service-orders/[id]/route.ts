@@ -4,10 +4,14 @@
  * Acciones del host sobre una orden. Allow-list de status:
  *   - paid → completed   (servicio entregado)
  *   - pending → cancelled (orden no se llegó a pagar, cancelar para limpiar)
- *   - paid → refunded    (reembolso manual; el host debe procesar la devolución
- *                         en PayPal aparte — esto solo marca el estado)
  *
- * No permite transiciones a `paid` desde el panel (eso lo hace solo el
+ * NO permite paid → refunded por acá. El refund real (que también dispara la
+ * devolución en PayPal) se hace en POST /api/service-orders/[id]/refund.
+ * Antes esta PATCH aceptaba paid → refunded como simple flag de estado, lo
+ * que dejaba la orden marcada como reembolsada SIN dinero devuelto al
+ * huésped — riesgo financiero serio si alguien lo invocaba por error.
+ *
+ * Tampoco permite transiciones a `paid` desde el panel (eso lo hace solo el
  * endpoint público de capture al cobrar PayPal).
  */
 import { NextRequest, NextResponse } from "next/server";
@@ -16,9 +20,10 @@ import { getAuthenticatedTenant } from "@/lib/supabase/server";
 const MANAGE_ROLES = new Set(["owner", "admin", "manager", "co_host"]);
 
 // Allow-list de transiciones que el host puede hacer desde el panel.
+// "refunded" se logra SOLO vía POST /refund (que llama a PayPal API).
 const ALLOWED_TRANSITIONS: Record<string, string[]> = {
   pending: ["cancelled"],
-  paid: ["completed", "refunded"],
+  paid: ["completed"],
   completed: [], // estado final
   cancelled: [], // estado final
   refunded: [],  // estado final
