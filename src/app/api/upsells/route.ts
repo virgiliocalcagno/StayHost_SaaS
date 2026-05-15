@@ -1,0 +1,359 @@
+/**
+ * /api/upsells — CRUD del catálogo de Ventas Extras del host.
+ *
+ * Tenant resuelto desde la cookie de sesión via `getAuthenticatedTenant`.
+ * RLS sobre `upsells` ya filtra cross-tenant; el chequeo `tenantId` arriba
+ * es defensa en profundidad + permite devolver 403 claro si no hay sesión.
+ *
+ * Sprint 1: solo persiste el catálogo (lo que el host puede vender). No
+ * mueve órdenes ni cobros — eso es Sprint 2+.
+ */
+import { NextRequest, NextResponse } from "next/server";
+import { getAuthenticatedTenant } from "@/lib/supabase/server";
+import type { SupabaseClient } from "@supabase/supabase-js";
+import type { Upsell, UpsellCategory } from "@/types/upsell";
+
+const VALID_CATEGORIES = new Set<UpsellCategory>([
+  "service",
+  "experience",
+  "transport",
+  "food",
+  "other",
+]);
+const isValidCategory = (v: unknown): v is UpsellCategory =>
+  typeof v === "string" && (VALID_CATEGORIES as Set<string>).has(v);
+
+// Roles que pueden gestionar el catálogo de ventas extras. Staff de bajo
+// privilegio (cleaner/maintenance) no debería ni ver este panel; el guard
+// es defensa server-side por si llega un fetch directo conociendo la URL.
+const MANAGE_ROLES = new Set(["owner", "admin", "manager", "co_host"]);
+
+async function viewerCanManage(
+  supabase: SupabaseClient,
+  userId: string | undefined,
+  tenantId: string,
+): Promise<boolean> {
+  if (!userId) return false;
+  const { data } = await supabase
+    .from("team_members")
+    .select("role")
+    .eq("auth_user_id", userId)
+    .eq("tenant_id", tenantId)
+    .maybeSingle();
+  // Sin team_member: es owner directo (no se invitó a sí mismo). OK gestiona.
+  if (!data) return true;
+  const row = data as { role: string | null };
+  return !!row.role && MANAGE_ROLES.has(row.role);
+}
+
+// Validador cross-tenant: confirma que un vendor_id pertenece al tenant.
+// Antes de Sprint 2 el Hub público va a leer estos datos — sin validación,
+// un admin podría guardar vendor_id de otro tenant y leakear su nombre.
+async function validateVendorBelongsToTenant(
+  supabase: SupabaseClient,
+  vendorId: string,
+  tenantId: string,
+): Promise<boolean> {
+  const { data } = await supabase
+    .from("service_vendors")
+    .select("id")
+    .eq("id", vendorId)
+    .eq("tenant_id", tenantId)
+    .maybeSingle();
+  return !!data;
+}
+
+async function validatePropertiesBelongToTenant(
+  supabase: SupabaseClient,
+  propertyIds: string[],
+  tenantId: string,
+): Promise<boolean> {
+  if (propertyIds.length === 0) return true;
+  const { data } = await supabase
+    .from("properties")
+    .select("id")
+    .in("id", propertyIds)
+    .eq("tenant_id", tenantId);
+  const found = ((data ?? []) as { id: string }[]).map((r) => r.id);
+  return propertyIds.every((id) => found.includes(id));
+}
+
+type UpsellRow = {
+  id: string;
+  vendor_id: string | null;
+  name: string;
+  description: string | null;
+  category: string;
+  icon_name: string;
+  price: string | number;
+  currency: string;
+  is_global: boolean;
+  linked_property_ids: unknown;
+  active: boolean;
+  sales_count: number;
+  revenue: string | number;
+  created_at: string;
+  updated_at: string;
+};
+
+function rowToUpsell(row: UpsellRow): Upsell {
+  const linked = row.linked_property_ids;
+  const linkedPropertyIds = Array.isArray(linked) ? (linked as string[]) : [];
+  return {
+    id: row.id,
+    vendorId: row.vendor_id,
+    name: row.name,
+    description: row.description,
+    category: (isValidCategory(row.category) ? row.category : "other"),
+    iconName: row.icon_name,
+    price: Number(row.price),
+    currency: row.currency,
+    isGlobal: row.is_global,
+    linkedPropertyIds,
+    active: row.active,
+    salesCount: row.sales_count,
+    revenue: Number(row.revenue),
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+// GET /api/upsells — lista el catálogo del tenant.
+// Query opcional: ?active=true, ?category=service, ?vendorId=<uuid>
+export async function GET(req: NextRequest) {
+  const { tenantId, supabase } = await getAuthenticatedTenant();
+  if (!tenantId) {
+    return NextResponse.json({ error: "No tenant linked to this user" }, { status: 403 });
+  }
+
+  let query = supabase
+    .from("upsells")
+    .select("*")
+    .eq("tenant_id", tenantId)
+    .order("active", { ascending: false })
+    .order("created_at", { ascending: false });
+
+  if (req.nextUrl.searchParams.get("active") === "true") {
+    query = query.eq("active", true);
+  }
+  const cat = req.nextUrl.searchParams.get("category");
+  if (cat && isValidCategory(cat)) query = query.eq("category", cat);
+  const vendorId = req.nextUrl.searchParams.get("vendorId");
+  if (vendorId) query = query.eq("vendor_id", vendorId);
+
+  const { data, error } = await query;
+  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+
+  return NextResponse.json({
+    upsells: ((data ?? []) as UpsellRow[]).map(rowToUpsell),
+  });
+}
+
+// POST /api/upsells — crea un nuevo upsell.
+// Required: name + category. El resto tiene defaults razonables.
+export async function POST(req: NextRequest) {
+  const { user, tenantId, supabase } = await getAuthenticatedTenant();
+  if (!tenantId) {
+    return NextResponse.json({ error: "No tenant linked to this user" }, { status: 403 });
+  }
+  if (!(await viewerCanManage(supabase, user?.id, tenantId))) {
+    return NextResponse.json({ error: "No autorizado" }, { status: 403 });
+  }
+
+  let body: Record<string, unknown>;
+  try {
+    body = (await req.json()) as Record<string, unknown>;
+  } catch {
+    return NextResponse.json({ error: "Invalid JSON" }, { status: 400 });
+  }
+
+  const name = typeof body.name === "string" ? body.name.trim() : "";
+  if (!name) {
+    return NextResponse.json({ error: "name required" }, { status: 400 });
+  }
+
+  const category = body.category;
+  if (!isValidCategory(category)) {
+    return NextResponse.json(
+      { error: `category inválida. Esperado: ${[...VALID_CATEGORIES].join(", ")}` },
+      { status: 400 },
+    );
+  }
+
+  const priceRaw = body.price;
+  const price = typeof priceRaw === "number" ? priceRaw : Number(priceRaw);
+  if (!Number.isFinite(price) || price < 0) {
+    return NextResponse.json({ error: "price inválido" }, { status: 400 });
+  }
+
+  // Validación cross-tenant: vendor_id debe pertenecer al tenant del caller.
+  // Sin esto, un admin podría guardar vendor_id de otro tenant — la FK acepta
+  // (referential integrity no chequea tenant) y eso leakea datos cuando el
+  // Hub público haga JOIN en Sprint 2.
+  let vendorId: string | null = null;
+  if (typeof body.vendorId === "string" && body.vendorId) {
+    if (!(await validateVendorBelongsToTenant(supabase, body.vendorId, tenantId))) {
+      return NextResponse.json({ error: "vendorId no pertenece al tenant" }, { status: 422 });
+    }
+    vendorId = body.vendorId;
+  }
+
+  const linkedPropertyIds = Array.isArray(body.linkedPropertyIds)
+    ? (body.linkedPropertyIds as string[]).filter((v): v is string => typeof v === "string")
+    : [];
+  if (linkedPropertyIds.length > 0) {
+    if (!(await validatePropertiesBelongToTenant(supabase, linkedPropertyIds, tenantId))) {
+      return NextResponse.json(
+        { error: "Una o más propiedades no pertenecen al tenant" },
+        { status: 422 },
+      );
+    }
+  }
+
+  const insertRow: Record<string, unknown> = {
+    tenant_id: tenantId,
+    vendor_id: vendorId,
+    name,
+    description: typeof body.description === "string" ? body.description : null,
+    category,
+    icon_name: typeof body.iconName === "string" && body.iconName ? body.iconName : "Sparkles",
+    price,
+    currency: typeof body.currency === "string" ? body.currency : "USD",
+    is_global: body.isGlobal !== false,
+    linked_property_ids: linkedPropertyIds,
+    active: body.active !== false,
+  };
+
+  const { data, error } = await supabase
+    .from("upsells")
+    .insert(insertRow as never)
+    .select("*")
+    .single();
+
+  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+  return NextResponse.json({ ok: true, upsell: rowToUpsell(data as UpsellRow) });
+}
+
+// PATCH /api/upsells?id=<uuid> — actualiza campos del upsell.
+// Allow-list: name, description, category, iconName, price, vendorId,
+// isGlobal, linkedPropertyIds, active. Stats (salesCount/revenue) NO se
+// tocan desde acá — los actualiza el flujo de órdenes (sprint próximo).
+export async function PATCH(req: NextRequest) {
+  const { user, tenantId, supabase } = await getAuthenticatedTenant();
+  if (!tenantId) {
+    return NextResponse.json({ error: "No tenant linked to this user" }, { status: 403 });
+  }
+  if (!(await viewerCanManage(supabase, user?.id, tenantId))) {
+    return NextResponse.json({ error: "No autorizado" }, { status: 403 });
+  }
+
+  const id = req.nextUrl.searchParams.get("id");
+  if (!id) return NextResponse.json({ error: "id required" }, { status: 400 });
+
+  let body: Record<string, unknown>;
+  try {
+    body = (await req.json()) as Record<string, unknown>;
+  } catch {
+    return NextResponse.json({ error: "Invalid JSON" }, { status: 400 });
+  }
+
+  const patch: Record<string, unknown> = {};
+
+  if (body.name !== undefined) {
+    const n = String(body.name).trim();
+    if (!n) return NextResponse.json({ error: "name no puede ser vacío" }, { status: 400 });
+    patch.name = n;
+  }
+  if (body.description !== undefined) {
+    // Coerción defensiva: si llega un objeto/array, lo descartamos. Sin esto
+    // Postgres rechaza con 500 genérico cuando el tipo no es text.
+    patch.description = typeof body.description === "string" ? body.description : null;
+  }
+  if (body.category !== undefined) {
+    if (!isValidCategory(body.category)) {
+      return NextResponse.json({ error: "category inválida" }, { status: 400 });
+    }
+    patch.category = body.category;
+  }
+  if (body.iconName !== undefined) {
+    patch.icon_name = typeof body.iconName === "string" ? body.iconName : "Sparkles";
+  }
+  if (body.price !== undefined) {
+    const p = typeof body.price === "number" ? body.price : Number(body.price);
+    if (!Number.isFinite(p) || p < 0) {
+      return NextResponse.json({ error: "price inválido" }, { status: 400 });
+    }
+    patch.price = p;
+  }
+  // Validación cross-tenant en update también (caller podría meter vendor
+  // de otro tenant ahora que el upsell ya existe).
+  if (body.vendorId !== undefined) {
+    if (body.vendorId === null || body.vendorId === "") {
+      patch.vendor_id = null;
+    } else if (typeof body.vendorId === "string") {
+      if (!(await validateVendorBelongsToTenant(supabase, body.vendorId, tenantId))) {
+        return NextResponse.json(
+          { error: "vendorId no pertenece al tenant" },
+          { status: 422 },
+        );
+      }
+      patch.vendor_id = body.vendorId;
+    }
+  }
+  if (body.isGlobal !== undefined) patch.is_global = !!body.isGlobal;
+  if (body.linkedPropertyIds !== undefined) {
+    const ids = Array.isArray(body.linkedPropertyIds)
+      ? (body.linkedPropertyIds as string[]).filter((v): v is string => typeof v === "string")
+      : [];
+    if (ids.length > 0 && !(await validatePropertiesBelongToTenant(supabase, ids, tenantId))) {
+      return NextResponse.json(
+        { error: "Una o más propiedades no pertenecen al tenant" },
+        { status: 422 },
+      );
+    }
+    patch.linked_property_ids = ids;
+  }
+  if (body.active !== undefined) patch.active = !!body.active;
+
+  if (Object.keys(patch).length === 0) {
+    return NextResponse.json({ error: "No updatable fields" }, { status: 400 });
+  }
+
+  // Defensa en profundidad: filtramos por `tenant_id` además del id. RLS ya
+  // lo cubre, pero si en el futuro este endpoint se reescribe con
+  // supabaseAdmin (patrón pendiente de refactor), este filtro lo blinda.
+  const { error, count } = await supabase
+    .from("upsells")
+    .update(patch as never, { count: "exact" })
+    .eq("id", id)
+    .eq("tenant_id", tenantId);
+
+  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+  if (!count) return NextResponse.json({ error: "Not found" }, { status: 404 });
+  return NextResponse.json({ ok: true });
+}
+
+// DELETE /api/upsells?id=<uuid>
+export async function DELETE(req: NextRequest) {
+  const { user, tenantId, supabase } = await getAuthenticatedTenant();
+  if (!tenantId) {
+    return NextResponse.json({ error: "No tenant linked to this user" }, { status: 403 });
+  }
+  if (!(await viewerCanManage(supabase, user?.id, tenantId))) {
+    return NextResponse.json({ error: "No autorizado" }, { status: 403 });
+  }
+
+  const id = req.nextUrl.searchParams.get("id");
+  if (!id) return NextResponse.json({ error: "id required" }, { status: 400 });
+
+  // Defensa en profundidad: doble filtro (RLS + tenant_id explícito).
+  const { error, count } = await supabase
+    .from("upsells")
+    .delete({ count: "exact" })
+    .eq("id", id)
+    .eq("tenant_id", tenantId);
+
+  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+  if (!count) return NextResponse.json({ error: "Not found" }, { status: 404 });
+  return NextResponse.json({ ok: true });
+}
