@@ -348,7 +348,8 @@ export default function UpsellsPanel() {
         category: upsellForm.category,
         iconName: upsellForm.iconName,
         heroPhoto: upsellForm.heroPhoto,
-        galleryPhotos: upsellForm.galleryPhotos,
+        // Filtrar slots vacíos (el host agregó un placeholder pero no subió).
+        galleryPhotos: upsellForm.galleryPhotos.filter((u) => !!u),
         pricingModel: upsellForm.pricingModel,
         minQuantity: Number(upsellForm.minQuantity) || 1,
         maxQuantity: upsellForm.maxQuantity ? Number(upsellForm.maxQuantity) : null,
@@ -640,6 +641,28 @@ export default function UpsellsPanel() {
                         >
                           {upsell.active ? "Activo" : "Inactivo"}
                         </Badge>
+                        {/* Mini-galería overlay abajo a la izquierda: 4 thumbs
+                            máx + "+N" si hay más. Sirve como indicador
+                            visual de que el producto tiene fotos extras. */}
+                        {upsell.galleryPhotos.length > 0 && (
+                          <div className="absolute bottom-2 left-2 flex gap-1">
+                            {upsell.galleryPhotos.slice(0, 4).map((url, i) => (
+                              // eslint-disable-next-line @next/next/no-img-element
+                              <img
+                                key={`${upsell.id}-thumb-${i}`}
+                                src={url}
+                                alt=""
+                                className="h-8 w-8 object-cover rounded border-2 border-white shadow"
+                                loading="lazy"
+                              />
+                            ))}
+                            {upsell.galleryPhotos.length > 4 && (
+                              <div className="h-8 w-8 rounded border-2 border-white shadow bg-black/70 text-white text-xs font-bold flex items-center justify-center">
+                                +{upsell.galleryPhotos.length - 4}
+                              </div>
+                            )}
+                          </div>
+                        )}
                       </div>
                     )}
                     <CardContent className="p-6">
@@ -943,17 +966,71 @@ export default function UpsellsPanel() {
           </SheetHeader>
 
           <div className="space-y-6">
-            {/* Foto principal — primero porque visualmente ancla el producto */}
+            {/* Foto principal + galería. La hero se ve grande en cards y Hub;
+                las de galería son adicionales (detalle, drone shots, etc.) */}
             {tenantId && (
-              <div className="space-y-2">
-                <Label>Foto principal</Label>
-                <PhotoUploader
-                  pathPrefix={`${tenantId}/upsell/${editingUpsellId ?? tempUpsellId}`}
-                  value={upsellForm.heroPhoto}
-                  onChange={(url) => setUpsellForm({ ...upsellForm, heroPhoto: url })}
-                  label="Subir foto"
-                  hint="Recomendado: foto del catamarán, buggy, etc. Se redimensiona y comprime automático."
-                />
+              <div className="space-y-3">
+                <div className="space-y-2">
+                  <Label>Foto principal</Label>
+                  <PhotoUploader
+                    pathPrefix={`${tenantId}/upsell/${editingUpsellId ?? tempUpsellId}`}
+                    value={upsellForm.heroPhoto}
+                    onChange={(url) => setUpsellForm({ ...upsellForm, heroPhoto: url })}
+                    label="Subir foto"
+                    hint="Foto principal del catamarán, buggy, etc."
+                  />
+                </div>
+
+                {/* Galería adicional — hasta 5 fotos extras. Cada slot es
+                    un PhotoUploader independiente. Agregar/quitar slot es
+                    operación sobre el array galleryPhotos. */}
+                <div className="space-y-2">
+                  <Label>
+                    Galería adicional ({upsellForm.galleryPhotos.length}/5)
+                  </Label>
+                  <div className="flex flex-wrap gap-3">
+                    {upsellForm.galleryPhotos.map((url, idx) => (
+                      <PhotoUploader
+                        key={`gallery-${idx}`}
+                        pathPrefix={`${tenantId}/upsell/${editingUpsellId ?? tempUpsellId}`}
+                        value={url || null}
+                        onChange={(newUrl) => {
+                          setUpsellForm((prev) => {
+                            const next = [...prev.galleryPhotos];
+                            if (newUrl) {
+                              next[idx] = newUrl;
+                            } else {
+                              // Foto removida → quitar el slot del array
+                              next.splice(idx, 1);
+                            }
+                            return { ...prev, galleryPhotos: next };
+                          });
+                        }}
+                        label={`Foto ${idx + 2}`}
+                      />
+                    ))}
+                    {upsellForm.galleryPhotos.length < 5 && (
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setUpsellForm({
+                            ...upsellForm,
+                            galleryPhotos: [...upsellForm.galleryPhotos, ""],
+                          })
+                        }
+                        className="h-32 w-32 rounded-xl border-2 border-dashed bg-muted/30 hover:bg-muted/60 transition-colors flex flex-col items-center justify-center gap-1 text-muted-foreground"
+                      >
+                        <span className="text-2xl">+</span>
+                        <span className="text-[10px] font-medium">Agregar foto</span>
+                      </button>
+                    )}
+                  </div>
+                  {upsellForm.galleryPhotos.length === 0 && (
+                    <p className="text-[11px] text-muted-foreground">
+                      Opcional. Detalles, fotos drone, ambiente, etc.
+                    </p>
+                  )}
+                </div>
               </div>
             )}
 
