@@ -11,7 +11,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getAuthenticatedTenant } from "@/lib/supabase/server";
 import type { SupabaseClient } from "@supabase/supabase-js";
-import type { Upsell, UpsellCategory } from "@/types/upsell";
+import type { Upsell, UpsellCategory, PricingModel } from "@/types/upsell";
 
 const VALID_CATEGORIES = new Set<UpsellCategory>([
   "service",
@@ -22,6 +22,16 @@ const VALID_CATEGORIES = new Set<UpsellCategory>([
 ]);
 const isValidCategory = (v: unknown): v is UpsellCategory =>
   typeof v === "string" && (VALID_CATEGORIES as Set<string>).has(v);
+
+const VALID_PRICING_MODELS = new Set<PricingModel>([
+  "fixed",
+  "per_person",
+  "per_unit",
+  "per_kg",
+  "per_night",
+]);
+const isValidPricingModel = (v: unknown): v is PricingModel =>
+  typeof v === "string" && (VALID_PRICING_MODELS as Set<string>).has(v);
 
 // Roles que pueden gestionar el catálogo de ventas extras. Staff de bajo
 // privilegio (cleaner/maintenance) no debería ni ver este panel; el guard
@@ -49,13 +59,15 @@ async function viewerCanManage(
 // Validador cross-tenant: confirma que un vendor_id pertenece al tenant.
 // Antes de Sprint 2 el Hub público va a leer estos datos — sin validación,
 // un admin podría guardar vendor_id de otro tenant y leakear su nombre.
+// Sprint 1.5: ahora valida contra upsell_vendors (no service_vendors), que
+// es el directorio correcto para proveedores de tienda.
 async function validateVendorBelongsToTenant(
   supabase: SupabaseClient,
   vendorId: string,
   tenantId: string,
 ): Promise<boolean> {
   const { data } = await supabase
-    .from("service_vendors")
+    .from("upsell_vendors")
     .select("id")
     .eq("id", vendorId)
     .eq("tenant_id", tenantId)
@@ -87,6 +99,11 @@ type UpsellRow = {
   icon_name: string;
   price: string | number;
   currency: string;
+  pricing_model: string;
+  min_quantity: number;
+  max_quantity: number | null;
+  capacity_per_slot: number | null;
+  cutoff_hours: number;
   is_global: boolean;
   linked_property_ids: unknown;
   active: boolean;
@@ -108,6 +125,11 @@ function rowToUpsell(row: UpsellRow): Upsell {
     iconName: row.icon_name,
     price: Number(row.price),
     currency: row.currency,
+    pricingModel: isValidPricingModel(row.pricing_model) ? row.pricing_model : "fixed",
+    minQuantity: row.min_quantity,
+    maxQuantity: row.max_quantity,
+    capacityPerSlot: row.capacity_per_slot,
+    cutoffHours: row.cutoff_hours,
     isGlobal: row.is_global,
     linkedPropertyIds,
     active: row.active,
@@ -210,6 +232,43 @@ export async function POST(req: NextRequest) {
     }
   }
 
+  // Pricing model + capacidad. Defaults razonables si no vienen en el body:
+  // fixed/1/null/null/0 = comportamiento legacy compatible con Sprint 1.
+  const pricingModel: PricingModel = isValidPricingModel(body.pricingModel)
+    ? body.pricingModel
+    : "fixed";
+
+  const minQuantity = Number(body.minQuantity ?? 1);
+  if (!Number.isInteger(minQuantity) || minQuantity < 1) {
+    return NextResponse.json({ error: "minQuantity debe ser entero >= 1" }, { status: 400 });
+  }
+  let maxQuantity: number | null = null;
+  if (body.maxQuantity !== undefined && body.maxQuantity !== null && body.maxQuantity !== "") {
+    const m = Number(body.maxQuantity);
+    if (!Number.isInteger(m) || m < minQuantity) {
+      return NextResponse.json(
+        { error: "maxQuantity debe ser entero >= minQuantity" },
+        { status: 400 },
+      );
+    }
+    maxQuantity = m;
+  }
+  let capacityPerSlot: number | null = null;
+  if (body.capacityPerSlot !== undefined && body.capacityPerSlot !== null && body.capacityPerSlot !== "") {
+    const c = Number(body.capacityPerSlot);
+    if (!Number.isInteger(c) || c < 1) {
+      return NextResponse.json(
+        { error: "capacityPerSlot debe ser entero >= 1" },
+        { status: 400 },
+      );
+    }
+    capacityPerSlot = c;
+  }
+  const cutoffHours = Number(body.cutoffHours ?? 0);
+  if (!Number.isInteger(cutoffHours) || cutoffHours < 0) {
+    return NextResponse.json({ error: "cutoffHours debe ser entero >= 0" }, { status: 400 });
+  }
+
   const insertRow: Record<string, unknown> = {
     tenant_id: tenantId,
     vendor_id: vendorId,
@@ -219,6 +278,11 @@ export async function POST(req: NextRequest) {
     icon_name: typeof body.iconName === "string" && body.iconName ? body.iconName : "Sparkles",
     price,
     currency: typeof body.currency === "string" ? body.currency : "USD",
+    pricing_model: pricingModel,
+    min_quantity: minQuantity,
+    max_quantity: maxQuantity,
+    capacity_per_slot: capacityPerSlot,
+    cutoff_hours: cutoffHours,
     is_global: body.isGlobal !== false,
     linked_property_ids: linkedPropertyIds,
     active: body.active !== false,
@@ -299,6 +363,82 @@ export async function PATCH(req: NextRequest) {
       }
       patch.vendor_id = body.vendorId;
     }
+  }
+  // Pricing model + capacidad. La restricción cross-column
+  // max_quantity >= min_quantity la enforce el CHECK constraint en BD, pero
+  // si solo viene uno de los dos en el patch, prefetcheamos el otro para
+  // devolver 400 con mensaje legible en lugar de un 500 genérico de Postgres.
+  if (body.pricingModel !== undefined) {
+    if (!isValidPricingModel(body.pricingModel)) {
+      return NextResponse.json({ error: "pricingModel inválido" }, { status: 400 });
+    }
+    patch.pricing_model = body.pricingModel;
+  }
+
+  const hasMinPatch = body.minQuantity !== undefined;
+  const hasMaxPatch = body.maxQuantity !== undefined;
+
+  if (hasMinPatch) {
+    const m = Number(body.minQuantity);
+    if (!Number.isInteger(m) || m < 1) {
+      return NextResponse.json({ error: "minQuantity inválido" }, { status: 400 });
+    }
+    patch.min_quantity = m;
+  }
+  if (hasMaxPatch) {
+    if (body.maxQuantity === null || body.maxQuantity === "") {
+      patch.max_quantity = null;
+    } else {
+      const m = Number(body.maxQuantity);
+      if (!Number.isInteger(m) || m < 1) {
+        return NextResponse.json({ error: "maxQuantity inválido" }, { status: 400 });
+      }
+      patch.max_quantity = m;
+    }
+  }
+
+  // Si viene solo uno de los dos, leemos el valor existente del row para
+  // validar el rango antes de mandar el UPDATE — sin esto el CHECK explota
+  // como 500 genérico al usuario.
+  if ((hasMinPatch || hasMaxPatch) && !(hasMinPatch && hasMaxPatch)) {
+    const { data: existing } = await supabase
+      .from("upsells")
+      .select("min_quantity, max_quantity")
+      .eq("id", id)
+      .eq("tenant_id", tenantId)
+      .maybeSingle();
+    const row = existing as { min_quantity: number; max_quantity: number | null } | null;
+    if (row) {
+      const finalMin = (patch.min_quantity as number | undefined) ?? row.min_quantity;
+      const finalMax =
+        patch.max_quantity === null
+          ? null
+          : ((patch.max_quantity as number | undefined) ?? row.max_quantity);
+      if (finalMax !== null && finalMax < finalMin) {
+        return NextResponse.json(
+          { error: `maxQuantity (${finalMax}) no puede ser menor que minQuantity (${finalMin})` },
+          { status: 400 },
+        );
+      }
+    }
+  }
+  if (body.capacityPerSlot !== undefined) {
+    if (body.capacityPerSlot === null || body.capacityPerSlot === "") {
+      patch.capacity_per_slot = null;
+    } else {
+      const c = Number(body.capacityPerSlot);
+      if (!Number.isInteger(c) || c < 1) {
+        return NextResponse.json({ error: "capacityPerSlot inválido" }, { status: 400 });
+      }
+      patch.capacity_per_slot = c;
+    }
+  }
+  if (body.cutoffHours !== undefined) {
+    const c = Number(body.cutoffHours);
+    if (!Number.isInteger(c) || c < 0) {
+      return NextResponse.json({ error: "cutoffHours inválido" }, { status: 400 });
+    }
+    patch.cutoff_hours = c;
   }
   if (body.isGlobal !== undefined) patch.is_global = !!body.isGlobal;
   if (body.linkedPropertyIds !== undefined) {

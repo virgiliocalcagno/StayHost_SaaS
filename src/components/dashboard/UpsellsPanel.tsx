@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
 import {
   Tabs,
   TabsContent,
@@ -48,11 +49,15 @@ import {
   Store,
   Palmtree,
   Loader2,
+  Users as UsersIcon,
+  Phone,
+  Star,
 } from "lucide-react";
 import { formatMoney } from "@/lib/money/format";
-import type { Upsell, UpsellCategory } from "@/types/upsell";
-import { UPSELL_DEFAULT_ICON } from "@/types/upsell";
-import type { ServiceVendor } from "@/types/vendor";
+import type { Upsell, UpsellCategory, PricingModel } from "@/types/upsell";
+import { PRICING_MODEL_LABELS, PRICING_MODEL_SUFFIX, UPSELL_DEFAULT_ICON } from "@/types/upsell";
+import type { UpsellVendor, UpsellVendorCategory, PaymentTerms } from "@/types/upsellVendor";
+import { UPSELL_VENDOR_CATEGORY_LABELS, PAYMENT_TERMS_LABELS } from "@/types/upsellVendor";
 
 interface PropertyLite {
   id: string;
@@ -70,47 +75,88 @@ const iconsMap: Record<string, React.ElementType> = {
   Package,
 };
 
-// State del form. Mantiene los campos editables del Upsell + flags para
-// distinguir create vs edit. Currency lo dejo siempre USD (convención del
-// SaaS — solo PayoutsPanel es multi-moneda).
-interface FormState {
+// ── Form state types ─────────────────────────────────────────────────────────
+interface UpsellFormState {
   name: string;
   description: string;
   price: number;
   category: UpsellCategory;
   iconName: string;
+  pricingModel: PricingModel;
+  minQuantity: number;
+  maxQuantity: string;       // string para permitir vacío en el input
+  capacityPerSlot: string;
+  cutoffHours: number;
   isGlobal: boolean;
   linkedPropertyIds: string[];
   vendorId: string | null;
   active: boolean;
 }
 
-const emptyForm: FormState = {
+const emptyUpsellForm: UpsellFormState = {
   name: "",
   description: "",
   price: 0,
   category: "service",
   iconName: "Sparkles",
+  pricingModel: "fixed",
+  minQuantity: 1,
+  maxQuantity: "",
+  capacityPerSlot: "",
+  cutoffHours: 0,
   isGlobal: true,
   linkedPropertyIds: [],
   vendorId: null,
   active: true,
 };
 
+interface VendorFormState {
+  name: string;
+  contactName: string;
+  phone: string;
+  email: string;
+  rncCedula: string;
+  category: UpsellVendorCategory;
+  description: string;
+  languages: string[];
+  commissionPercent: number;
+  paymentTerms: PaymentTerms;
+  notes: string;
+  active: boolean;
+}
+
+const emptyVendorForm: VendorFormState = {
+  name: "",
+  contactName: "",
+  phone: "",
+  email: "",
+  rncCedula: "",
+  category: "excursion",
+  description: "",
+  languages: [],
+  commissionPercent: 0,
+  paymentTerms: "on_completion",
+  notes: "",
+  active: true,
+};
+
 export default function UpsellsPanel() {
   const [upsells, setUpsells] = useState<Upsell[]>([]);
-  const [vendors, setVendors] = useState<ServiceVendor[]>([]);
+  const [vendors, setVendors] = useState<UpsellVendor[]>([]);
   const [properties, setProperties] = useState<PropertyLite[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
 
-  const [isSheetOpen, setIsSheetOpen] = useState(false);
-  const [editingId, setEditingId] = useState<string | null>(null);
-  const [formData, setFormData] = useState<FormState>(emptyForm);
+  // Upsell sheet
+  const [upsellSheetOpen, setUpsellSheetOpen] = useState(false);
+  const [editingUpsellId, setEditingUpsellId] = useState<string | null>(null);
+  const [upsellForm, setUpsellForm] = useState<UpsellFormState>(emptyUpsellForm);
 
-  // Carga inicial: catálogo + vendors + properties. En paralelo para no
-  // bloquear el render. Si vendors o properties fallan, el panel sigue
-  // funcionando — el usuario ve "Sin proveedor" en el dropdown.
+  // Vendor sheet
+  const [vendorSheetOpen, setVendorSheetOpen] = useState(false);
+  const [editingVendorId, setEditingVendorId] = useState<string | null>(null);
+  const [vendorForm, setVendorForm] = useState<VendorFormState>(emptyVendorForm);
+
   const load = useCallback(async () => {
     setLoading(true);
     try {
@@ -118,7 +164,7 @@ export default function UpsellsPanel() {
         fetch("/api/upsells", { cache: "no-store", credentials: "include" })
           .then((r) => (r.ok ? r.json() : null))
           .catch(() => null),
-        fetch("/api/vendors?active=true", { cache: "no-store", credentials: "include" })
+        fetch("/api/upsell-vendors", { cache: "no-store", credentials: "include" })
           .then((r) => (r.ok ? r.json() : null))
           .catch(() => null),
         fetch("/api/properties", { cache: "no-store", credentials: "include" })
@@ -145,16 +191,13 @@ export default function UpsellsPanel() {
     void load();
   }, [load]);
 
-  // Stats agregados a partir del catálogo real. Sales/revenue arrancan en 0
-  // hasta que conectemos el flujo de órdenes en sprints siguientes.
   const stats = useMemo(() => {
-    const activeUpsells = upsells.filter((u) => u.active);
     const totalRevenue = upsells.reduce((s, u) => s + u.revenue, 0);
     const totalSales = upsells.reduce((s, u) => s + u.salesCount, 0);
     return {
       revenue: totalRevenue,
       salesCount: totalSales,
-      activeCount: activeUpsells.length,
+      activeCount: upsells.filter((u) => u.active).length,
     };
   }, [upsells]);
 
@@ -165,32 +208,40 @@ export default function UpsellsPanel() {
 
   const vendorName = (vendorId: string | null): string | null => {
     if (!vendorId) return null;
-    return vendors.find((v) => v.id === vendorId)?.name ?? null;
+    const v = vendors.find((x) => x.id === vendorId);
+    if (!v) return null;
+    return v.displayName ?? v.name;
   };
 
-  const handleAddNew = () => {
-    setEditingId(null);
-    setFormData(emptyForm);
-    setIsSheetOpen(true);
+  // ── Upsell handlers ───────────────────────────────────────────────────────
+  const handleAddUpsell = () => {
+    setEditingUpsellId(null);
+    setUpsellForm(emptyUpsellForm);
+    setUpsellSheetOpen(true);
   };
 
-  const handleEdit = (u: Upsell) => {
-    setEditingId(u.id);
-    setFormData({
+  const handleEditUpsell = (u: Upsell) => {
+    setEditingUpsellId(u.id);
+    setUpsellForm({
       name: u.name,
       description: u.description ?? "",
       price: u.price,
       category: u.category,
       iconName: u.iconName,
+      pricingModel: u.pricingModel,
+      minQuantity: u.minQuantity,
+      maxQuantity: u.maxQuantity != null ? String(u.maxQuantity) : "",
+      capacityPerSlot: u.capacityPerSlot != null ? String(u.capacityPerSlot) : "",
+      cutoffHours: u.cutoffHours,
       isGlobal: u.isGlobal,
       linkedPropertyIds: u.linkedPropertyIds,
       vendorId: u.vendorId,
       active: u.active,
     });
-    setIsSheetOpen(true);
+    setUpsellSheetOpen(true);
   };
 
-  const handleDelete = async (id: string) => {
+  const handleDeleteUpsell = async (id: string) => {
     if (!confirm("¿Eliminar este producto del catálogo?")) return;
     const res = await fetch(`/api/upsells?id=${id}`, {
       method: "DELETE",
@@ -201,27 +252,30 @@ export default function UpsellsPanel() {
     }
   };
 
-  // Save: POST si crea, PATCH si edita. Después de OK refrescamos el item
-  // (no toda la lista) para que la UI quede consistente sin doble fetch.
-  const handleSave = async () => {
-    if (saving) return; // guard contra doble click si la red está lenta
-    if (!formData.name.trim()) return;
+  const handleSaveUpsell = async () => {
+    if (saving) return;
+    if (!upsellForm.name.trim()) return;
     setSaving(true);
     try {
       const payload = {
-        name: formData.name.trim(),
-        description: formData.description || null,
-        price: Number(formData.price) || 0,
-        category: formData.category,
-        iconName: formData.iconName,
-        isGlobal: formData.isGlobal,
-        linkedPropertyIds: formData.isGlobal ? [] : formData.linkedPropertyIds,
-        vendorId: formData.vendorId,
-        active: formData.active,
+        name: upsellForm.name.trim(),
+        description: upsellForm.description || null,
+        price: Number(upsellForm.price) || 0,
+        category: upsellForm.category,
+        iconName: upsellForm.iconName,
+        pricingModel: upsellForm.pricingModel,
+        minQuantity: Number(upsellForm.minQuantity) || 1,
+        maxQuantity: upsellForm.maxQuantity ? Number(upsellForm.maxQuantity) : null,
+        capacityPerSlot: upsellForm.capacityPerSlot ? Number(upsellForm.capacityPerSlot) : null,
+        cutoffHours: Number(upsellForm.cutoffHours) || 0,
+        isGlobal: upsellForm.isGlobal,
+        linkedPropertyIds: upsellForm.isGlobal ? [] : upsellForm.linkedPropertyIds,
+        vendorId: upsellForm.vendorId,
+        active: upsellForm.active,
       };
 
-      if (editingId) {
-        const res = await fetch(`/api/upsells?id=${editingId}`, {
+      if (editingUpsellId) {
+        const res = await fetch(`/api/upsells?id=${editingUpsellId}`, {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
           credentials: "include",
@@ -232,25 +286,8 @@ export default function UpsellsPanel() {
           alert(j.error ?? "No se pudo guardar");
           return;
         }
-        // Aplico el patch local para no esperar otro fetch.
-        setUpsells((prev) =>
-          prev.map((u) =>
-            u.id === editingId
-              ? {
-                  ...u,
-                  name: payload.name,
-                  description: payload.description,
-                  price: payload.price,
-                  category: payload.category,
-                  iconName: payload.iconName,
-                  isGlobal: payload.isGlobal,
-                  linkedPropertyIds: payload.linkedPropertyIds,
-                  vendorId: payload.vendorId,
-                  active: payload.active,
-                }
-              : u,
-          ),
-        );
+        // Refresh full list para tener stats correctos y updated_at.
+        await load();
       } else {
         const res = await fetch("/api/upsells", {
           method: "POST",
@@ -266,24 +303,130 @@ export default function UpsellsPanel() {
         const { upsell } = (await res.json()) as { upsell: Upsell };
         setUpsells((prev) => [upsell, ...prev]);
       }
-      setIsSheetOpen(false);
+      setUpsellSheetOpen(false);
     } finally {
       setSaving(false);
     }
   };
 
-  // Si cambia la categoría en el form y el icono actual es genérico (Sparkles)
-  // o coincidía con el default de la categoría anterior, sugerimos el default
-  // de la nueva categoría — pero sin pisar elecciones explícitas del usuario.
-  const updateCategory = (next: UpsellCategory) => {
-    setFormData((prev) => {
-      const wasDefault = prev.iconName === UPSELL_DEFAULT_ICON[prev.category];
-      return {
-        ...prev,
-        category: next,
-        iconName: wasDefault ? UPSELL_DEFAULT_ICON[next] : prev.iconName,
-      };
+  // ── Vendor handlers ───────────────────────────────────────────────────────
+  const handleAddVendor = () => {
+    setEditingVendorId(null);
+    setVendorForm(emptyVendorForm);
+    setVendorSheetOpen(true);
+  };
+
+  const handleEditVendor = (v: UpsellVendor) => {
+    setEditingVendorId(v.id);
+    setVendorForm({
+      name: v.name,
+      contactName: v.contactName ?? "",
+      phone: v.phone ?? "",
+      email: v.email ?? "",
+      rncCedula: v.rncCedula ?? "",
+      category: v.category,
+      description: v.description ?? "",
+      languages: v.languages,
+      commissionPercent: v.commissionPercent,
+      paymentTerms: v.paymentTerms,
+      notes: v.notes ?? "",
+      active: v.active,
     });
+    setVendorSheetOpen(true);
+  };
+
+  const handleDeleteVendor = async (id: string) => {
+    const linkedUpsells = upsells.filter((u) => u.vendorId === id);
+    const linkedNames = linkedUpsells.map((u) => u.name).join(", ");
+    const msg = linkedUpsells.length > 0
+      ? `Este proveedor está vinculado a ${linkedUpsells.length} producto(s): ${linkedNames}.\n\nSi continuás, esos productos quedan sin proveedor asignado (los entregás vos o reasignás después).\n\n¿Eliminar?`
+      : "¿Eliminar este proveedor?";
+    if (!confirm(msg)) return;
+    const res = await fetch(`/api/upsell-vendors?id=${id}`, {
+      method: "DELETE",
+      credentials: "include",
+    });
+    if (res.ok) {
+      setVendors((prev) => prev.filter((v) => v.id !== id));
+      // FK on delete set null: refrescar upsells para reflejar vendor_id=null
+      await load();
+    }
+  };
+
+  const handleSaveVendor = async () => {
+    if (saving) return;
+    if (!vendorForm.name.trim()) return;
+    setSaving(true);
+    try {
+      const payload = {
+        name: vendorForm.name.trim(),
+        contactName: vendorForm.contactName || null,
+        phone: vendorForm.phone || null,
+        email: vendorForm.email || null,
+        rncCedula: vendorForm.rncCedula || null,
+        category: vendorForm.category,
+        description: vendorForm.description || null,
+        languages: vendorForm.languages,
+        commissionPercent: Number(vendorForm.commissionPercent) || 0,
+        paymentTerms: vendorForm.paymentTerms,
+        notes: vendorForm.notes || null,
+        active: vendorForm.active,
+      };
+
+      if (editingVendorId) {
+        const res = await fetch(`/api/upsell-vendors?id=${editingVendorId}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          credentials: "include",
+          body: JSON.stringify(payload),
+        });
+        if (!res.ok) {
+          const j = await res.json().catch(() => ({}));
+          alert(j.error ?? "No se pudo guardar");
+          return;
+        }
+        await load();
+      } else {
+        const res = await fetch("/api/upsell-vendors", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          credentials: "include",
+          body: JSON.stringify(payload),
+        });
+        if (!res.ok) {
+          const j = await res.json().catch(() => ({}));
+          alert(j.error ?? "No se pudo crear");
+          return;
+        }
+        const { vendor } = (await res.json()) as { vendor: UpsellVendor };
+        setVendors((prev) => [vendor, ...prev]);
+      }
+      setVendorSheetOpen(false);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  // Cambio de categoría sugiere icono default si el actual coincidía.
+  const updateUpsellCategory = (next: UpsellCategory) => {
+    setUpsellForm((prev) => ({
+      ...prev,
+      category: next,
+      iconName:
+        prev.iconName === UPSELL_DEFAULT_ICON[prev.category]
+          ? UPSELL_DEFAULT_ICON[next]
+          : prev.iconName,
+    }));
+  };
+
+  // Sufijo del precio según pricing model (ej "/ persona", "/ kg")
+  const priceSuffix = (pm: PricingModel) => PRICING_MODEL_SUFFIX[pm];
+
+  // Calculadora de ejemplo para mostrar al host cómo se cobra
+  const priceExample = (price: number, pm: PricingModel, qty: number): string => {
+    if (pm === "fixed") return formatMoney(price, "USD");
+    const total = price * qty;
+    return `${formatMoney(price, "USD")} × ${qty} = ${formatMoney(total, "USD")}`;
   };
 
   return (
@@ -296,13 +439,15 @@ export default function UpsellsPanel() {
       </div>
 
       <Tabs defaultValue="inventory" className="w-full">
-        <TabsList className="grid w-full grid-cols-2 md:w-[400px]">
-          <TabsTrigger value="inventory">Inventario de Servicios</TabsTrigger>
-          <TabsTrigger value="hub-config">Configuración Host Hub</TabsTrigger>
+        <TabsList className="grid w-full grid-cols-3 md:w-[600px]">
+          <TabsTrigger value="inventory">Productos</TabsTrigger>
+          <TabsTrigger value="vendors">Proveedores</TabsTrigger>
+          <TabsTrigger value="hub-config">Hub público</TabsTrigger>
         </TabsList>
 
+        {/* ─── TAB 1: PRODUCTOS ─────────────────────────────────────────── */}
         <TabsContent value="inventory" className="space-y-6 mt-6">
-          {/* Stats Bar */}
+          {/* Stats */}
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
             <Card>
               <CardContent className="p-4 flex items-center gap-4">
@@ -352,13 +497,12 @@ export default function UpsellsPanel() {
 
           <div className="flex justify-between items-center flex-wrap gap-4">
             <h3 className="text-lg font-semibold">Tus Productos y Experiencias</h3>
-            <Button onClick={handleAddNew} className="gradient-gold text-primary-foreground gap-2">
+            <Button onClick={handleAddUpsell} className="gradient-gold text-primary-foreground gap-2">
               <Plus className="h-4 w-4" />
               Nuevo producto
             </Button>
           </div>
 
-          {/* Products Grid */}
           {loading ? (
             <Card>
               <CardContent className="p-12 flex items-center justify-center text-muted-foreground">
@@ -386,21 +530,36 @@ export default function UpsellsPanel() {
                         {upsell.description || <span className="italic opacity-60">Sin descripción</span>}
                       </p>
 
-                      <div className="flex items-center justify-between mb-2">
-                        <div>
-                          <span className="text-2xl font-bold">{formatMoney(upsell.price, "USD")}</span>
-                          <span className="text-muted-foreground text-sm"> / unidad</span>
-                        </div>
+                      <div className="flex items-baseline gap-1 mb-2">
+                        <span className="text-2xl font-bold">{formatMoney(upsell.price, "USD")}</span>
+                        {priceSuffix(upsell.pricingModel) && (
+                          <span className="text-muted-foreground text-xs">/ {priceSuffix(upsell.pricingModel)}</span>
+                        )}
                       </div>
+
+                      {/* Quantity / capacity hints */}
+                      {(upsell.minQuantity > 1 || upsell.maxQuantity || upsell.capacityPerSlot || upsell.cutoffHours > 0) && (
+                        <div className="text-[11px] text-muted-foreground mb-3 space-y-0.5">
+                          {(upsell.minQuantity > 1 || upsell.maxQuantity) && (
+                            <p>
+                              {upsell.minQuantity > 1 && `Mín ${upsell.minQuantity}`}
+                              {upsell.minQuantity > 1 && upsell.maxQuantity && " · "}
+                              {upsell.maxQuantity && `Máx ${upsell.maxQuantity}`}
+                            </p>
+                          )}
+                          {upsell.capacityPerSlot && <p>Capacidad: {upsell.capacityPerSlot}/día</p>}
+                          {upsell.cutoffHours > 0 && <p>Cierra {upsell.cutoffHours}h antes</p>}
+                        </div>
+                      )}
 
                       <div className="flex gap-2 mb-4 flex-wrap">
                         {upsell.isGlobal ? (
                           <Badge variant="outline" className="text-xs bg-muted/50 border-primary/20 text-primary">
-                            <Store className="h-3 w-3 mr-1" /> Venta Global
+                            <Store className="h-3 w-3 mr-1" /> Hub público
                           </Badge>
                         ) : (
                           <Badge variant="outline" className="text-xs bg-muted/50">
-                            <MapPin className="h-3 w-3 mr-1" /> {upsell.linkedPropertyIds.length} propiedad{upsell.linkedPropertyIds.length === 1 ? "" : "es"}
+                            <MapPin className="h-3 w-3 mr-1" /> {upsell.linkedPropertyIds.length} prop.
                           </Badge>
                         )}
                         <Badge variant="secondary" className="text-xs uppercase">{upsell.category}</Badge>
@@ -423,11 +582,11 @@ export default function UpsellsPanel() {
                       </div>
 
                       <div className="flex gap-2 mt-4 pt-4 border-t">
-                        <Button variant="outline" size="sm" className="flex-1 gap-1" onClick={() => handleEdit(upsell)}>
+                        <Button variant="outline" size="sm" className="flex-1 gap-1" onClick={() => handleEditUpsell(upsell)}>
                           <Edit className="h-4 w-4 text-muted-foreground" />
                           Editar
                         </Button>
-                        <Button variant="outline" size="sm" className="text-destructive hover:bg-destructive hover:text-white" onClick={() => handleDelete(upsell.id)}>
+                        <Button variant="outline" size="sm" className="text-destructive hover:bg-destructive hover:text-white" onClick={() => handleDeleteUpsell(upsell.id)}>
                           <Trash2 className="h-4 w-4" />
                         </Button>
                       </div>
@@ -436,8 +595,7 @@ export default function UpsellsPanel() {
                 );
               })}
 
-              {/* Add New Visual Card */}
-              <Card onClick={handleAddNew} className="border-dashed cursor-pointer hover:border-primary hover:bg-primary/5 transition-all">
+              <Card onClick={handleAddUpsell} className="border-dashed cursor-pointer hover:border-primary hover:bg-primary/5 transition-all">
                 <CardContent className="p-6 flex flex-col items-center justify-center h-full min-h-[350px]">
                   <div className="p-4 rounded-full bg-primary/10 mb-4 transition-transform hover:scale-110">
                     <Plus className="h-8 w-8 text-primary" />
@@ -452,6 +610,125 @@ export default function UpsellsPanel() {
           )}
         </TabsContent>
 
+        {/* ─── TAB 2: PROVEEDORES ───────────────────────────────────────── */}
+        <TabsContent value="vendors" className="space-y-6 mt-6">
+          <div className="flex justify-between items-center flex-wrap gap-4">
+            <div>
+              <h3 className="text-lg font-semibold flex items-center gap-2">
+                <UsersIcon className="h-5 w-5 text-primary" />
+                Proveedores de Tienda
+              </h3>
+              <p className="text-sm text-muted-foreground">
+                Capitanes, conductores, spa, chef privado. Los que despachan tus productos al huésped.
+              </p>
+            </div>
+            <Button onClick={handleAddVendor} className="gradient-gold text-primary-foreground gap-2">
+              <Plus className="h-4 w-4" />
+              Nuevo proveedor
+            </Button>
+          </div>
+
+          {loading ? (
+            <Card>
+              <CardContent className="p-12 flex items-center justify-center text-muted-foreground">
+                <Loader2 className="h-5 w-5 animate-spin mr-2" /> Cargando…
+              </CardContent>
+            </Card>
+          ) : vendors.length === 0 ? (
+            <Card>
+              <CardContent className="p-10 text-center">
+                <UsersIcon className="h-10 w-10 text-slate-300 mx-auto mb-3" />
+                <p className="text-slate-500 font-medium">Aún no tenés proveedores de tienda.</p>
+                <p className="text-xs text-muted-foreground mt-1">
+                  Agregá al capitán del catamarán, al transporte aeropuerto, a la lavandería, etc.
+                </p>
+                <Button variant="outline" onClick={handleAddVendor} className="mt-4">
+                  <Plus className="w-4 h-4 mr-1" /> Agregar el primero
+                </Button>
+              </CardContent>
+            </Card>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+              {vendors.map((v) => {
+                const linkedCount = upsells.filter((u) => u.vendorId === v.id).length;
+                return (
+                  <Card key={v.id} className={`hover:shadow-md transition-all ${!v.active && "opacity-60"}`}>
+                    <CardContent className="p-4">
+                      <div className="flex items-start justify-between mb-2">
+                        <div className="min-w-0 flex-1">
+                          <h4 className="font-bold text-base truncate">{v.displayName ?? v.name}</h4>
+                          {v.displayName && v.displayName !== v.name && (
+                            <p className="text-[11px] text-muted-foreground truncate">interno: {v.name}</p>
+                          )}
+                        </div>
+                        {v.rating !== null && (
+                          <div className="flex items-center gap-1 shrink-0">
+                            <Star className="h-3 w-3 text-amber-400 fill-amber-400" />
+                            <span className="text-xs font-bold">{v.rating.toFixed(1)}</span>
+                          </div>
+                        )}
+                      </div>
+
+                      <Badge variant="secondary" className="text-[10px] mb-3">
+                        {UPSELL_VENDOR_CATEGORY_LABELS[v.category]}
+                      </Badge>
+
+                      {v.description && (
+                        <p className="text-xs text-muted-foreground mb-3 line-clamp-2">{v.description}</p>
+                      )}
+
+                      <div className="space-y-1 text-xs text-slate-600 mb-3">
+                        {v.contactName && (
+                          <p className="flex items-center gap-1">
+                            <UsersIcon className="h-3 w-3" /> {v.contactName}
+                          </p>
+                        )}
+                        {v.phone && (
+                          <p className="flex items-center gap-1">
+                            <Phone className="h-3 w-3" />
+                            <a
+                              href={`https://wa.me/${v.phone.replace(/\D/g, "")}`}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="hover:underline"
+                            >
+                              {v.phone}
+                            </a>
+                          </p>
+                        )}
+                      </div>
+
+                      <div className="flex items-center justify-between text-[11px] pt-3 border-t">
+                        <span className="text-muted-foreground">
+                          Comisión: <strong className="text-foreground">{v.commissionPercent}%</strong>
+                        </span>
+                        <span className="text-muted-foreground">
+                          {linkedCount} producto{linkedCount === 1 ? "" : "s"}
+                        </span>
+                      </div>
+
+                      <div className="flex gap-2 mt-3">
+                        <Button variant="outline" size="sm" className="flex-1" onClick={() => handleEditVendor(v)}>
+                          <Edit className="h-3 w-3 mr-1" /> Editar
+                        </Button>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="text-destructive hover:bg-destructive hover:text-white"
+                          onClick={() => handleDeleteVendor(v.id)}
+                        >
+                          <Trash2 className="h-3 w-3" />
+                        </Button>
+                      </div>
+                    </CardContent>
+                  </Card>
+                );
+              })}
+            </div>
+          )}
+        </TabsContent>
+
+        {/* ─── TAB 3: HUB CONFIG ────────────────────────────────────────── */}
         <TabsContent value="hub-config" className="mt-6">
           <Card className="max-w-3xl">
             <CardHeader>
@@ -461,17 +738,22 @@ export default function UpsellsPanel() {
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-6">
-
               <div className="p-4 border rounded-xl bg-muted/30 flex flex-col md:flex-row justify-between items-center gap-4">
                 <div className="flex-1 overflow-hidden">
                   <Label>Enlace Público (URL Compartible)</Label>
-                  <p className="text-sm font-mono text-primary flex items-center bg-background border rounded-md p-2 mt-2 w-full truncate">
-                    https://stayhost.com/hub/luna-rentals
+                  <p className="text-sm font-mono text-muted-foreground flex items-center bg-background border rounded-md p-2 mt-2 w-full truncate italic">
+                    Se generará al configurar tu Hub
                   </p>
                 </div>
                 <div className="flex gap-2 md:mt-6 shrink-0">
-                  <Button variant="outline"><Copy className="h-4 w-4 mr-2" /> Copiar</Button>
-                  <Button><ExternalLink className="h-4 w-4 mr-2" /> Visitar</Button>
+                  {/* Hub público no está implementado todavía — deshabilitamos
+                      en lugar de mostrar botones que abren URLs inválidas. */}
+                  <Button variant="outline" disabled title="Próximamente">
+                    <Copy className="h-4 w-4 mr-2" /> Copiar
+                  </Button>
+                  <Button disabled title="Próximamente">
+                    <ExternalLink className="h-4 w-4 mr-2" /> Visitar
+                  </Button>
                 </div>
               </div>
 
@@ -490,10 +772,6 @@ export default function UpsellsPanel() {
               </div>
             </CardContent>
             <CardFooter className="bg-muted/30 py-4 border-t">
-              {/* Configuración del Hub aún no persiste en BD — botón
-                  deshabilitado para no engañar al usuario con un "Guardar"
-                  que no hace nada. Llega en Sprint 2 (conexión a
-                  tenants.hub_welcome_message y similar). */}
               <Button
                 className="ml-auto gradient-gold opacity-60"
                 disabled
@@ -506,11 +784,11 @@ export default function UpsellsPanel() {
         </TabsContent>
       </Tabs>
 
-      {/* Editor Sheet */}
-      <Sheet open={isSheetOpen} onOpenChange={setIsSheetOpen}>
+      {/* ─── UPSELL SHEET ─────────────────────────────────────────────────── */}
+      <Sheet open={upsellSheetOpen} onOpenChange={setUpsellSheetOpen}>
         <SheetContent className="sm:max-w-md overflow-y-auto">
           <SheetHeader className="mb-6">
-            <SheetTitle>{editingId ? "Editar Producto" : "Nuevo Producto"}</SheetTitle>
+            <SheetTitle>{editingUpsellId ? "Editar Producto" : "Nuevo Producto"}</SheetTitle>
             <SheetDescription>
               Configura los detalles de esta experiencia o servicio adicional.
             </SheetDescription>
@@ -521,81 +799,182 @@ export default function UpsellsPanel() {
               <Label htmlFor="name">Nombre del Producto</Label>
               <Input
                 id="name"
-                value={formData.name}
-                onChange={(e) => setFormData({ ...formData, name: e.target.value })}
+                value={upsellForm.name}
+                onChange={(e) => setUpsellForm({ ...upsellForm, name: e.target.value })}
                 placeholder="Ej: Catamarán Bávaro Beach"
               />
             </div>
 
             <div className="space-y-2">
-              <Label htmlFor="desc">Descripción Breve</Label>
-              <textarea
+              <Label htmlFor="desc">Descripción breve</Label>
+              <Textarea
                 id="desc"
-                className="flex w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                 rows={3}
-                value={formData.description}
-                onChange={(e) => setFormData({ ...formData, description: e.target.value })}
+                value={upsellForm.description}
+                onChange={(e) => setUpsellForm({ ...upsellForm, description: e.target.value })}
                 placeholder="Qué incluye, duración, qué llevar…"
               />
             </div>
 
-            <div className="grid grid-cols-2 gap-4">
+            {/* Pricing block — la parte clave de Sprint 1.5 */}
+            <div className="space-y-4 p-4 border rounded-xl bg-muted/20">
+              <h4 className="font-medium text-sm">Precio y cantidad</h4>
+
               <div className="space-y-2">
-                <Label htmlFor="price">Precio (US$)</Label>
-                <div className="relative">
-                  <DollarSign className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
-                  <Input
-                    type="number"
-                    id="price"
-                    className="pl-8"
-                    value={formData.price}
-                    onChange={(e) => setFormData({ ...formData, price: Number(e.target.value) })}
-                  />
-                </div>
-              </div>
-              <div className="space-y-2">
-                <Label>Categoría</Label>
-                <Select value={formData.category} onValueChange={(val) => updateCategory(val as UpsellCategory)}>
+                <Label>Modelo de precio</Label>
+                <Select value={upsellForm.pricingModel} onValueChange={(v) => setUpsellForm({ ...upsellForm, pricingModel: v as PricingModel })}>
                   <SelectTrigger>
-                    <SelectValue placeholder="Categoría" />
+                    <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="service">🔧 Servicio (Ej. Limpieza)</SelectItem>
-                    <SelectItem value="experience">🌴 Experiencia (Ej. Tour)</SelectItem>
-                    <SelectItem value="food">🍽️ Gastronomía</SelectItem>
-                    <SelectItem value="transport">🚗 Transporte</SelectItem>
-                    <SelectItem value="other">📦 Otro</SelectItem>
+                    {(Object.keys(PRICING_MODEL_LABELS) as PricingModel[]).map((pm) => (
+                      <SelectItem key={pm} value={pm}>{PRICING_MODEL_LABELS[pm]}</SelectItem>
+                    ))}
                   </SelectContent>
                 </Select>
+                <p className="text-[11px] text-muted-foreground">
+                  {upsellForm.pricingModel === "per_person"
+                    ? "Ej: catamarán US$85 × 4 personas = US$340"
+                    : upsellForm.pricingModel === "per_kg"
+                      ? "Ej: lavandería US$5 × 3kg = US$15"
+                      : upsellForm.pricingModel === "per_night"
+                        ? "Ej: cuna US$10 × 5 noches = US$50"
+                        : upsellForm.pricingModel === "per_unit"
+                          ? "Ej: jet ski US$80 × 2 unidades = US$160"
+                          : "Un solo cobro fijo, sin importar cantidad"}
+                </p>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-2">
+                  <Label htmlFor="price">
+                    Precio (US$){upsellForm.pricingModel !== "fixed" ? ` por ${priceSuffix(upsellForm.pricingModel)}` : ""}
+                  </Label>
+                  <div className="relative">
+                    <DollarSign className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
+                    <Input
+                      type="number"
+                      id="price"
+                      className="pl-8"
+                      value={upsellForm.price || ""}
+                      onChange={(e) => setUpsellForm({ ...upsellForm, price: Number(e.target.value) })}
+                      placeholder="0"
+                    />
+                  </div>
+                </div>
+                <div className="space-y-2">
+                  <Label>Vista previa</Label>
+                  {/* Usa minQuantity como base del ejemplo (más representativo
+                      del mínimo real del producto). Cae a 2 si min es 1. */}
+                  <div className="h-10 px-3 rounded-md bg-background border flex items-center text-sm">
+                    {priceExample(
+                      upsellForm.price || 0,
+                      upsellForm.pricingModel,
+                      Math.max(2, upsellForm.minQuantity || 1),
+                    )}
+                  </div>
+                  {upsellForm.pricingModel !== "fixed" && (
+                    <p className="text-[10px] text-muted-foreground">
+                      Lo que pagan {Math.max(2, upsellForm.minQuantity || 1)} {priceSuffix(upsellForm.pricingModel)}s
+                    </p>
+                  )}
+                </div>
+              </div>
+
+              {upsellForm.pricingModel !== "fixed" && (
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="space-y-2">
+                    <Label>Mínimo</Label>
+                    <Input
+                      type="number"
+                      min={1}
+                      value={upsellForm.minQuantity}
+                      onChange={(e) => setUpsellForm({ ...upsellForm, minQuantity: Math.max(1, Number(e.target.value) || 1) })}
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Máximo (opcional)</Label>
+                    <Input
+                      type="number"
+                      min={1}
+                      placeholder="Sin tope"
+                      value={upsellForm.maxQuantity}
+                      onChange={(e) => setUpsellForm({ ...upsellForm, maxQuantity: e.target.value })}
+                    />
+                  </div>
+                </div>
+              )}
+
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-2">
+                  <Label>Capacidad por día</Label>
+                  <Input
+                    type="number"
+                    min={1}
+                    placeholder="Sin límite"
+                    value={upsellForm.capacityPerSlot}
+                    onChange={(e) => setUpsellForm({ ...upsellForm, capacityPerSlot: e.target.value })}
+                  />
+                  <p className="text-[10px] text-muted-foreground">Total disponible por jornada</p>
+                </div>
+                <div className="space-y-2">
+                  <Label>Cierra venta (hrs antes)</Label>
+                  <Input
+                    type="number"
+                    min={0}
+                    value={upsellForm.cutoffHours}
+                    onChange={(e) => setUpsellForm({ ...upsellForm, cutoffHours: Math.max(0, Number(e.target.value) || 0) })}
+                  />
+                  <p className="text-[10px] text-muted-foreground">Ej: 6h para shuttle PUJ</p>
+                </div>
               </div>
             </div>
 
             <div className="space-y-2">
-              <Label>Proveedor (opcional)</Label>
+              <Label>Categoría</Label>
+              <Select value={upsellForm.category} onValueChange={(val) => updateUpsellCategory(val as UpsellCategory)}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Categoría" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="service">🔧 Servicio</SelectItem>
+                  <SelectItem value="experience">🌴 Experiencia</SelectItem>
+                  <SelectItem value="food">🍽️ Gastronomía</SelectItem>
+                  <SelectItem value="transport">🚗 Transporte</SelectItem>
+                  <SelectItem value="other">📦 Otro</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="space-y-2">
+              <Label>Proveedor</Label>
               <Select
-                value={formData.vendorId ?? "_none"}
-                onValueChange={(val) => setFormData({ ...formData, vendorId: val === "_none" ? null : val })}
+                value={upsellForm.vendorId ?? "_none"}
+                onValueChange={(val) => setUpsellForm({ ...upsellForm, vendorId: val === "_none" ? null : val })}
               >
                 <SelectTrigger>
                   <SelectValue placeholder="Sin proveedor — lo entrego yo" />
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="_none">Sin proveedor — lo entrego yo</SelectItem>
-                  {vendors.map((v) => (
+                  {vendors.filter((v) => v.active).map((v) => (
                     <SelectItem key={v.id} value={v.id}>
-                      {v.name} {v.phone ? `· ${v.phone}` : ""}
+                      {v.displayName ?? v.name}
+                      {v.phone ? ` · ${v.phone}` : ""}
                     </SelectItem>
                   ))}
                 </SelectContent>
               </Select>
-              <p className="text-[11px] text-muted-foreground">
-                Quién despacha este servicio. Si no hay vendor, lo entregás vos.
-              </p>
+              {vendors.length === 0 && (
+                <p className="text-[11px] text-amber-600">
+                  Aún no agregaste proveedores. Andá al tab &quot;Proveedores&quot; para crear uno.
+                </p>
+              )}
             </div>
 
             <div className="space-y-2">
               <Label>Icono / Visual</Label>
-              <Select value={formData.iconName} onValueChange={(val) => setFormData({ ...formData, iconName: val })}>
+              <Select value={upsellForm.iconName} onValueChange={(val) => setUpsellForm({ ...upsellForm, iconName: val })}>
                 <SelectTrigger>
                   <SelectValue placeholder="Icono Principal" />
                 </SelectTrigger>
@@ -608,37 +987,37 @@ export default function UpsellsPanel() {
             </div>
 
             <div className="space-y-4 p-4 border rounded-xl bg-muted/20">
-              <h4 className="font-medium text-sm text-foreground">Disponibilidad de Venta</h4>
+              <h4 className="font-medium text-sm">Disponibilidad de Venta</h4>
               <div className="flex flex-col space-y-3">
                 <label className="flex items-center gap-2 text-sm cursor-pointer hover:bg-muted/50 p-2 rounded-md">
                   <input
                     type="radio"
                     name="isGlobal"
-                    checked={formData.isGlobal === true}
-                    onChange={() => setFormData({ ...formData, isGlobal: true })}
+                    checked={upsellForm.isGlobal === true}
+                    onChange={() => setUpsellForm({ ...upsellForm, isGlobal: true })}
                     className="h-4 w-4 text-primary"
                   />
                   <span>
                     <strong className="block font-medium">✨ Venta Global (Host Hub)</strong>
-                    <span className="text-muted-foreground text-xs block">Se vende abierto en tu Hub público, no requiere reserva activa.</span>
+                    <span className="text-muted-foreground text-xs block">Visible en el Hub público, abierto a cualquier huésped.</span>
                   </span>
                 </label>
                 <label className="flex items-center gap-2 text-sm cursor-pointer hover:bg-muted/50 p-2 rounded-md">
                   <input
                     type="radio"
                     name="isGlobal"
-                    checked={formData.isGlobal === false}
-                    onChange={() => setFormData({ ...formData, isGlobal: false })}
+                    checked={upsellForm.isGlobal === false}
+                    onChange={() => setUpsellForm({ ...upsellForm, isGlobal: false })}
                     className="h-4 w-4 text-primary"
                   />
                   <span>
                     <strong className="block font-medium">🏠 Vinculado a Propiedades</strong>
-                    <span className="text-muted-foreground text-xs block">Solo se ofrece a huéspedes de las propiedades elegidas (Ej: Early Check-in).</span>
+                    <span className="text-muted-foreground text-xs block">Solo se ofrece a huéspedes de las propiedades elegidas.</span>
                   </span>
                 </label>
               </div>
 
-              {!formData.isGlobal && (
+              {!upsellForm.isGlobal && (
                 <div className="mt-4 space-y-2 pt-4 border-t border-border">
                   <Label>Aplica a estas propiedades:</Label>
                   {properties.length === 0 ? (
@@ -646,14 +1025,14 @@ export default function UpsellsPanel() {
                   ) : (
                     <div className="space-y-2 max-h-[200px] overflow-y-auto">
                       {properties.map((prop) => {
-                        const checked = formData.linkedPropertyIds.includes(prop.id);
+                        const checked = upsellForm.linkedPropertyIds.includes(prop.id);
                         return (
                           <label key={prop.id} className="flex items-center gap-2 text-sm cursor-pointer hover:bg-muted/30 px-2 py-1 rounded">
                             <input
                               type="checkbox"
                               checked={checked}
                               onChange={(e) => {
-                                setFormData((prev) => ({
+                                setUpsellForm((prev) => ({
                                   ...prev,
                                   linkedPropertyIds: e.target.checked
                                     ? [...prev.linkedPropertyIds, prop.id]
@@ -676,8 +1055,8 @@ export default function UpsellsPanel() {
               <label className="flex items-center gap-2 cursor-pointer font-medium text-sm">
                 <input
                   type="checkbox"
-                  checked={formData.active}
-                  onChange={(e) => setFormData({ ...formData, active: e.target.checked })}
+                  checked={upsellForm.active}
+                  onChange={(e) => setUpsellForm({ ...upsellForm, active: e.target.checked })}
                   className="h-4 w-4 rounded text-primary"
                 />
                 Activo (visible en el Hub)
@@ -689,8 +1068,151 @@ export default function UpsellsPanel() {
             <SheetClose asChild>
               <Button variant="outline" disabled={saving}>Cancelar</Button>
             </SheetClose>
-            <Button onClick={handleSave} disabled={saving || !formData.name.trim()} className="gradient-gold">
-              {saving ? "Guardando…" : editingId ? "Guardar cambios" : "Crear producto"}
+            <Button onClick={handleSaveUpsell} disabled={saving || !upsellForm.name.trim()} className="gradient-gold">
+              {saving ? "Guardando…" : editingUpsellId ? "Guardar cambios" : "Crear producto"}
+            </Button>
+          </SheetFooter>
+        </SheetContent>
+      </Sheet>
+
+      {/* ─── VENDOR SHEET ─────────────────────────────────────────────────── */}
+      <Sheet open={vendorSheetOpen} onOpenChange={setVendorSheetOpen}>
+        <SheetContent className="sm:max-w-md overflow-y-auto">
+          <SheetHeader className="mb-6">
+            <SheetTitle>{editingVendorId ? "Editar Proveedor" : "Nuevo Proveedor de Tienda"}</SheetTitle>
+            <SheetDescription>
+              Datos del proveedor que despacha tus productos al huésped.
+            </SheetDescription>
+          </SheetHeader>
+
+          <div className="space-y-5">
+            <div className="space-y-2">
+              <Label htmlFor="vname">Nombre (interno)</Label>
+              <Input
+                id="vname"
+                value={vendorForm.name}
+                onChange={(e) => setVendorForm({ ...vendorForm, name: e.target.value })}
+                placeholder="Ej: Bávaro Adventures SRL"
+              />
+              <p className="text-[11px] text-muted-foreground">Cómo lo llamás en tus notas. Privado.</p>
+            </div>
+
+            <div className="space-y-2">
+              <Label>Categoría</Label>
+              <Select value={vendorForm.category} onValueChange={(v) => setVendorForm({ ...vendorForm, category: v as UpsellVendorCategory })}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {(Object.keys(UPSELL_VENDOR_CATEGORY_LABELS) as UpsellVendorCategory[]).map((c) => (
+                    <SelectItem key={c} value={c}>{UPSELL_VENDOR_CATEGORY_LABELS[c]}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-2">
+                <Label>Contacto</Label>
+                <Input
+                  value={vendorForm.contactName}
+                  onChange={(e) => setVendorForm({ ...vendorForm, contactName: e.target.value })}
+                  placeholder="Capitán Pedro"
+                />
+              </div>
+              <div className="space-y-2">
+                <Label>RNC / Cédula</Label>
+                <Input
+                  value={vendorForm.rncCedula}
+                  onChange={(e) => setVendorForm({ ...vendorForm, rncCedula: e.target.value })}
+                  placeholder="Opcional"
+                />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-2">
+                <Label>WhatsApp</Label>
+                <Input
+                  value={vendorForm.phone}
+                  onChange={(e) => setVendorForm({ ...vendorForm, phone: e.target.value })}
+                  placeholder="+1 809..."
+                />
+              </div>
+              <div className="space-y-2">
+                <Label>Email</Label>
+                <Input
+                  value={vendorForm.email}
+                  onChange={(e) => setVendorForm({ ...vendorForm, email: e.target.value })}
+                  placeholder="Opcional"
+                />
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <Label>Descripción (qué hace)</Label>
+              <Textarea
+                value={vendorForm.description}
+                onChange={(e) => setVendorForm({ ...vendorForm, description: e.target.value })}
+                placeholder="Tour operator con 8 años en Bávaro. Especialidad: catamarán y snorkel."
+                rows={2}
+              />
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-2">
+                <Label>Comisión (%)</Label>
+                <div className="relative">
+                  <Input
+                    type="number"
+                    min={0}
+                    max={100}
+                    value={vendorForm.commissionPercent}
+                    onChange={(e) => setVendorForm({ ...vendorForm, commissionPercent: Math.max(0, Math.min(100, Number(e.target.value) || 0)) })}
+                  />
+                </div>
+                <p className="text-[10px] text-muted-foreground">% que retenés del precio</p>
+              </div>
+              <div className="space-y-2">
+                <Label>Pago al vendor</Label>
+                <Select value={vendorForm.paymentTerms} onValueChange={(v) => setVendorForm({ ...vendorForm, paymentTerms: v as PaymentTerms })}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    {(Object.keys(PAYMENT_TERMS_LABELS) as PaymentTerms[]).map((pt) => (
+                      <SelectItem key={pt} value={pt}>{PAYMENT_TERMS_LABELS[pt]}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <Label>Notas internas</Label>
+              <Textarea
+                value={vendorForm.notes}
+                onChange={(e) => setVendorForm({ ...vendorForm, notes: e.target.value })}
+                placeholder="Horarios, banco para transferencias, persona de respaldo…"
+                rows={2}
+              />
+            </div>
+
+            <div className="flex items-center gap-2 pt-2">
+              <label className="flex items-center gap-2 cursor-pointer font-medium text-sm">
+                <input
+                  type="checkbox"
+                  checked={vendorForm.active}
+                  onChange={(e) => setVendorForm({ ...vendorForm, active: e.target.checked })}
+                  className="h-4 w-4 rounded text-primary"
+                />
+                Activo
+              </label>
+            </div>
+          </div>
+
+          <SheetFooter className="mt-8 gap-2 sm:gap-0">
+            <SheetClose asChild>
+              <Button variant="outline" disabled={saving}>Cancelar</Button>
+            </SheetClose>
+            <Button onClick={handleSaveVendor} disabled={saving || !vendorForm.name.trim()} className="gradient-gold">
+              {saving ? "Guardando…" : editingVendorId ? "Guardar cambios" : "Crear proveedor"}
             </Button>
           </SheetFooter>
         </SheetContent>
