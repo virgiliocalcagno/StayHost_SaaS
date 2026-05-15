@@ -21,6 +21,7 @@ import {
 } from "lucide-react";
 import { useLanguage } from "../LanguageContext";
 import { formatMoney } from "@/lib/money/format";
+import UpsellExperiences from "./UpsellExperiences";
 
 // ─── Types (matching stayhost_properties & stayhost_upsells shapes) ─────────
 interface StoredProperty {
@@ -37,15 +38,26 @@ interface StoredProperty {
   status?: string;
 }
 
+// Shape del response /api/public/hub/[hostId] → experiences[].
+// Mirroreado del HubUpsell del componente UpsellExperiences.tsx.
+type PricingModel = "fixed" | "per_person" | "per_unit" | "per_kg" | "per_night";
 interface StoredUpsell {
   id: string;
   name: string;
-  description?: string;
+  description: string | null;
+  category: string;
+  iconName: string;
   price: number;
-  category?: string;
-  iconName?: string;
-  active?: boolean;
-  isGlobal?: boolean;
+  currency: string;
+  heroPhoto: string | null;
+  galleryPhotos: string[];
+  pricingModel: PricingModel;
+  minQuantity: number;
+  maxQuantity: number | null;
+  cutoffHours: number;
+  isGlobal: boolean;
+  linkedPropertyIds: string[];
+  vendor: { name: string; photo: string | null } | null;
 }
 
 // Hub público: data viene de /api/public/hub/[hostId]. Sin FALLBACK
@@ -287,47 +299,14 @@ export default function HostHubPage({ params }: { params: Promise<{ hostId: stri
         )}
       </section>
 
-      {/* SECCIÓN EXPERIENCIAS */}
-      <section id="experiencias" className="py-24 bg-white border-y border-slate-100">
-        <div className="max-w-7xl mx-auto px-6">
-          <div className="mb-12 text-center max-w-2xl mx-auto">
-            <Badge variant="outline" className="text-amber-600 border-amber-600/30 bg-amber-50 mb-4 px-4 py-1 text-sm">
-              {t("exclusiveBadge")}
-            </Badge>
-            <h2 className="text-4xl font-bold text-slate-900 mb-4">{t("expTitle")}</h2>
-            <p className="text-slate-600 text-lg">{t("expSub")}</p>
-          </div>
-
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
-            {experiences.map((exp) => {
-              const Icon = iconMap[exp.iconName || "Sparkles"] || Sparkles;
-              return (
-                <div key={exp.id} className="group relative overflow-hidden rounded-3xl bg-slate-50 border border-slate-100 hover:border-amber-200 hover:shadow-xl transition-all duration-300 cursor-pointer">
-                  <div className="p-8 flex flex-col gap-4">
-                    <div className="h-14 w-14 rounded-2xl bg-amber-50 border border-amber-100 flex items-center justify-center group-hover:bg-amber-100 transition-colors">
-                      <Icon className="h-7 w-7 text-amber-600" />
-                    </div>
-                    <div>
-                      <Badge variant="secondary" className="text-[10px] uppercase tracking-wider mb-2">{exp.category || "Experiencia"}</Badge>
-                      <h3 className="font-bold text-xl text-slate-900 mb-1">{exp.name}</h3>
-                      {exp.description && <p className="text-slate-500 text-sm leading-relaxed line-clamp-2">{exp.description}</p>}
-                    </div>
-                    <div className="flex items-center justify-between pt-4 border-t border-slate-200 mt-auto">
-                      <div>
-                        <span className="text-2xl font-extrabold text-slate-900">{formatMoney(exp.price, "USD")}</span>
-                        <span className="text-slate-500 text-sm ml-1">/ persona</span>
-                      </div>
-                      <Button size="sm" className="gradient-gold text-white rounded-xl font-semibold shadow-md border-none">
-                        {lang === "es" ? "Agregar" : "Add"}
-                      </Button>
-                    </div>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      </section>
+      {/* SECCIÓN EXPERIENCIAS — componente con catálogo + modal + carrito */}
+      <UpsellExperiences
+        hostId={hostId}
+        hostName={hubName}
+        hostWhatsapp={whatsapp}
+        experiences={experiences}
+        lang={lang}
+      />
 
       {/* ABOUT / FOOTER SECTION */}
       <section id="nosotros" className="py-20 px-6 max-w-4xl mx-auto text-center">
