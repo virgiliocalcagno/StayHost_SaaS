@@ -94,6 +94,7 @@ export async function POST(
     payerEmail: string | null;
     amount: number;
     currency: string;
+    captureId: string | null;
   };
   try {
     captureResult = await capturePaypalOrder({
@@ -146,6 +147,10 @@ export async function POST(
       paid_at: new Date().toISOString(),
       payment_provider: "paypal",
       payment_id: captureResult.id,
+      // capture_id es el que usamos para refunds. Si por alguna razón no
+      // vino en la respuesta (raro, pero raw API), queda NULL y el endpoint
+      // de refund hace fallback consultando GET /v2/checkout/orders/{id}.
+      payment_capture_id: captureResult.captureId,
     } as never)
     .eq("id", order.id)
     .is("paid_at", null)

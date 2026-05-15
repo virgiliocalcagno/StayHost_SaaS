@@ -137,7 +137,15 @@ export async function capturePaypalOrder(args: {
   clientSecret: string;
   mode: Mode;
   orderId: string;
-}): Promise<{ id: string; status: string; payerEmail: string | null; amount: number; currency: string }> {
+}): Promise<{
+  id: string;
+  status: string;
+  payerEmail: string | null;
+  amount: number;
+  currency: string;
+  /** ID del capture dentro de la orden — necesario para refunds. */
+  captureId: string | null;
+}> {
   const token = await getAccessToken(args);
   const res = await fetch(`${API_URLS[args.mode]}/v2/checkout/orders/${args.orderId}/capture`, {
     method: "POST",
@@ -158,7 +166,10 @@ export async function capturePaypalOrder(args: {
     payer?: { email_address?: string };
     purchase_units?: Array<{
       payments?: {
-        captures?: Array<{ amount?: { value?: string; currency_code?: string } }>;
+        captures?: Array<{
+          id?: string;
+          amount?: { value?: string; currency_code?: string };
+        }>;
       };
     }>;
   };
@@ -170,5 +181,128 @@ export async function capturePaypalOrder(args: {
     payerEmail: json.payer?.email_address ?? null,
     amount: Number(cap?.amount?.value ?? 0),
     currency: cap?.amount?.currency_code ?? "USD",
+    captureId: cap?.id ?? null,
+  };
+}
+
+/**
+ * Busca el capture_id de una orden PayPal. Útil para órdenes históricas
+ * cuyo capture_id no quedó guardado en BD (antes del fix).
+ *
+ * Devuelve null si la orden no fue capturada o no se encuentra capture.
+ */
+export async function getPaypalOrderCaptureId(args: {
+  configId: string;
+  clientId: string;
+  clientSecret: string;
+  mode: Mode;
+  orderId: string;
+}): Promise<string | null> {
+  const token = await getAccessToken(args);
+  const res = await fetch(`${API_URLS[args.mode]}/v2/checkout/orders/${args.orderId}`, {
+    method: "GET",
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`PayPal get-order failed: ${res.status} ${text}`);
+  }
+  const json = (await res.json()) as {
+    purchase_units?: Array<{
+      payments?: {
+        captures?: Array<{ id?: string; status?: string }>;
+      };
+    }>;
+  };
+  // Tomamos el primer capture COMPLETED. Si no hay, devolvemos el primero
+  // disponible (PayPal podría devolver PENDING en casos raros — el caller
+  // decide qué hacer con eso).
+  const captures = json.purchase_units?.[0]?.payments?.captures ?? [];
+  const completed = captures.find((c) => c.status === "COMPLETED");
+  return (completed?.id ?? captures[0]?.id) ?? null;
+}
+
+/**
+ * Refunda un capture de PayPal. Sin amount → reembolso total; con amount
+ * → parcial. PayPal valida que el monto no exceda lo capturado.
+ *
+ * Errores comunes (que devolvemos al caller para que loguee):
+ *   - CAPTURE_FULLY_REFUNDED: ya se reembolsó todo
+ *   - INVALID_REFUND_AMOUNT: monto > capturado
+ *   - PERMISSION_DENIED: credenciales no son del merchant que capturó
+ */
+export async function refundPaypalCapture(args: {
+  configId: string;
+  clientId: string;
+  clientSecret: string;
+  mode: Mode;
+  captureId: string;
+  /** Si se omite, refund total. */
+  amount?: number;
+  currency?: string;
+  /** Nota interna que el host ve en su dashboard PayPal. */
+  noteToPayer?: string;
+}): Promise<{
+  id: string;
+  status: string;
+  amount: number;
+  currency: string;
+}> {
+  const token = await getAccessToken(args);
+
+  // PayPal exige amount + currency JUNTOS o ningún body para refund total.
+  // Si solo viene amount sin currency, devolvemos error antes de pegarle.
+  const body: Record<string, unknown> = {};
+  if (args.amount != null) {
+    if (!args.currency) {
+      throw new Error("refund con amount requiere currency");
+    }
+    body.amount = {
+      value: args.amount.toFixed(2),
+      currency_code: args.currency,
+    };
+  }
+  if (args.noteToPayer) {
+    body.note_to_payer = args.noteToPayer.slice(0, 255);
+  }
+
+  const res = await fetch(
+    `${API_URLS[args.mode]}/v2/payments/captures/${encodeURIComponent(args.captureId)}/refund`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+        // Prefer return=representation para recibir el objeto refund con
+        // status, amount, etc en lugar de un resumen minimo.
+        Prefer: "return=representation",
+      },
+      body: Object.keys(body).length > 0 ? JSON.stringify(body) : undefined,
+    },
+  );
+
+  if (!res.ok) {
+    let payload: { name?: string; message?: string; details?: Array<{ issue?: string; description?: string }> } = {};
+    try {
+      payload = (await res.json()) as typeof payload;
+    } catch {
+      /* ignore parse */
+    }
+    const issue = payload.details?.[0]?.issue ?? payload.name ?? "UNKNOWN";
+    const desc =
+      payload.details?.[0]?.description ?? payload.message ?? `HTTP ${res.status}`;
+    throw new Error(`PayPal refund failed [${issue}]: ${desc}`);
+  }
+
+  const json = (await res.json()) as {
+    id: string;
+    status: string;
+    amount?: { value?: string; currency_code?: string };
+  };
+  return {
+    id: json.id,
+    status: json.status,
+    amount: Number(json.amount?.value ?? 0),
+    currency: json.amount?.currency_code ?? args.currency ?? "USD",
   };
 }

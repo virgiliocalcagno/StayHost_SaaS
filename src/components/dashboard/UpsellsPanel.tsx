@@ -186,10 +186,19 @@ export default function UpsellsPanel() {
   const [editingVendorId, setEditingVendorId] = useState<string | null>(null);
   const [vendorForm, setVendorForm] = useState<VendorFormState>(emptyVendorForm);
 
+  // Hub config tab state — antes era hardcoded "Luna Vacations Rentals" sin
+  // persistencia. Ahora levanta de /api/settings (tenant.company y
+  // tenant.hub_welcome_message) y persiste con PATCH.
+  const [hubName, setHubName] = useState<string>("");
+  const [hubWelcome, setHubWelcome] = useState<string>("");
+  const [hubSaving, setHubSaving] = useState(false);
+  const [hubSaved, setHubSaved] = useState(false);
+  const [hubCopied, setHubCopied] = useState(false);
+
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const [meRes, upsellsRes, vendorsRes, propsRes] = await Promise.all([
+      const [meRes, upsellsRes, vendorsRes, propsRes, settingsRes] = await Promise.all([
         fetch("/api/me", { cache: "no-store", credentials: "include" })
           .then((r) => (r.ok ? r.json() : null))
           .catch(() => null),
@@ -200,6 +209,9 @@ export default function UpsellsPanel() {
           .then((r) => (r.ok ? r.json() : null))
           .catch(() => null),
         fetch("/api/properties", { cache: "no-store", credentials: "include" })
+          .then((r) => (r.ok ? r.json() : null))
+          .catch(() => null),
+        fetch("/api/settings", { cache: "no-store", credentials: "include" })
           .then((r) => (r.ok ? r.json() : null))
           .catch(() => null),
       ]);
@@ -215,10 +227,67 @@ export default function UpsellsPanel() {
           })),
         );
       }
+      // Hub config: el endpoint devuelve company (marca) y hubWelcomeMessage.
+      // Si company es null (host nuevo), caemos a name como sugerencia.
+      if (settingsRes) {
+        setHubName(settingsRes.company ?? settingsRes.name ?? "");
+        setHubWelcome(settingsRes.hubWelcomeMessage ?? "");
+      }
     } finally {
       setLoading(false);
     }
   }, []);
+
+  // URL pública del hub. tenantId es la fuente canónica — los QR y enlaces
+  // de WhatsApp del host apuntan a /hub/{tenantId}. Cuando agreguemos slug
+  // amigable en otro sprint, este getter cambia.
+  const hubUrl = useMemo(() => {
+    if (!tenantId) return null;
+    if (typeof window === "undefined") return null;
+    return `${window.location.origin}/hub/${tenantId}`;
+  }, [tenantId]);
+
+  const saveHubConfig = async () => {
+    if (hubSaving) return;
+    setHubSaving(true);
+    setHubSaved(false);
+    try {
+      const res = await fetch("/api/settings", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({
+          // company puede ser "" → null (limpia el campo). El backend ya
+          // hace el coerce a null cuando viene string vacío.
+          company: hubName.trim() || null,
+          hubWelcomeMessage: hubWelcome.trim() || null,
+        }),
+      });
+      if (!res.ok) {
+        const j = await res.json().catch(() => ({}));
+        alert(j.error ?? "No se pudo guardar la configuración del Hub");
+        return;
+      }
+      setHubSaved(true);
+      // Reset del flag de "Guardado" después de 3s para que vuelva a verse
+      // el estado neutro listo para próximo edit.
+      setTimeout(() => setHubSaved(false), 3000);
+    } finally {
+      setHubSaving(false);
+    }
+  };
+
+  const copyHubUrl = async () => {
+    if (!hubUrl) return;
+    try {
+      await navigator.clipboard.writeText(hubUrl);
+      setHubCopied(true);
+      setTimeout(() => setHubCopied(false), 2000);
+    } catch {
+      // Fallback: prompt para que el usuario copie manualmente.
+      prompt("Copiá la URL del Hub:", hubUrl);
+    }
+  };
 
   useEffect(() => {
     void load();
@@ -902,50 +971,94 @@ export default function UpsellsPanel() {
             <CardHeader>
               <CardTitle>Configuración de tu Host Hub</CardTitle>
               <CardDescription>
-                Personaliza la página pública donde tus huéspedes podrán comprar tus experiencias y servicios independientemente de Airbnb.
+                Personaliza la página pública donde tus huéspedes pueden comprar tus experiencias y servicios independientemente de Airbnb.
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-6">
               <div className="p-4 border rounded-xl bg-muted/30 flex flex-col md:flex-row justify-between items-center gap-4">
-                <div className="flex-1 overflow-hidden">
+                <div className="flex-1 overflow-hidden w-full">
                   <Label>Enlace Público (URL Compartible)</Label>
-                  <p className="text-sm font-mono text-muted-foreground flex items-center bg-background border rounded-md p-2 mt-2 w-full truncate italic">
-                    Se generará al configurar tu Hub
+                  <p className="text-sm font-mono text-muted-foreground flex items-center bg-background border rounded-md p-2 mt-2 w-full truncate">
+                    {hubUrl ?? "Cargando…"}
                   </p>
                 </div>
                 <div className="flex gap-2 md:mt-6 shrink-0">
-                  {/* Hub público no está implementado todavía — deshabilitamos
-                      en lugar de mostrar botones que abren URLs inválidas. */}
-                  <Button variant="outline" disabled title="Próximamente">
-                    <Copy className="h-4 w-4 mr-2" /> Copiar
+                  <Button
+                    variant="outline"
+                    disabled={!hubUrl}
+                    onClick={copyHubUrl}
+                    title="Copiar URL al portapapeles"
+                  >
+                    <Copy className="h-4 w-4 mr-2" />
+                    {hubCopied ? "¡Copiado!" : "Copiar"}
                   </Button>
-                  <Button disabled title="Próximamente">
-                    <ExternalLink className="h-4 w-4 mr-2" /> Visitar
+                  <Button
+                    asChild={!!hubUrl}
+                    disabled={!hubUrl}
+                    title="Abrir el Hub en una pestaña nueva"
+                  >
+                    {hubUrl ? (
+                      <a href={hubUrl} target="_blank" rel="noopener noreferrer">
+                        <ExternalLink className="h-4 w-4 mr-2" /> Visitar
+                      </a>
+                    ) : (
+                      <span>
+                        <ExternalLink className="h-4 w-4 mr-2" /> Visitar
+                      </span>
+                    )}
                   </Button>
                 </div>
               </div>
 
               <div className="space-y-4">
                 <div className="space-y-2">
-                  <Label>Nombre del Hub / Marca</Label>
-                  <Input defaultValue="Luna Vacations Rentals" />
+                  <Label htmlFor="hub-name">Nombre del Hub / Marca</Label>
+                  <Input
+                    id="hub-name"
+                    value={hubName}
+                    onChange={(e) => setHubName(e.target.value)}
+                    placeholder="Ej: Luna Vacations Rentals"
+                    maxLength={120}
+                  />
+                  <p className="text-[11px] text-muted-foreground">
+                    Aparece como título del Hub público (header y emails al huésped).
+                  </p>
                 </div>
                 <div className="space-y-2">
-                  <Label>Mensaje de Bienvenida al Huésped</Label>
+                  <Label htmlFor="hub-welcome">Mensaje de Bienvenida al Huésped</Label>
                   <textarea
+                    id="hub-welcome"
+                    value={hubWelcome}
+                    onChange={(e) => setHubWelcome(e.target.value)}
+                    maxLength={500}
                     className="flex min-h-[80px] w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
-                    defaultValue="Mejora tu estadía con nuestras actividades locales recomendadas y curadas por nosotros."
+                    placeholder="Ej: Mejora tu estadía con nuestras actividades locales curadas por nosotros."
                   />
+                  <p className="text-[11px] text-muted-foreground">
+                    {hubWelcome.length}/500 caracteres. Se muestra cerca del header del Hub.
+                  </p>
                 </div>
               </div>
             </CardContent>
-            <CardFooter className="bg-muted/30 py-4 border-t">
+            <CardFooter className="bg-muted/30 py-4 border-t flex items-center gap-3">
+              {hubSaved && (
+                <span className="text-xs text-emerald-700 font-semibold">
+                  ✓ Configuración guardada
+                </span>
+              )}
               <Button
-                className="ml-auto gradient-gold opacity-60"
-                disabled
-                title="Próximamente — la configuración del Hub aún no se guarda"
+                className="ml-auto gradient-gold text-white"
+                disabled={hubSaving}
+                onClick={saveHubConfig}
               >
-                Guardar Configuración (Próximamente)
+                {hubSaving ? (
+                  <>
+                    <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                    Guardando…
+                  </>
+                ) : (
+                  "Guardar Configuración"
+                )}
               </Button>
             </CardFooter>
           </Card>

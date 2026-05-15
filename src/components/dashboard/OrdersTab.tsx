@@ -171,6 +171,57 @@ export default function OrdersTab() {
     }
   };
 
+  // Refund real vía PayPal API. Pide confirmación con el monto en pantalla
+  // y opcionalmente una nota que ve el huésped en su mail de PayPal.
+  // Después del refund OK, recargamos para reflejar el nuevo estado.
+  const refundOrder = async (order: Order) => {
+    const totalLabel = formatMoney(order.totalAmount, order.currency);
+    const confirmed = confirm(
+      `¿Reembolsar ${totalLabel} al huésped ${order.guestName} vía PayPal?\n\n` +
+        `Esta acción es definitiva: PayPal procesa el reembolso al instante.`,
+    );
+    if (!confirmed) return;
+    const note = prompt(
+      "Nota para el huésped (opcional, hasta 255 caracteres). Aparece en el email de PayPal:",
+      "",
+    );
+    if (note === null) return; // canceló el prompt
+
+    setActing(order.id);
+    try {
+      const res = await fetch(`/api/service-orders/${order.id}/refund`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify(note ? { note } : {}),
+      });
+      const j = (await res.json().catch(() => ({}))) as {
+        ok?: boolean;
+        error?: string;
+        warning?: string;
+        alreadyRefunded?: boolean;
+        refundPaymentId?: string;
+      };
+      if (!res.ok || !j.ok) {
+        alert(j.error ?? "Error procesando el reembolso");
+        return;
+      }
+      if (j.warning) {
+        alert(j.warning);
+      } else if (j.alreadyRefunded) {
+        alert("Esta orden ya estaba reembolsada.");
+      } else {
+        alert(
+          `Reembolso enviado a PayPal. ID: ${j.refundPaymentId}\n\n` +
+            `Puede tardar unos minutos en reflejarse en el dashboard del huésped.`,
+        );
+      }
+      await load();
+    } finally {
+      setActing(null);
+    }
+  };
+
   return (
     <div className="space-y-6 mt-6">
       {/* Stats */}
@@ -396,20 +447,15 @@ export default function OrdersTab() {
                               <CheckCircle2 className="h-3 w-3 mr-1" /> Marcar completado
                             </Button>
                           )}
-                          {allowed.includes("refunded") && (
+                          {allowed.includes("refunded") && o.paymentProvider === "paypal" && (
                             <Button
                               size="sm"
                               variant="outline"
                               disabled={isActing}
-                              onClick={() =>
-                                updateStatus(
-                                  o.id,
-                                  "refunded",
-                                  "Esto solo marca la orden como reembolsada. El refund real lo hacés vos en PayPal.\n\n¿Continuar?",
-                                )
-                              }
+                              onClick={() => refundOrder(o)}
+                              className="text-purple-700 hover:bg-purple-50 border-purple-200"
                             >
-                              <RefreshCw className="h-3 w-3 mr-1" /> Marcar reembolsada
+                              <RefreshCw className="h-3 w-3 mr-1" /> Reembolsar vía PayPal
                             </Button>
                           )}
                           {allowed.includes("cancelled") && (

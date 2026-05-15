@@ -89,6 +89,14 @@ const CATEGORY_LABEL: Record<string, string> = {
 
 const STORAGE_KEY_PREFIX = "stayhost.hub.cart.v1.";
 
+// Fecha mínima permitida para un upsell según su cutoff_hours.
+// Compartido entre el modal de detalle y la edición inline del carrito.
+function getMinServiceDate(cutoffHours: number): string {
+  const d = new Date();
+  d.setHours(d.getHours() + cutoffHours);
+  return d.toISOString().slice(0, 10);
+}
+
 // ─── Helper: lectura/escritura del carrito en sessionStorage ────────────────
 // Por hostId para que el huésped que abre dos hubs distintos no mezcle.
 function loadCart(hostId: string): CartItem[] {
@@ -199,6 +207,52 @@ export default function UpsellExperiences({
     },
     [],
   );
+
+  // Cambiar fecha del item desde el carrito. Si el huésped ya tenía otro
+  // item del mismo upsell con la fecha destino, fusionamos cantidades para
+  // no dejar duplicados (1 + 1 → 2 en el mismo día).
+  const updateServiceDate = useCallback(
+    (upsellId: string, oldDate: string | null, newDate: string | null) => {
+      if (oldDate === newDate) return;
+      setCart((prev) => {
+        const target = prev.find(
+          (it) => it.upsellId === upsellId && it.serviceDate === oldDate,
+        );
+        if (!target) return prev;
+        const dupIdx = prev.findIndex(
+          (it) => it.upsellId === upsellId && it.serviceDate === newDate,
+        );
+        if (dupIdx >= 0) {
+          // Fusionar: sumar cantidad al item existente, quitar el que movemos.
+          return prev
+            .map((it, i) =>
+              i === dupIdx ? { ...it, quantity: it.quantity + target.quantity } : it,
+            )
+            .filter(
+              (it) => !(it.upsellId === upsellId && it.serviceDate === oldDate),
+            );
+        }
+        return prev.map((it) =>
+          it.upsellId === upsellId && it.serviceDate === oldDate
+            ? { ...it, serviceDate: newDate }
+            : it,
+        );
+      });
+      // Si el error rojo estaba mostrando "elegí otra fecha", limpiarlo en
+      // cuanto el huésped corrige — sino queda hasta el próximo submit y
+      // confunde.
+      setOrderError(null);
+    },
+    [],
+  );
+
+  // Lookup rápido de upsells por id para resolver cutoff_hours del cart
+  // sin tener que pasar el array completo a cada CartLine.
+  const experiencesById = useMemo(() => {
+    const m = new Map<string, HubUpsell>();
+    for (const e of experiences) m.set(e.id, e);
+    return m;
+  }, [experiences]);
 
   // ── Crear orden + redirigir a página de pago ──
   // Solo cuando paypalEnabled. Valida que guestName esté completo (server lo
@@ -444,6 +498,13 @@ export default function UpsellExperiences({
             <div className="space-y-3 mt-6">
               {cart.map((it) => {
                 const suffix = PRICING_SUFFIX[it.pricingModel];
+                // Cutoff del upsell — necesario para calcular fecha mínima
+                // editable. Si el upsell ya no está en el catálogo del hub
+                // (raro, lo deshabilitaron mid-sesión), permitimos hoy.
+                const exp = experiencesById.get(it.upsellId);
+                const cutoffHours = exp?.cutoffHours ?? 0;
+                const minDate = getMinServiceDate(cutoffHours);
+                const dateRequired = cutoffHours > 0;
                 return (
                   <div
                     key={`${it.upsellId}-${it.serviceDate ?? "no-date"}`}
@@ -451,9 +512,29 @@ export default function UpsellExperiences({
                   >
                     <div className="flex-1 min-w-0">
                       <p className="font-semibold text-sm truncate">{it.name}</p>
-                      {it.serviceDate && (
-                        <p className="text-[11px] text-slate-500">{it.serviceDate}</p>
-                      )}
+                      {/* Fecha editable inline. Antes era texto plano, lo que
+                          obligaba al huésped a quitar el item y re-agregarlo
+                          si el server rechazaba por cutoff. */}
+                      <div className="mt-1 flex items-center gap-1">
+                        <Input
+                          type="date"
+                          value={it.serviceDate ?? ""}
+                          min={minDate}
+                          onChange={(e) =>
+                            updateServiceDate(
+                              it.upsellId,
+                              it.serviceDate,
+                              e.target.value || null,
+                            )
+                          }
+                          className="h-7 text-[11px] px-2 py-0 w-auto"
+                        />
+                        {dateRequired && !it.serviceDate && (
+                          <span className="text-[10px] text-amber-600">
+                            {lang === "es" ? "fecha requerida" : "date required"}
+                          </span>
+                        )}
+                      </div>
                       <div className="flex items-center gap-2 mt-2">
                         <button
                           type="button"
@@ -634,11 +715,7 @@ function UpsellDetail({ upsell, lang, onClose, onAdd }: DetailProps) {
   const min = upsell.minQuantity || 1;
 
   // Para fechas: la mínima es hoy + cutoffHours.
-  const minDate = useMemo(() => {
-    const d = new Date();
-    d.setHours(d.getHours() + upsell.cutoffHours);
-    return d.toISOString().slice(0, 10);
-  }, [upsell.cutoffHours]);
+  const minDate = getMinServiceDate(upsell.cutoffHours);
 
   // Validación de "agregar":
   //   - cantidad dentro del rango (per_X) o producto fijo
