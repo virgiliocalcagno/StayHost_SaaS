@@ -19,6 +19,8 @@ type TemplateRow = {
   id: string;
   name: string;
   description: string | null;
+  name_en: string | null;
+  description_en: string | null;
   category: string;
   icon_name: string;
   hero_photo: string | null;
@@ -89,6 +91,8 @@ export async function POST(req: NextRequest) {
       vendor_id: null, // el host lo asigna después si quiere
       name: t.name,
       description: t.description,
+      name_en: t.name_en,
+      description_en: t.description_en,
       category: t.category,
       icon_name: t.icon_name,
       hero_photo: t.hero_photo,

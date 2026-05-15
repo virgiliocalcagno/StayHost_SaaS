@@ -46,6 +46,8 @@ interface StoredUpsell {
   id: string;
   name: string;
   description?: string;
+  nameEn?: string | null;
+  descriptionEn?: string | null;
   price: number;
   category?: string;
   iconName?: string;
@@ -190,6 +192,8 @@ export default function PropertyPage({ params }: { params: Promise<{ hostId: str
             id: string;
             name: string;
             description: string | null;
+            nameEn: string | null;
+            descriptionEn: string | null;
             price: number;
             category: string;
             iconName: string;
@@ -205,6 +209,8 @@ export default function PropertyPage({ params }: { params: Promise<{ hostId: str
               id: e.id,
               name: e.name,
               description: e.description ?? undefined,
+              nameEn: e.nameEn,
+              descriptionEn: e.descriptionEn,
               price: Number(e.price),
               category: e.category,
               iconName: e.iconName,
@@ -758,8 +764,14 @@ export default function PropertyPage({ params }: { params: Promise<{ hostId: str
                         <Icon className="w-5 h-5" />
                       </div>
                       <div className="flex-1">
-                        <h4 className="font-bold text-slate-900">{upsell.name}</h4>
-                        {upsell.description && <p className="text-sm text-slate-500">{upsell.description}</p>}
+                        <h4 className="font-bold text-slate-900">
+                          {lang === "en" && upsell.nameEn ? upsell.nameEn : upsell.name}
+                        </h4>
+                        {(lang === "en" && upsell.descriptionEn ? upsell.descriptionEn : upsell.description) && (
+                          <p className="text-sm text-slate-500">
+                            {lang === "en" && upsell.descriptionEn ? upsell.descriptionEn : upsell.description}
+                          </p>
+                        )}
                       </div>
                       <div className="text-right flex flex-col items-end">
                         <span className="font-bold text-slate-900">{formatMoney(upsell.price, "USD")}</span>

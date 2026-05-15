@@ -42,6 +42,10 @@ interface HubUpsell {
   id: string;
   name: string;
   description: string | null;
+  // i18n (Sprint 5.5). El hub elige entre name/nameEn según `lang` con
+  // fallback al ES si la traducción no está cargada.
+  nameEn: string | null;
+  descriptionEn: string | null;
   category: string;
   iconName: string;
   price: number;
@@ -67,6 +71,8 @@ interface HubUpsell {
 interface CartItem {
   upsellId: string;
   name: string;
+  /** Nombre EN (i18n Sprint 5.5). Si lang=EN y existe, se muestra acá. */
+  nameEn: string | null;
   pricingModel: PricingModel;
   unitPrice: number;
   quantity: number;
@@ -108,6 +114,18 @@ function getMinServiceDate(cutoffHours: number): string {
   const d = new Date();
   d.setHours(d.getHours() + cutoffHours);
   return d.toISOString().slice(0, 10);
+}
+
+// i18n picker — devuelve el texto EN si existe y lang=en, sino fallback al ES.
+// El fallback es importante: si el host solo cargó español, el huésped EN
+// igual ve algo (mejor que tener un campo vacío en su idioma).
+function pickI18n(
+  lang: "es" | "en",
+  esText: string | null | undefined,
+  enText: string | null | undefined,
+): string {
+  if (lang === "en" && enText && enText.trim()) return enText;
+  return esText ?? "";
 }
 
 // ─── Helper: lectura/escritura del carrito en sessionStorage ────────────────
@@ -338,7 +356,11 @@ export default function UpsellExperiences({
       const qtyLabel = suffix ? `× ${it.quantity} ${suffix}${it.quantity > 1 ? "s" : ""}` : "";
       const total = formatMoney(it.quantity * it.unitPrice, it.currency);
       const date = it.serviceDate ? ` (${it.serviceDate})` : "";
-      lines.push(`• ${it.name}${date} ${qtyLabel} — ${total}`);
+      // Nombre en el idioma del huésped para que el WhatsApp coincida con
+      // lo que vio en pantalla. El host recibe en su propio canal según
+      // su config — server snapshotea desde BD al crear la orden.
+      const itemName = pickI18n(lang, it.name, it.nameEn);
+      lines.push(`• ${itemName}${date} ${qtyLabel} — ${total}`);
     }
     lines.push("");
     lines.push(
@@ -390,6 +412,10 @@ export default function UpsellExperiences({
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
             {experiences.map((exp) => {
               const suffix = PRICING_SUFFIX[exp.pricingModel];
+              // i18n — usa la traducción EN si existe y el huésped está
+              // mirando el hub en inglés. Fallback al ES sino.
+              const displayName = pickI18n(lang, exp.name, exp.nameEn);
+              const displayDescription = pickI18n(lang, exp.description, exp.descriptionEn);
               return (
                 <button
                   key={exp.id}
@@ -403,7 +429,7 @@ export default function UpsellExperiences({
                       {/* eslint-disable-next-line @next/next/no-img-element */}
                       <img
                         src={exp.heroPhoto}
-                        alt={exp.name}
+                        alt={displayName}
                         className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
                         loading="lazy"
                       />
@@ -426,10 +452,10 @@ export default function UpsellExperiences({
 
                   <div className="p-6 flex flex-col gap-3">
                     <div>
-                      <h3 className="font-bold text-xl text-slate-900 mb-1 line-clamp-1">{exp.name}</h3>
-                      {exp.description && (
+                      <h3 className="font-bold text-xl text-slate-900 mb-1 line-clamp-1">{displayName}</h3>
+                      {displayDescription && (
                         <p className="text-slate-500 text-sm leading-relaxed line-clamp-2 min-h-[40px]">
-                          {exp.description}
+                          {displayDescription}
                         </p>
                       )}
                     </div>
@@ -528,7 +554,9 @@ export default function UpsellExperiences({
                     className="flex items-start gap-3 p-3 border rounded-xl"
                   >
                     <div className="flex-1 min-w-0">
-                      <p className="font-semibold text-sm truncate">{it.name}</p>
+                      <p className="font-semibold text-sm truncate">
+                        {pickI18n(lang, it.name, it.nameEn)}
+                      </p>
                       {/* Fecha editable inline. Antes era texto plano, lo que
                           obligaba al huésped a quitar el item y re-agregarlo
                           si el server rechazaba por cutoff. */}
@@ -730,6 +758,10 @@ function UpsellDetail({ upsell, lang, onClose, onAdd }: DetailProps) {
   const [serviceDate, setServiceDate] = useState("");
   const [activePhotoIdx, setActivePhotoIdx] = useState(0);
 
+  // i18n — texto a mostrar según idioma seleccionado por el huésped.
+  const displayName = pickI18n(lang, upsell.name, upsell.nameEn);
+  const displayDescription = pickI18n(lang, upsell.description, upsell.descriptionEn);
+
   // Sprint 5 — campos dinámicos según los flags del upsell. Default vacío;
   // se validan abajo en `canAdd` solo si requires_X=true.
   const [serviceTime, setServiceTime] = useState("");
@@ -772,7 +804,7 @@ function UpsellDetail({ upsell, lang, onClose, onAdd }: DetailProps) {
     <Sheet open={true} onOpenChange={(o) => !o && onClose()}>
       <SheetContent className="w-full sm:max-w-2xl overflow-y-auto">
         <SheetHeader>
-          <SheetTitle>{upsell.name}</SheetTitle>
+          <SheetTitle>{displayName}</SheetTitle>
           {upsell.vendor && (
             <SheetDescription className="flex items-center gap-2">
               <Store className="h-3 w-3" /> {lang === "es" ? "Por" : "By"} {upsell.vendor.name}
@@ -820,12 +852,12 @@ function UpsellDetail({ upsell, lang, onClose, onAdd }: DetailProps) {
             </div>
           )}
 
-          {upsell.description && (
+          {displayDescription && (
             <div>
               <h4 className="font-semibold mb-2">
                 {lang === "es" ? "Descripción" : "Description"}
               </h4>
-              <p className="text-sm text-slate-600 whitespace-pre-wrap">{upsell.description}</p>
+              <p className="text-sm text-slate-600 whitespace-pre-wrap">{displayDescription}</p>
             </div>
           )}
 
@@ -1011,6 +1043,7 @@ function UpsellDetail({ upsell, lang, onClose, onAdd }: DetailProps) {
               onAdd({
                 upsellId: upsell.id,
                 name: upsell.name,
+                nameEn: upsell.nameEn,
                 pricingModel: upsell.pricingModel,
                 unitPrice: upsell.price,
                 quantity: upsell.pricingModel === "fixed" ? 1 : quantity,

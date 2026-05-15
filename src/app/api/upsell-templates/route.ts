@@ -15,6 +15,8 @@ type Row = {
   id: string;
   name: string;
   description: string | null;
+  name_en: string | null;
+  description_en: string | null;
   category: string;
   icon_name: string;
   hero_photo: string | null;
@@ -73,6 +75,8 @@ export async function GET(req: NextRequest) {
     id: r.id,
     name: r.name,
     description: r.description,
+    nameEn: r.name_en,
+    descriptionEn: r.description_en,
     category: r.category,
     iconName: r.icon_name,
     heroPhoto: r.hero_photo,

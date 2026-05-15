@@ -49,6 +49,8 @@ interface StoredUpsell {
   id: string;
   name: string;
   description: string | null;
+  nameEn: string | null;
+  descriptionEn: string | null;
   category: string;
   iconName: string;
   price: number;

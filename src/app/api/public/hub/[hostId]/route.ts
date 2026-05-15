@@ -147,7 +147,7 @@ export async function GET(
   const { data: upsellRows } = await supabaseAdmin
     .from("upsells")
     .select(`
-      id, name, description, category, icon_name,
+      id, name, description, name_en, description_en, category, icon_name,
       price, currency, hero_photo, gallery_photos,
       pricing_model, min_quantity, max_quantity, cutoff_hours,
       time_field, pickup_field, flight_field, notes_placeholder,
@@ -160,6 +160,7 @@ export async function GET(
 
   type UpsellRow = {
     id: string; name: string; description: string | null;
+    name_en: string | null; description_en: string | null;
     category: string; icon_name: string;
     price: number | string; currency: string;
     hero_photo: string | null; gallery_photos: unknown;
@@ -205,6 +206,8 @@ export async function GET(
       id: u.id,
       name: u.name,
       description: u.description,
+      nameEn: u.name_en,
+      descriptionEn: u.description_en,
       category: u.category,
       iconName: u.icon_name,
       price: Number(u.price),

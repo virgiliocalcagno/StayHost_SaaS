@@ -67,6 +67,10 @@ interface PropertyLite {
 interface UpsellFormState {
   name: string;
   description: string;
+  // i18n (Sprint 5.5): traducción EN del nombre + descripción. Null o
+  // vacío → el hub público hace fallback al ES al cambiar idioma.
+  nameEn: string;
+  descriptionEn: string;
   price: number;
   category: UpsellCategory;
   iconName: string;
@@ -98,6 +102,8 @@ interface UpsellFormState {
 const emptyUpsellForm: UpsellFormState = {
   name: "",
   description: "",
+  nameEn: "",
+  descriptionEn: "",
   price: 0,
   category: "service",
   iconName: "Sparkles",
@@ -173,6 +179,8 @@ export default function UpsellsPanel() {
   const [tenantId, setTenantId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  // Estado del botón "Auto-traducir con IA" (Sprint 5.5 i18n).
+  const [translating, setTranslating] = useState(false);
 
   // IDs temporales generados al abrir el form de creación. Permiten que
   // el host suba fotos ANTES de guardar el producto/vendor (cuando aún no
@@ -352,6 +360,8 @@ export default function UpsellsPanel() {
     setUpsellForm({
       name: u.name,
       description: u.description ?? "",
+      nameEn: u.nameEn ?? "",
+      descriptionEn: u.descriptionEn ?? "",
       price: u.price,
       category: u.category,
       iconName: u.iconName,
@@ -391,6 +401,45 @@ export default function UpsellsPanel() {
     }
   };
 
+  // Llama a /api/upsells/translate (Gemini Flash-Lite) y rellena los
+  // campos EN del form. El host puede editar después si la traducción no
+  // es exactamente lo que quiere.
+  const handleAutoTranslate = async () => {
+    if (translating) return;
+    const name = upsellForm.name.trim();
+    const description = upsellForm.description.trim();
+    if (!name && !description) {
+      alert("Completá primero el nombre o descripción en español.");
+      return;
+    }
+    setTranslating(true);
+    try {
+      const res = await fetch("/api/upsells/translate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ name, description }),
+      });
+      const j = (await res.json().catch(() => ({}))) as {
+        ok?: boolean;
+        name?: string | null;
+        description?: string | null;
+        error?: string;
+      };
+      if (!res.ok || !j.ok) {
+        alert(j.error ?? "No se pudo traducir. Probá de nuevo.");
+        return;
+      }
+      setUpsellForm((prev) => ({
+        ...prev,
+        nameEn: j.name ?? prev.nameEn,
+        descriptionEn: j.description ?? prev.descriptionEn,
+      }));
+    } finally {
+      setTranslating(false);
+    }
+  };
+
   const handleSaveUpsell = async () => {
     if (saving) return;
     if (!upsellForm.name.trim()) return;
@@ -421,6 +470,8 @@ export default function UpsellsPanel() {
       const payload = {
         name: upsellForm.name.trim(),
         description: upsellForm.description || null,
+        nameEn: upsellForm.nameEn.trim() || null,
+        descriptionEn: upsellForm.descriptionEn.trim() || null,
         price: Number(upsellForm.price) || 0,
         category: upsellForm.category,
         iconName: upsellForm.iconName,
@@ -1248,6 +1299,63 @@ export default function UpsellsPanel() {
                 onChange={(e) => setUpsellForm({ ...upsellForm, description: e.target.value })}
                 placeholder="Qué incluye, duración, qué llevar…"
               />
+            </div>
+
+            {/* i18n EN (Sprint 5.5) — traducción al inglés con asistencia IA.
+                Sin esto, el huésped que cambia el idioma del hub ve el chrome
+                en inglés pero el catálogo del host en español → poco serio. */}
+            <div className="space-y-3 p-4 border rounded-xl bg-violet-50/40 border-violet-100">
+              <div className="flex items-start justify-between gap-3 flex-wrap">
+                <div>
+                  <h4 className="font-medium text-sm">🇺🇸 Versión en inglés</h4>
+                  <p className="text-[11px] text-muted-foreground mt-0.5">
+                    Lo que ven los huéspedes que cambian el hub a English. Si lo dejás
+                    vacío, se muestra el español como fallback (no se rompe nada).
+                  </p>
+                </div>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  onClick={handleAutoTranslate}
+                  disabled={translating || (!upsellForm.name.trim() && !upsellForm.description.trim())}
+                  className="shrink-0"
+                >
+                  {translating ? (
+                    <>
+                      <Loader2 className="h-3 w-3 mr-1.5 animate-spin" />
+                      Traduciendo…
+                    </>
+                  ) : (
+                    <>✨ Auto-traducir con IA</>
+                  )}
+                </Button>
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="nameEn" className="text-xs">
+                  Name (English)
+                </Label>
+                <Input
+                  id="nameEn"
+                  value={upsellForm.nameEn}
+                  onChange={(e) => setUpsellForm({ ...upsellForm, nameEn: e.target.value })}
+                  placeholder="Ex: Bávaro Beach Catamaran"
+                  maxLength={200}
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="descEn" className="text-xs">
+                  Description (English)
+                </Label>
+                <Textarea
+                  id="descEn"
+                  rows={3}
+                  value={upsellForm.descriptionEn}
+                  onChange={(e) => setUpsellForm({ ...upsellForm, descriptionEn: e.target.value })}
+                  placeholder="Half-day catamaran tour along Bávaro coast…"
+                  maxLength={2000}
+                />
+              </div>
             </div>
 
             {/* Pricing block — la parte clave de Sprint 1.5 */}

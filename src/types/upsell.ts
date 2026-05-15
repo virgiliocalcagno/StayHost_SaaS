@@ -40,6 +40,10 @@ export interface Upsell {
   vendorId: string | null;        // null = el host lo entrega directo
   name: string;
   description: string | null;
+  /** Nombre en inglés. Si null, el hub público hace fallback a `name` (ES). */
+  nameEn: string | null;
+  /** Descripción en inglés. Si null, fallback a `description` (ES). */
+  descriptionEn: string | null;
   category: UpsellCategory;
   iconName: string;
   price: number;                  // precio público (lo que paga el huésped)

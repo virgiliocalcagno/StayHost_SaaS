@@ -134,6 +134,8 @@ type UpsellRow = {
   vendor_id: string | null;
   name: string;
   description: string | null;
+  name_en: string | null;
+  description_en: string | null;
   category: string;
   icon_name: string;
   price: string | number;
@@ -171,6 +173,8 @@ function rowToUpsell(row: UpsellRow): Upsell {
     vendorId: row.vendor_id,
     name: row.name,
     description: row.description,
+    nameEn: row.name_en,
+    descriptionEn: row.description_en,
     category: (isValidCategory(row.category) ? row.category : "other"),
     iconName: row.icon_name,
     price: Number(row.price),
@@ -416,11 +420,20 @@ export async function POST(req: NextRequest) {
     }
   }
 
+  const nameEn = typeof body.nameEn === "string" && body.nameEn.trim()
+    ? body.nameEn.trim().slice(0, 200)
+    : null;
+  const descriptionEn = typeof body.descriptionEn === "string" && body.descriptionEn.trim()
+    ? body.descriptionEn.trim().slice(0, 2000)
+    : null;
+
   const insertRow: Record<string, unknown> = {
     tenant_id: tenantId,
     vendor_id: vendorId,
     name,
     description: typeof body.description === "string" ? body.description : null,
+    name_en: nameEn,
+    description_en: descriptionEn,
     category,
     icon_name: typeof body.iconName === "string" && body.iconName ? body.iconName : "Sparkles",
     price,
@@ -489,6 +502,17 @@ export async function PATCH(req: NextRequest) {
     // Coerción defensiva: si llega un objeto/array, lo descartamos. Sin esto
     // Postgres rechaza con 500 genérico cuando el tipo no es text.
     patch.description = typeof body.description === "string" ? body.description : null;
+  }
+  // i18n: nameEn / descriptionEn aceptan null o string. Null = limpia traducción.
+  if (body.nameEn !== undefined) {
+    patch.name_en = typeof body.nameEn === "string" && body.nameEn.trim()
+      ? body.nameEn.trim().slice(0, 200)
+      : null;
+  }
+  if (body.descriptionEn !== undefined) {
+    patch.description_en = typeof body.descriptionEn === "string" && body.descriptionEn.trim()
+      ? body.descriptionEn.trim().slice(0, 2000)
+      : null;
   }
   if (body.category !== undefined) {
     if (!isValidCategory(body.category)) {
