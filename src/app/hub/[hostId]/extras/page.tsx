@@ -21,6 +21,7 @@
 //   - Empty state propio si el host no tiene experiencias cargadas
 
 import { use, useState, useEffect, useMemo } from "react";
+import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -34,6 +35,7 @@ import {
   Heart,
   Sparkles,
   ChevronRight,
+  User,
 } from "lucide-react";
 import { useLanguage } from "../../LanguageContext";
 import UpsellExperiences from "../UpsellExperiences";
@@ -42,6 +44,8 @@ import {
   getCategoryGradient,
   getCategoryIconColor,
 } from "@/lib/upsell/categoryVisuals";
+import { getSupabaseBrowserClient } from "@/lib/supabase/client";
+import GuestAuthModal from "@/components/auth/GuestAuthModal";
 
 type PricingModel = "fixed" | "per_person" | "per_unit" | "per_kg" | "per_night";
 
@@ -105,6 +109,22 @@ export default function HubExtrasPage({ params }: { params: Promise<{ hostId: st
   const [experiences, setExperiences] = useState<StoredUpsell[]>([]);
   const [loading, setLoading] = useState(true);
   const [notFound, setNotFound] = useState(false);
+
+  // Sprint 8a — estado del huésped logueado.
+  const [guestEmail, setGuestEmail] = useState<string | null>(null);
+  const [authModalOpen, setAuthModalOpen] = useState(false);
+
+  // Detectar sesión actual del huésped (si la hay).
+  useEffect(() => {
+    const supabase = getSupabaseBrowserClient();
+    supabase.auth.getUser().then(({ data: { user } }) => {
+      if (user?.email) setGuestEmail(user.email);
+    });
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      setGuestEmail(session?.user?.email ?? null);
+    });
+    return () => subscription.unsubscribe();
+  }, []);
 
   useEffect(() => {
     fetch(`/api/public/hub/${encodeURIComponent(hostId)}`, { cache: "no-store" })
@@ -194,6 +214,27 @@ export default function HubExtrasPage({ params }: { params: Promise<{ hostId: st
           </Badge>
         </div>
         <div className="flex items-center gap-2 shrink-0">
+          {/* Sprint 8a — botón cuenta. Si está logueado, va a /cuenta;
+              si no, abre el modal de login. */}
+          {guestEmail ? (
+            <Link
+              href="/cuenta"
+              className="flex items-center gap-1.5 px-3 h-9 rounded-full bg-emerald-50 border border-emerald-200 hover:bg-emerald-100 text-emerald-800 font-semibold text-sm transition-colors"
+              title={guestEmail}
+            >
+              <User className="w-4 h-4" />
+              <span className="hidden sm:inline">Mi cuenta</span>
+            </Link>
+          ) : (
+            <button
+              type="button"
+              onClick={() => setAuthModalOpen(true)}
+              className="flex items-center gap-1.5 px-3 h-9 rounded-full border border-slate-200 bg-white hover:bg-slate-50 font-semibold text-sm transition-colors"
+            >
+              <User className="w-4 h-4 text-slate-500" />
+              <span className="hidden sm:inline">{lang === "es" ? "Iniciar sesión" : "Sign in"}</span>
+            </button>
+          )}
           {/* Idioma — visible y claro con bandera/código.
               Sticky para que el huésped lo encuentre rápido al scrollear. */}
           <button
@@ -497,6 +538,8 @@ export default function HubExtrasPage({ params }: { params: Promise<{ hostId: st
           ✨ {t("shopFooterPowered")}
         </p>
       </footer>
+
+      <GuestAuthModal open={authModalOpen} onOpenChange={setAuthModalOpen} />
     </main>
   );
 }

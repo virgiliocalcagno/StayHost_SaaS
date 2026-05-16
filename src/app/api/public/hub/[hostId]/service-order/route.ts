@@ -27,6 +27,7 @@
  */
 import { NextRequest, NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabase/admin";
+import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { DEFAULT_TENANT_TZ } from "@/lib/datetime/tenant-time";
 import { generateRedemptionPin, generateRedemptionToken } from "@/lib/upsell/redemption";
 
@@ -462,6 +463,21 @@ export async function POST(
   const redemptionToken = generateRedemptionToken();
   const redemptionPin = generateRedemptionPin();
 
+  // Sprint 8a — si el huésped está logueado, vinculamos la orden a su
+  // auth_user_id al instante. La leemos vía sesión Supabase (cookie).
+  // Si no hay sesión, queda NULL y se vincula retroactivo al primer login.
+  let guestAuthUserId: string | null = null;
+  try {
+    const supabase = await createSupabaseServerClient();
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
+    if (user?.id) guestAuthUserId = user.id;
+  } catch {
+    // Si falla la auth (cookies raras, etc) seguimos sin vincular — no
+    // bloquea la compra. El linkeo retroactivo al login lo arregla.
+  }
+
   const { data: orderInsert, error: orderErr } = await supabaseAdmin
     .from("service_orders")
     .insert({
@@ -475,6 +491,7 @@ export async function POST(
       notes,
       redemption_token: redemptionToken,
       redemption_pin: redemptionPin,
+      guest_auth_user_id: guestAuthUserId,
     } as never)
     .select("id, customer_token")
     .single();
