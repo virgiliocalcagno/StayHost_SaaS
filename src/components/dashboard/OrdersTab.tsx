@@ -237,24 +237,22 @@ export default function OrdersTab() {
       const j = (await res.json().catch(() => ({}))) as {
         ok?: boolean;
         emailSent?: boolean;
-        notificationPref?: string;
+        channels?: string[];
         error?: string;
       };
       if (!res.ok || !j.ok) {
         alert(j.error ?? "No se pudo reasignar");
         return;
       }
-      if (j.emailSent) {
-        alert(`✓ Reasignada a ${vendorLabel}. Email enviado al nuevo vendor.`);
-      } else if (j.notificationPref === "whatsapp_manual") {
-        alert(
-          `✓ Reasignada a ${vendorLabel}.\n\nEste vendor está configurado como "WhatsApp manual" — usá el botón "Avisar al vendor" para coordinar.`,
-        );
-      } else {
-        alert(
-          `✓ Reasignada a ${vendorLabel}.\n\nNo se pudo mandar email automático (vendor sin email). Coordinala manual.`,
-        );
-      }
+      const ch = j.channels ?? [];
+      const usedChannels = [];
+      if (ch.includes("push")) usedChannels.push("push notification");
+      if (j.emailSent) usedChannels.push("email");
+      if (ch.includes("whatsapp_business")) usedChannels.push("WhatsApp Business");
+      const summary = usedChannels.length > 0
+        ? `Notificación enviada por: ${usedChannels.join(", ")}.`
+        : "Sin canales auto habilitados — coordinala manual.";
+      alert(`✓ Reasignada a ${vendorLabel}.\n\n${summary}`);
       await load();
     } finally {
       setActing(null);

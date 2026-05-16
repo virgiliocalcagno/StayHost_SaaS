@@ -15,6 +15,48 @@ export {
 
 export type PaymentTerms = "on_completion" | "pre_paid" | "split";
 
+// Canales de notificación que el host puede habilitar por vendor (Sprint 7.6).
+// El host puede activar cualquier combinación con checkboxes en el form.
+export type VendorNotificationChannel =
+  | "email"               // email automático (gratis, Gmail SMTP)
+  | "push"                // Web Push PWA (gratis, instantáneo)
+  | "whatsapp_manual"     // habilita botón WhatsApp en OrdersTab (manual)
+  | "whatsapp_business";  // Meta Cloud API auto (requiere setup Meta + tokens)
+
+export const VENDOR_NOTIFICATION_CHANNEL_META: Record<
+  VendorNotificationChannel,
+  { icon: string; label: string; hint: string; auto: boolean; status: "ready" | "pending_setup" }
+> = {
+  email: {
+    icon: "📧",
+    label: "Email automático",
+    hint: "Constancia documental. Llega lento — no es operativo en LATAM.",
+    auto: true,
+    status: "ready",
+  },
+  push: {
+    icon: "🔔",
+    label: "Notificación Push (PWA)",
+    hint: "Instantáneo en el celular del vendor. Requiere que abra el portal 1 vez para activar.",
+    auto: true,
+    status: "ready",
+  },
+  whatsapp_manual: {
+    icon: "💬",
+    label: "WhatsApp manual",
+    hint: "Habilita el botón 'Avisar al vendor' en el panel Pedidos. Vos clickeás cuando querés.",
+    auto: false,
+    status: "ready",
+  },
+  whatsapp_business: {
+    icon: "🌐",
+    label: "WhatsApp Business (automático)",
+    hint: "Mensaje auto vía Meta Cloud API. Requiere setup en Meta Business + número verificado + template aprobado.",
+    auto: true,
+    status: "pending_setup",
+  },
+};
+
 export interface UpsellVendor {
   id: string;
   tenantId: string;
@@ -46,11 +88,13 @@ export interface UpsellVendor {
   defaultFlatFee: number | null;
   paymentTerms: PaymentTerms;
 
-  // Sprint 7 — cómo notificar al vendor cuando una orden pasa a paid.
-  //   email          → email automático con link único al portal
-  //   whatsapp_manual → el host clickea botón en OrdersTab (sin automático)
-  //   both           → email auto + WhatsApp disponible (default)
-  notificationPref: "email" | "whatsapp_manual" | "both";
+  // Sprint 7.6 — multi-canal de notificación. El host elige cualquier
+  // combinación de canales por vendor.
+  //   email             → email automático (gratis, Gmail SMTP)
+  //   push              → Web Push PWA (gratis, instantáneo)
+  //   whatsapp_manual   → habilita botón en OrdersTab (sin auto)
+  //   whatsapp_business → WhatsApp Business API Meta Cloud (req setup)
+  notificationChannels: VendorNotificationChannel[];
 
   // Contrato (Sprint 5)
   agreementAcceptedAt: string | null;

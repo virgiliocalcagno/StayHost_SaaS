@@ -104,13 +104,15 @@ export async function POST(
   // Validar que el nuevo vendor pertenece al tenant.
   const { data: newVendor } = await supabase
     .from("upsell_vendors")
-    .select("id, name, display_name, email, notification_pref, active")
+    .select("id, name, display_name, email, phone, notification_channels, active")
     .eq("id", newVendorId)
     .eq("tenant_id", tenantId)
     .maybeSingle();
   const vendor = newVendor as {
     id: string; name: string; display_name: string | null; email: string | null;
-    notification_pref: string | null; active: boolean;
+    phone: string | null;
+    notification_channels: unknown;
+    active: boolean;
   } | null;
   if (!vendor) {
     return NextResponse.json(
@@ -154,26 +156,46 @@ export async function POST(
     } as never)
     .eq("id", order.id);
 
-  // Sprint 7.5 — push notification al nuevo vendor ANTES del email
-  // (si tiene subscription registrada). Helper es no-op si no hay subs.
-  const baseUrlForPush = process.env.NEXT_PUBLIC_APP_URL ?? new URL(req.url).origin;
-  await sendPushToVendor({
-    vendorId: newVendorId,
-    payload: {
-      title: `🔁 Orden reasignada — ${order.guest_name}`,
-      body: "El host te asignó esta orden. Abrí para confirmar.",
-      url: `${baseUrlForPush}/v/${encodeURIComponent(order.redemption_token ?? "")}?k=${encodeURIComponent(newActionToken)}`,
-      tag: `order-${order.id.slice(0, 8)}`,
-    },
-  }).catch((e) => {
-    console.error("[reassign] push failed (non-fatal):", e);
-  });
+  // Sprint 7.6 — rutea según canales habilitados para el vendor.
+  const channels = Array.isArray(vendor.notification_channels)
+    ? (vendor.notification_channels as string[])
+    : ["email", "whatsapp_manual", "push"];
 
-  // Email al nuevo vendor (si notif_pref lo permite). Reutilizamos el
-  // template del capture endpoint.
-  const pref = vendor.notification_pref ?? "both";
+  const baseUrlForPush = process.env.NEXT_PUBLIC_APP_URL ?? new URL(req.url).origin;
+  const manageUrl = `${baseUrlForPush}/v/${encodeURIComponent(order.redemption_token ?? "")}?k=${encodeURIComponent(newActionToken)}`;
+
+  // Push notification
+  if (channels.includes("push")) {
+    await sendPushToVendor({
+      vendorId: newVendorId,
+      payload: {
+        title: `🔁 Orden reasignada — ${order.guest_name}`,
+        body: "El host te asignó esta orden. Abrí para confirmar.",
+        url: manageUrl,
+        tag: `order-${order.id.slice(0, 8)}`,
+      },
+    }).catch((e) => {
+      console.error("[reassign] push failed (non-fatal):", e);
+    });
+  }
+
+  // WhatsApp Business — auto si el canal está habilitado.
+  if (channels.includes("whatsapp_business") && vendor.phone) {
+    const { sendWhatsAppBusinessOrderNotice } = await import("@/lib/whatsapp/meta-cloud");
+    await sendWhatsAppBusinessOrderNotice({
+      vendorPhone: vendor.phone,
+      vendorName: vendor.display_name ?? vendor.name,
+      guestName: order.guest_name,
+      summary: "Orden reasignada",
+      manageUrl,
+    }).catch((e) => {
+      console.error("[reassign] WhatsApp Business failed (non-fatal):", e);
+    });
+  }
+
+  // Email — solo si canal habilitado + vendor tiene email.
   let emailSent = false;
-  if (vendor.email && pref !== "whatsapp_manual" && order.redemption_token) {
+  if (vendor.email && channels.includes("email") && order.redemption_token) {
     try {
       // Cargar items con info completa para el email — solo los del nuevo vendor.
       const { data: items } = await supabaseAdmin
@@ -207,11 +229,6 @@ export async function POST(
         } | null;
         const hostName = tRow?.company || tRow?.name || "Tu host";
         const hostEmail = tRow?.contact_email ?? tRow?.email ?? null;
-
-        const baseUrl = process.env.NEXT_PUBLIC_APP_URL ?? new URL(req.url).origin;
-        const manageUrl =
-          `${baseUrl}/v/${encodeURIComponent(order.redemption_token)}` +
-          `?k=${encodeURIComponent(newActionToken)}`;
 
         const { subject, html } = renderServiceOrderVendorEmail({
           vendorName: vendor.display_name ?? vendor.name,
@@ -257,6 +274,6 @@ export async function POST(
     ok: true,
     newVendorId,
     emailSent,
-    notificationPref: pref,
+    channels,
   });
 }

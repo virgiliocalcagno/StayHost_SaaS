@@ -18,7 +18,27 @@ import type {
   UpsellVendorCategory,
   PaymentTerms,
   VendorPricingMethod,
+  VendorNotificationChannel,
 } from "@/types/upsellVendor";
+
+const VALID_CHANNELS = new Set<VendorNotificationChannel>([
+  "email",
+  "push",
+  "whatsapp_manual",
+  "whatsapp_business",
+]);
+
+function parseChannels(raw: unknown): VendorNotificationChannel[] {
+  if (!Array.isArray(raw)) return ["email", "whatsapp_manual", "push"];
+  const out: VendorNotificationChannel[] = [];
+  for (const v of raw) {
+    if (typeof v === "string" && (VALID_CHANNELS as Set<string>).has(v)) {
+      out.push(v as VendorNotificationChannel);
+    }
+  }
+  // De-duplicar manteniendo orden de inserción.
+  return Array.from(new Set(out));
+}
 
 const VALID_CATEGORIES = new Set<UpsellVendorCategory>([
   "excursion",
@@ -105,7 +125,7 @@ type VendorRow = {
   default_fixed_cost: string | number | null;
   default_flat_fee: string | number | null;
   payment_terms: string;
-  notification_pref: string | null;
+  notification_channels: unknown;
   agreement_accepted_at: string | null;
   agreement_version: string | null;
   agreement_pdf_path: string | null;
@@ -141,12 +161,7 @@ function rowToVendor(row: VendorRow): UpsellVendor {
     defaultFixedCost: row.default_fixed_cost != null ? Number(row.default_fixed_cost) : null,
     defaultFlatFee: row.default_flat_fee != null ? Number(row.default_flat_fee) : null,
     paymentTerms: isValidPaymentTerms(row.payment_terms) ? row.payment_terms : "on_completion",
-    notificationPref:
-      row.notification_pref === "email" ||
-      row.notification_pref === "whatsapp_manual" ||
-      row.notification_pref === "both"
-        ? row.notification_pref
-        : "both",
+    notificationChannels: parseChannels(row.notification_channels),
     agreementAcceptedAt: row.agreement_accepted_at,
     agreementVersion: row.agreement_version,
     agreementPdfPath: row.agreement_pdf_path,
@@ -279,12 +294,7 @@ export async function POST(req: NextRequest) {
     default_fixed_cost: defaultFixedCost,
     default_flat_fee: defaultFlatFee,
     payment_terms: paymentTerms,
-    notification_pref: (
-      body.notificationPref === "email" ||
-      body.notificationPref === "whatsapp_manual"
-        ? body.notificationPref
-        : "both"
-    ),
+    notification_channels: parseChannels(body.notificationChannels),
     notes: typeof body.notes === "string" ? body.notes : null,
     active: body.active !== false,
   };
@@ -386,15 +396,17 @@ export async function PATCH(req: NextRequest) {
     }
     patch.payment_terms = body.paymentTerms;
   }
-  if (body.notificationPref !== undefined) {
-    if (
-      body.notificationPref !== "email" &&
-      body.notificationPref !== "whatsapp_manual" &&
-      body.notificationPref !== "both"
-    ) {
-      return NextResponse.json({ error: "notificationPref inválido" }, { status: 400 });
+  if (body.notificationChannels !== undefined) {
+    if (!Array.isArray(body.notificationChannels)) {
+      return NextResponse.json(
+        { error: "notificationChannels debe ser array" },
+        { status: 400 },
+      );
     }
-    patch.notification_pref = body.notificationPref;
+    // Filtramos canales inválidos en lugar de rechazar — más tolerante a
+    // que el cliente mande algún canal nuevo no soportado todavía.
+    const channels = parseChannels(body.notificationChannels);
+    patch.notification_channels = channels;
   }
   if (body.notes !== undefined) patch.notes = typeof body.notes === "string" ? body.notes : null;
   if (body.active !== undefined) patch.active = !!body.active;

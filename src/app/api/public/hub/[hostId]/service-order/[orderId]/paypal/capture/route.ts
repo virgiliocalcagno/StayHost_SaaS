@@ -293,7 +293,7 @@ export async function POST(
           const vendorIds = Array.from(itemsByVendor.keys());
           const { data: vendors } = await supabaseAdmin
             .from("upsell_vendors")
-            .select("id, name, display_name, email, notification_pref")
+            .select("id, name, display_name, email, phone, notification_channels")
             .in("id", vendorIds)
             .eq("tenant_id", order.tenant_id);
 
@@ -302,11 +302,14 @@ export async function POST(
             name: string;
             display_name: string | null;
             email: string | null;
-            notification_pref: string | null;
+            phone: string | null;
+            notification_channels: unknown;
           };
 
           for (const v of ((vendors ?? []) as VendorRow[])) {
-            const pref = v.notification_pref ?? "both";
+            const channels = Array.isArray(v.notification_channels)
+              ? (v.notification_channels as string[])
+              : ["email", "whatsapp_manual", "push"];
             const vendorItems = itemsByVendor.get(v.id) ?? [];
             if (vendorItems.length === 0) continue;
 
@@ -319,32 +322,53 @@ export async function POST(
               `${baseUrl}/v/${encodeURIComponent(order.redemption_token!)}` +
               `?k=${encodeURIComponent(vendorActionToken)}`;
 
-            // Sprint 7.5 — push notification SIEMPRE se intenta, incluso si
-            // notification_pref='whatsapp_manual'. La PWA del vendor es el
-            // canal instantáneo principal en Punta Cana; el email/WhatsApp
-            // son backup. Si no hay subscription registrada, el helper es no-op.
+            // Sprint 7.6 — rutea por canales habilitados por el host.
             const firstItemName = vendorItems[0]?.name ?? "Nueva orden";
             const extraItemsLabel = vendorItems.length > 1
               ? ` (+${vendorItems.length - 1} más)`
               : "";
-            await sendPushToVendor({
-              vendorId: v.id,
-              payload: {
-                title: `🛎 Nueva orden de ${order.guest_name}`,
-                body: `${firstItemName}${extraItemsLabel} — abrí para confirmar.`,
-                url: manageUrl,
-                tag: `order-${order.id.slice(0, 8)}`,
-              },
-            }).catch((pErr) => {
-              console.error(
-                `[capture] vendor push failed for vendor ${v.id}:`,
-                pErr,
-              );
-            });
 
-            // Email: skip si pref='whatsapp_manual' o sin email configurado.
-            // (Si solo tenía push, ya recibió la notif arriba.)
-            if (pref === "whatsapp_manual") continue;
+            // PUSH — instantáneo, gratis. Skip si el host no lo habilitó.
+            if (channels.includes("push")) {
+              await sendPushToVendor({
+                vendorId: v.id,
+                payload: {
+                  title: `🛎 Nueva orden de ${order.guest_name}`,
+                  body: `${firstItemName}${extraItemsLabel} — abrí para confirmar.`,
+                  url: manageUrl,
+                  tag: `order-${order.id.slice(0, 8)}`,
+                },
+              }).catch((pErr) => {
+                console.error(
+                  `[capture] vendor push failed for vendor ${v.id}:`,
+                  pErr,
+                );
+              });
+            }
+
+            // WHATSAPP BUSINESS — Meta Cloud API auto. El helper es no-op
+            // hasta que Virgilio configure las env vars de Meta. Requiere
+            // que el vendor tenga phone registrado.
+            if (channels.includes("whatsapp_business") && v.phone) {
+              const { sendWhatsAppBusinessOrderNotice } = await import(
+                "@/lib/whatsapp/meta-cloud"
+              );
+              await sendWhatsAppBusinessOrderNotice({
+                vendorPhone: v.phone,
+                vendorName: v.display_name ?? v.name,
+                guestName: order.guest_name,
+                summary: `${firstItemName}${extraItemsLabel}`,
+                manageUrl,
+              }).catch((wErr) => {
+                console.error(
+                  `[capture] WhatsApp Business failed for vendor ${v.id}:`,
+                  wErr,
+                );
+              });
+            }
+
+            // EMAIL — solo si canal habilitado Y vendor tiene email.
+            if (!channels.includes("email")) continue;
             if (!v.email) continue;
 
             const { subject, html } = renderServiceOrderVendorEmail({
