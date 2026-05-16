@@ -18,6 +18,13 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
   ShoppingCart,
   Phone,
   Mail,
@@ -82,6 +89,10 @@ interface Order {
   refundAmount: number | null;
   refundPaymentId: string | null;
   refundNote: string | null;
+  // Sprint 7 — estado del lado del vendor + razón de decline si aplica.
+  vendorStatus: string | null;
+  vendorDeclinedAt: string | null;
+  vendorDeclineReason: string | null;
   items: OrderItem[];
 }
 
@@ -103,8 +114,17 @@ const PRICING_SUFFIX: Record<string, string> = {
 
 type FilterStatus = "all" | "pending" | "paid" | "completed" | "cancelled" | "refunded";
 
+interface VendorOption {
+  id: string;
+  name: string;
+  displayName: string | null;
+  category: string;
+  active: boolean;
+}
+
 export default function OrdersTab() {
   const [orders, setOrders] = useState<Order[]>([]);
+  const [vendors, setVendors] = useState<VendorOption[]>([]);
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState<FilterStatus>("all");
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
@@ -113,13 +133,17 @@ export default function OrdersTab() {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await fetch("/api/service-orders", {
-        cache: "no-store",
-        credentials: "include",
-      });
-      if (res.ok) {
-        const j = (await res.json()) as { orders: Order[] };
+      const [oRes, vRes] = await Promise.all([
+        fetch("/api/service-orders", { cache: "no-store", credentials: "include" }),
+        fetch("/api/upsell-vendors", { cache: "no-store", credentials: "include" }),
+      ]);
+      if (oRes.ok) {
+        const j = (await oRes.json()) as { orders: Order[] };
         setOrders(j.orders ?? []);
+      }
+      if (vRes.ok) {
+        const j = (await vRes.json()) as { vendors: VendorOption[] };
+        setVendors(j.vendors ?? []);
       }
     } finally {
       setLoading(false);
@@ -180,6 +204,56 @@ export default function OrdersTab() {
         const j = await res.json().catch(() => ({}));
         alert(j.error ?? "No se pudo actualizar");
         return;
+      }
+      await load();
+    } finally {
+      setActing(null);
+    }
+  };
+
+  // Sprint 7 — Reasignar la orden a otro vendor cuando el actual declinó.
+  // Confirma, hace POST al endpoint, recarga la lista. El email al nuevo
+  // vendor se manda server-side automático (si su notification_pref lo permite).
+  const reassignOrder = async (order: Order, newVendorId: string) => {
+    const vendor = vendors.find((v) => v.id === newVendorId);
+    if (!vendor) return;
+    const vendorLabel = vendor.displayName ?? vendor.name;
+    if (
+      !confirm(
+        `¿Reasignar esta orden a "${vendorLabel}"?\n\n` +
+          `Se le va a mandar un email automático con el detalle y el link para gestionar (si tiene email + notificaciones activas).`,
+      )
+    ) {
+      return;
+    }
+    setActing(order.id);
+    try {
+      const res = await fetch(`/api/service-orders/${order.id}/reassign`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ newVendorId }),
+      });
+      const j = (await res.json().catch(() => ({}))) as {
+        ok?: boolean;
+        emailSent?: boolean;
+        notificationPref?: string;
+        error?: string;
+      };
+      if (!res.ok || !j.ok) {
+        alert(j.error ?? "No se pudo reasignar");
+        return;
+      }
+      if (j.emailSent) {
+        alert(`✓ Reasignada a ${vendorLabel}. Email enviado al nuevo vendor.`);
+      } else if (j.notificationPref === "whatsapp_manual") {
+        alert(
+          `✓ Reasignada a ${vendorLabel}.\n\nEste vendor está configurado como "WhatsApp manual" — usá el botón "Avisar al vendor" para coordinar.`,
+        );
+      } else {
+        alert(
+          `✓ Reasignada a ${vendorLabel}.\n\nNo se pudo mandar email automático (vendor sin email). Coordinala manual.`,
+        );
       }
       await load();
     } finally {
@@ -509,6 +583,53 @@ export default function OrdersTab() {
                       {o.paymentId && (
                         <div className="text-[11px] text-muted-foreground">
                           ID pago: <code className="font-mono">{o.paymentId}</code>
+                        </div>
+                      )}
+
+                      {/* Sprint 7 — vendor decline banner + reasignar */}
+                      {o.status === "paid" && o.vendorStatus === "declined" && (
+                        <div className="p-3 bg-rose-50 border-2 border-rose-200 rounded-lg space-y-2">
+                          <p className="text-[11px] font-bold uppercase tracking-wider text-rose-800 flex items-center gap-1.5">
+                            <AlertCircle className="h-3.5 w-3.5" />
+                            El vendor declinó esta orden
+                          </p>
+                          {o.vendorDeclineReason && (
+                            <p className="text-xs text-rose-700 italic">
+                              &ldquo;{o.vendorDeclineReason}&rdquo;
+                            </p>
+                          )}
+                          <div className="flex items-center gap-2 flex-wrap pt-1">
+                            <Select
+                              disabled={isActing}
+                              onValueChange={(vId) => reassignOrder(o, vId)}
+                            >
+                              <SelectTrigger className="h-8 text-xs flex-1 min-w-[180px] bg-white">
+                                <SelectValue placeholder="Reasignar a otro vendor…" />
+                              </SelectTrigger>
+                              <SelectContent>
+                                {vendors
+                                  .filter((v) => v.active)
+                                  .map((v) => (
+                                    <SelectItem key={v.id} value={v.id}>
+                                      {v.displayName ?? v.name}
+                                      <span className="text-muted-foreground text-[10px] ml-1">
+                                        ({v.category})
+                                      </span>
+                                    </SelectItem>
+                                  ))}
+                              </SelectContent>
+                            </Select>
+                          </div>
+                          <p className="text-[10px] text-rose-600">
+                            Si ningún vendor puede atender, considerá reembolsar al huésped desde el botón de refund.
+                          </p>
+                        </div>
+                      )}
+
+                      {/* Banner positivo cuando vendor confirmó */}
+                      {o.status === "paid" && o.vendorStatus === "confirmed" && (
+                        <div className="p-2 bg-blue-50 border border-blue-200 rounded-lg text-xs text-blue-800 flex items-center gap-1.5">
+                          <CheckCircle2 className="h-3.5 w-3.5" /> El vendor confirmó. Va a entregar el servicio.
                         </div>
                       )}
 

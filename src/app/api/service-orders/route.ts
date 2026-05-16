@@ -45,6 +45,10 @@ type OrderRow = {
   refund_amount: string | number | null;
   refund_payment_id: string | null;
   refund_note: string | null;
+  // Sprint 7 — estado del vendor
+  vendor_status: string | null;
+  vendor_declined_at: string | null;
+  vendor_decline_reason: string | null;
 };
 
 type ItemRow = {
@@ -64,6 +68,7 @@ type ItemRow = {
   flight_number: string | null;
   extra_notes: string | null;
 };
+
 
 export async function GET(req: NextRequest) {
   const { user, tenantId, supabase } = await getAuthenticatedTenant();
@@ -193,6 +198,9 @@ export async function GET(req: NextRequest) {
       refundAmount: o.refund_amount != null ? Number(o.refund_amount) : null,
       refundPaymentId: o.refund_payment_id,
       refundNote: o.refund_note,
+      vendorStatus: o.vendor_status,
+      vendorDeclinedAt: o.vendor_declined_at,
+      vendorDeclineReason: o.vendor_decline_reason,
       items: orderItems,
     };
   });

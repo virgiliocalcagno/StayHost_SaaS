@@ -148,6 +148,8 @@ interface VendorFormState {
   defaultFlatFee: string;
   paymentTerms: PaymentTerms;
   notes: string;
+  /** Sprint 7 — cómo notificar al vendor al pasar a paid: email auto, whatsapp manual del host, o ambos. */
+  notificationPref: "email" | "whatsapp_manual" | "both";
   active: boolean;
 }
 
@@ -167,6 +169,7 @@ const emptyVendorForm: VendorFormState = {
   defaultFlatFee: "",
   paymentTerms: "on_completion",
   notes: "",
+  notificationPref: "both",
   active: true,
 };
 
@@ -568,6 +571,10 @@ export default function UpsellsPanel() {
       defaultFlatFee: v.defaultFlatFee != null ? String(v.defaultFlatFee) : "",
       paymentTerms: v.paymentTerms,
       notes: v.notes ?? "",
+      notificationPref: (v as { notificationPref?: string }).notificationPref === "email" ||
+        (v as { notificationPref?: string }).notificationPref === "whatsapp_manual"
+        ? ((v as { notificationPref: "email" | "whatsapp_manual" }).notificationPref)
+        : "both",
       active: v.active,
     });
     setVendorSheetOpen(true);
@@ -612,6 +619,7 @@ export default function UpsellsPanel() {
         defaultFlatFee: vendorForm.defaultFlatFee ? Number(vendorForm.defaultFlatFee) : null,
         paymentTerms: vendorForm.paymentTerms,
         notes: vendorForm.notes || null,
+        notificationPref: vendorForm.notificationPref,
         active: vendorForm.active,
       };
 
@@ -2022,6 +2030,37 @@ export default function UpsellsPanel() {
                   ))}
                 </SelectContent>
               </Select>
+            </div>
+
+            {/* Sprint 7 — cómo notificar al vendor cuando llega una orden */}
+            <div className="space-y-2 p-3 rounded-xl bg-emerald-50/40 border border-emerald-100">
+              <Label>🛎 Cómo notificarle de nuevas órdenes</Label>
+              <Select
+                value={vendorForm.notificationPref}
+                onValueChange={(v) =>
+                  setVendorForm({
+                    ...vendorForm,
+                    notificationPref: v as "email" | "whatsapp_manual" | "both",
+                  })
+                }
+              >
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="both">
+                    📧 Email + WhatsApp manual (recomendado)
+                  </SelectItem>
+                  <SelectItem value="email">
+                    📧 Solo email automático
+                  </SelectItem>
+                  <SelectItem value="whatsapp_manual">
+                    💬 Solo WhatsApp manual (vos clickeás desde el panel)
+                  </SelectItem>
+                </SelectContent>
+              </Select>
+              <p className="text-[10px] text-muted-foreground">
+                Email automático: al pasar a pagado, el vendor recibe un email con todos los datos y un link único para gestionar (confirmar / declinar / marcar entregada).
+                WhatsApp manual: vos le mandás un mensaje cuando querés desde el tab Pedidos.
+              </p>
             </div>
 
             <div className="space-y-2">

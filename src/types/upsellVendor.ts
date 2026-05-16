@@ -46,6 +46,12 @@ export interface UpsellVendor {
   defaultFlatFee: number | null;
   paymentTerms: PaymentTerms;
 
+  // Sprint 7 — cómo notificar al vendor cuando una orden pasa a paid.
+  //   email          → email automático con link único al portal
+  //   whatsapp_manual → el host clickea botón en OrdersTab (sin automático)
+  //   both           → email auto + WhatsApp disponible (default)
+  notificationPref: "email" | "whatsapp_manual" | "both";
+
   // Contrato (Sprint 5)
   agreementAcceptedAt: string | null;
   agreementVersion: string | null;

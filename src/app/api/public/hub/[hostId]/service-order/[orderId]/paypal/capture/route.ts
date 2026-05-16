@@ -16,6 +16,7 @@ import { capturePaypalOrder } from "@/lib/paypal/client";
 import { sendEmail } from "@/lib/email/send";
 import { renderServiceOrderPaidHostEmail } from "@/lib/email/templates/service-order-paid-host";
 import { renderServiceOrderPaidGuestEmail } from "@/lib/email/templates/service-order-paid-guest";
+import { renderServiceOrderVendorEmail } from "@/lib/email/templates/service-order-vendor";
 
 export async function POST(
   req: NextRequest,
@@ -46,7 +47,7 @@ export async function POST(
   const { data: orderRow } = await supabaseAdmin
     .from("service_orders")
     .select(
-      "id, tenant_id, status, total_amount, currency, paid_at, customer_token, guest_name, guest_email, guest_phone, notes, redemption_pin",
+      "id, tenant_id, status, total_amount, currency, paid_at, customer_token, guest_name, guest_email, guest_phone, notes, redemption_pin, redemption_token",
     )
     .eq("id", orderId)
     .eq("tenant_id", hostId)
@@ -62,6 +63,7 @@ export async function POST(
     guest_name: string; guest_email: string | null; guest_phone: string | null;
     notes: string | null;
     redemption_pin: string | null;
+    redemption_token: string | null;
   };
 
   // Idempotente: si ya estaba pagada, devolvemos OK sin re-capturar.
@@ -143,6 +145,12 @@ export async function POST(
   // usando .select() para saber si esta llamada FUE la que capturó o si
   // perdió la carrera con otro request concurrente. Sin esto el segundo
   // request entraba al bloque de email y mandaba notificación duplicada.
+  // Sprint 7 — token único para el vendor que va en el email (?k=...).
+  // Diferente del redemption_token que el huésped ve en su QR/PIN. Sin
+  // este, alguien con solo el QR del huésped puede VER la orden pero no
+  // confirmar/declinar/marcar entregada.
+  const vendorActionToken = crypto.randomUUID();
+
   const { data: updated, error: upErr } = await supabaseAdmin
     .from("service_orders")
     .update({
@@ -154,6 +162,7 @@ export async function POST(
       // vino en la respuesta (raro, pero raw API), queda NULL y el endpoint
       // de refund hace fallback consultando GET /v2/checkout/orders/{id}.
       payment_capture_id: captureResult.captureId,
+      vendor_action_token: vendorActionToken,
     } as never)
     .eq("id", order.id)
     .is("paid_at", null)
@@ -173,7 +182,9 @@ export async function POST(
       const [{ data: items }, { data: tenant }] = await Promise.all([
         supabaseAdmin
           .from("service_order_items")
-          .select("name, quantity, pricing_model, unit_price, line_total, service_date")
+          .select(
+            "name, quantity, pricing_model, unit_price, line_total, service_date, service_time, pickup_location, flight_number, extra_notes, vendor_id",
+          )
           .eq("order_id", order.id)
           .order("created_at", { ascending: true }),
         supabaseAdmin
@@ -194,11 +205,18 @@ export async function POST(
       const hostWhatsapp = tenantRow?.owner_whatsapp ?? null;
       const baseUrl = process.env.NEXT_PUBLIC_APP_URL ?? new URL(req.url).origin;
 
-      const itemsMapped = ((items ?? []) as Array<{
+      const rawItems = (items ?? []) as Array<{
         name: string; quantity: number; pricing_model: string;
         unit_price: string | number; line_total: string | number;
         service_date: string | null;
-      }>).map((it) => ({
+        service_time: string | null;
+        pickup_location: string | null;
+        flight_number: string | null;
+        extra_notes: string | null;
+        vendor_id: string | null;
+      }>;
+
+      const itemsMapped = rawItems.map((it) => ({
         name: it.name,
         quantity: it.quantity,
         pricingModel: it.pricing_model,
@@ -252,6 +270,102 @@ export async function POST(
           replyTo: hostEmail,
           fromName: `${hostName} via StayHost`,
         });
+      }
+
+      // 3) Email al/los VENDOR(es) — Sprint 7. Un email por vendor, con
+      // todos los items que le tocan. Skip si el vendor está configurado
+      // como 'whatsapp_manual' (el host le avisa él).
+      // Skip además si la orden no tiene redemption_token (no debería
+      // pasar con orders post-Sprint 6, pero blindamos).
+      if (order.redemption_token && rawItems.length > 0) {
+        // Agrupar items por vendor_id, ignorando los sin vendor (el host
+        // los entrega directo, no hace falta notificar a un tercero).
+        const itemsByVendor = new Map<string, typeof rawItems>();
+        for (const it of rawItems) {
+          if (!it.vendor_id) continue;
+          const arr = itemsByVendor.get(it.vendor_id) ?? [];
+          arr.push(it);
+          itemsByVendor.set(it.vendor_id, arr);
+        }
+
+        if (itemsByVendor.size > 0) {
+          const vendorIds = Array.from(itemsByVendor.keys());
+          const { data: vendors } = await supabaseAdmin
+            .from("upsell_vendors")
+            .select("id, name, display_name, email, notification_pref")
+            .in("id", vendorIds)
+            .eq("tenant_id", order.tenant_id);
+
+          type VendorRow = {
+            id: string;
+            name: string;
+            display_name: string | null;
+            email: string | null;
+            notification_pref: string | null;
+          };
+
+          for (const v of ((vendors ?? []) as VendorRow[])) {
+            // Respeta la preferencia de notificación del host. Default
+            // 'both' o no configurado → mandamos email.
+            const pref = v.notification_pref ?? "both";
+            if (pref === "whatsapp_manual") continue;
+            if (!v.email) continue;
+
+            const vendorItems = itemsByVendor.get(v.id) ?? [];
+            if (vendorItems.length === 0) continue;
+
+            const vendorTotal = vendorItems.reduce(
+              (s, it) => s + Number(it.line_total),
+              0,
+            );
+
+            const manageUrl =
+              `${baseUrl}/v/${encodeURIComponent(order.redemption_token!)}` +
+              `?k=${encodeURIComponent(vendorActionToken)}`;
+
+            const { subject, html } = renderServiceOrderVendorEmail({
+              vendorName: v.display_name ?? v.name,
+              hostName,
+              orderId: order.id,
+              guestName: order.guest_name,
+              guestPhone: order.guest_phone,
+              guestEmail: order.guest_email,
+              total: vendorTotal,
+              currency: order.currency,
+              items: vendorItems.map((it) => ({
+                name: it.name,
+                quantity: it.quantity,
+                pricingModel: it.pricing_model,
+                lineTotal: Number(it.line_total),
+                serviceDate: it.service_date,
+                serviceTime: it.service_time,
+                pickupLocation: it.pickup_location,
+                flightNumber: it.flight_number,
+                extraNotes: it.extra_notes,
+              })),
+              manageUrl,
+            });
+
+            await sendEmail({
+              to: v.email,
+              subject,
+              html,
+              replyTo: hostEmail,
+              fromName: `${hostName} via StayHost`,
+            }).catch((vErr) => {
+              console.error(
+                `[capture] vendor email failed for vendor ${v.id}:`,
+                vErr,
+              );
+            });
+          }
+
+          // Marcar timestamp del envío para evitar re-envíos.
+          await supabaseAdmin
+            .from("service_orders")
+            .update({ vendor_email_sent_at: new Date().toISOString() } as never)
+            .eq("id", order.id);
+        }
       }
     } catch (emailErr) {
       console.error("[service-order/paypal/capture] email failed (non-fatal):", emailErr);
