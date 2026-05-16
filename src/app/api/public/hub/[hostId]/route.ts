@@ -14,6 +14,7 @@
  */
 import { NextRequest, NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabase/admin";
+import { getModuleContactForTenant } from "@/lib/tenant/module-contact";
 
 export async function GET(
   _req: NextRequest,
@@ -31,7 +32,7 @@ export async function GET(
   const { data: tenant, error: tenantErr } = await supabaseAdmin
     .from("tenants")
     .select(
-      "id, name, company, contact_email, owner_whatsapp, hub_welcome_message, logo_url, shop_contact_email, shop_contact_whatsapp",
+      "id, name, company, contact_email, owner_whatsapp, hub_welcome_message, logo_url",
     )
     .eq("id", hostId)
     .maybeSingle();
@@ -48,9 +49,11 @@ export async function GET(
     owner_whatsapp: string | null;
     hub_welcome_message: string | null;
     logo_url: string | null;
-    shop_contact_email: string | null;
-    shop_contact_whatsapp: string | null;
   };
+
+  // Sprint 8d — encargado del módulo "shop" si está configurado.
+  // Fallback al owner si no hay contacto del módulo. Helper centraliza.
+  const shopContact = await getModuleContactForTenant(hostId, "shop");
 
   // Properties activas del tenant. Filtramos prop_status != 'inactive' y
   // direct_enabled != false para que el host pueda excluir propiedades del
@@ -240,11 +243,8 @@ export async function GET(
       name: tenantRow.company || tenantRow.name || "Reservas Directas",
       welcomeMessage: tenantRow.hub_welcome_message ?? null,
       logo: tenantRow.logo_url ?? null,
-      // Sprint 8c — contacto público del hub usa el operativo de la tienda
-      // si está configurado, sino fallback al owner. Esto separa al CEO
-      // del SaaS del encargado de tienda.
-      contactEmail: tenantRow.shop_contact_email ?? tenantRow.contact_email ?? null,
-      whatsapp: tenantRow.shop_contact_whatsapp ?? tenantRow.owner_whatsapp ?? null,
+      contactEmail: shopContact?.email ?? null,
+      whatsapp: shopContact?.whatsapp ?? null,
       paymentMethods: {
         paypal: paypalEnabled,
       },

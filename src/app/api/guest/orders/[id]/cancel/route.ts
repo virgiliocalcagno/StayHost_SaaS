@@ -25,6 +25,7 @@ import { supabaseAdmin } from "@/lib/supabase/admin";
 import { executeRefundForOrder } from "@/lib/upsell/refund-service";
 import { sendEmail } from "@/lib/email/send";
 import { sendPushToHost } from "@/lib/push/web-push";
+import { getModuleContactForTenant } from "@/lib/tenant/module-contact";
 
 export async function POST(
   req: NextRequest,
@@ -189,20 +190,14 @@ export async function POST(
 
     // Notif al host: orden cancelada (informativa, no requiere acción).
     try {
-      const { data: tenant } = await supabaseAdmin
-        .from("tenants")
-        .select("name, company, contact_email, email, shop_contact_email")
-        .eq("id", order.tenant_id)
-        .maybeSingle();
-      const tRow = tenant as {
-        name: string | null; company: string | null;
-        contact_email: string | null; email: string;
-        shop_contact_email: string | null;
-      } | null;
-      // Sprint 8c — contacto operativo de tienda > owner.
-      const hostEmail =
-        tRow?.shop_contact_email ?? tRow?.contact_email ?? tRow?.email ?? null;
-      const hostName = tRow?.company || tRow?.name || "Host";
+      // Sprint 8d — encargado del módulo shop con fallback al owner.
+      // Uso INTERNO (email-al-host informativo): activamos fallback final a
+      // tenants.email para garantizar entrega aunque no haya contacto config.
+      const shopContact = await getModuleContactForTenant(order.tenant_id, "shop", {
+        includeAuthEmailFallback: true,
+      });
+      const hostEmail = shopContact?.email ?? null;
+      const hostName = shopContact?.hostName ?? "Host";
 
       if (hostEmail) {
         await sendEmail({
@@ -252,17 +247,14 @@ ${reason ? `<p style="background:#fff;border-left:3px solid #94a3b8;padding:12px
 
   // Notif al host.
   try {
-    const { data: tenant } = await supabaseAdmin
-      .from("tenants")
-      .select("name, company, contact_email, email")
-      .eq("id", order.tenant_id)
-      .maybeSingle();
-    const tRow = tenant as {
-      name: string | null; company: string | null;
-      contact_email: string | null; email: string;
-    } | null;
-    const hostEmail = tRow?.contact_email ?? tRow?.email ?? null;
-    const hostName = tRow?.company || tRow?.name || "Host";
+    // Sprint 8d — usar el mismo helper que el modo AUTO. Es uso INTERNO
+    // (email-al-host pidiendo decisión), así que activamos el fallback a
+    // tenants.email para garantizar entrega.
+    const shopContact = await getModuleContactForTenant(order.tenant_id, "shop", {
+      includeAuthEmailFallback: true,
+    });
+    const hostEmail = shopContact?.email ?? null;
+    const hostName = shopContact?.hostName ?? "Host";
     const baseUrl = process.env.NEXT_PUBLIC_APP_URL ?? new URL(req.url).origin;
 
     if (hostEmail) {

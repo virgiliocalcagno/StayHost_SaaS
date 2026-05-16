@@ -18,6 +18,7 @@ import { renderServiceOrderPaidHostEmail } from "@/lib/email/templates/service-o
 import { renderServiceOrderPaidGuestEmail } from "@/lib/email/templates/service-order-paid-guest";
 import { renderServiceOrderVendorEmail } from "@/lib/email/templates/service-order-vendor";
 import { sendPushToVendor } from "@/lib/push/web-push";
+import { getModuleContactForTenant } from "@/lib/tenant/module-contact";
 
 export async function POST(
   req: NextRequest,
@@ -180,7 +181,7 @@ export async function POST(
   // (confirmación + datos contacto del host).
   if (updatedThisRequest) {
     try {
-      const [{ data: items }, { data: tenant }] = await Promise.all([
+      const [{ data: items }, shopContact] = await Promise.all([
         supabaseAdmin
           .from("service_order_items")
           .select(
@@ -188,28 +189,17 @@ export async function POST(
           )
           .eq("order_id", order.id)
           .order("created_at", { ascending: true }),
-        supabaseAdmin
-          .from("tenants")
-          .select(
-            "name, company, contact_email, owner_whatsapp, email, shop_contact_email, shop_contact_whatsapp",
-          )
-          .eq("id", order.tenant_id)
-          .maybeSingle(),
+        // Sprint 8d — encargado del módulo "shop" con fallback al owner.
+        // Uso INTERNO (email al host avisando que llegó un pedido pagado):
+        // activamos el fallback final a tenants.email para garantizar entrega.
+        getModuleContactForTenant(order.tenant_id, "shop", {
+          includeAuthEmailFallback: true,
+        }),
       ]);
 
-      const tenantRow = tenant as {
-        name: string | null; company: string | null;
-        contact_email: string | null; owner_whatsapp: string | null; email: string;
-        shop_contact_email: string | null;
-        shop_contact_whatsapp: string | null;
-      } | null;
-      const hostName = tenantRow?.company || tenantRow?.name || "Tu host";
-      // Sprint 8c — emails operativos van al contacto de TIENDA si está
-      // configurado, sino fallback al owner. Separa CEO del SaaS de quien
-      // atiende la tienda. Mismo patrón para WhatsApp del huésped → host.
-      const hostEmail =
-        tenantRow?.shop_contact_email ?? tenantRow?.contact_email ?? tenantRow?.email ?? null;
-      const hostWhatsapp = tenantRow?.shop_contact_whatsapp ?? tenantRow?.owner_whatsapp ?? null;
+      const hostName = shopContact?.hostName ?? "Tu host";
+      const hostEmail = shopContact?.email ?? null;
+      const hostWhatsapp = shopContact?.whatsapp ?? null;
       const baseUrl = process.env.NEXT_PUBLIC_APP_URL ?? new URL(req.url).origin;
 
       const rawItems = (items ?? []) as Array<{

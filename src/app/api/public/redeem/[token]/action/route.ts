@@ -25,6 +25,7 @@ import { supabaseAdmin } from "@/lib/supabase/admin";
 import { normalizePin, isValidPinFormat } from "@/lib/upsell/redemption";
 import { sendEmail } from "@/lib/email/send";
 import { sendPushToHost } from "@/lib/push/web-push";
+import { getModuleContactForTenant } from "@/lib/tenant/module-contact";
 
 type ActionBody = {
   action?: string;
@@ -214,20 +215,15 @@ export async function POST(
     });
 
     try {
-      const { data: tenant } = await supabaseAdmin
-        .from("tenants")
-        .select("name, company, contact_email, email, shop_contact_email")
-        .eq("id", order.tenant_id)
-        .maybeSingle();
-      const tenantRow = tenant as {
-        name: string | null; company: string | null;
-        contact_email: string | null; email: string;
-        shop_contact_email: string | null;
-      } | null;
-      // Sprint 8c — contacto operativo de tienda > owner.
-      const hostEmail =
-        tenantRow?.shop_contact_email ?? tenantRow?.contact_email ?? tenantRow?.email ?? null;
-      const hostName = tenantRow?.company || tenantRow?.name || "Host";
+      // Sprint 8d — encargado del módulo shop con fallback al owner.
+      // Uso INTERNO: email al host cuando el vendor declina. Activamos el
+      // fallback final a tenants.email para no perder la notificación si el
+      // host no configuró ningún contacto operativo.
+      const shopContact = await getModuleContactForTenant(order.tenant_id, "shop", {
+        includeAuthEmailFallback: true,
+      });
+      const hostEmail = shopContact?.email ?? null;
+      const hostName = shopContact?.hostName ?? "Host";
       if (hostEmail) {
         const reasonHtml = declineReason
           ? `<p style="margin:8px 0 0;font-size:14px;color:#475569;font-style:italic">"${escapeHtml(declineReason)}"</p>`

@@ -58,6 +58,53 @@ import type { UpsellVendor, PaymentTerms, VendorPricingMethod, VendorNotificatio
 import { PAYMENT_TERMS_LABELS, VENDOR_PRICING_METHOD_LABELS, VENDOR_PRICING_VALUE_LABEL, VENDOR_NOTIFICATION_CHANNEL_META } from "@/types/upsellVendor";
 import { CategoryHero, UPSELL_ICON_OPTIONS } from "@/lib/upsell/categoryVisuals";
 
+// Sprint 8d — contactos operativos por módulo del SaaS. Cada módulo se
+// puede atender por una persona distinta (otra Maria limpia, otro Juan
+// resuelve check-ins). Las labels/iconos viven acá inline en vez de
+// importarse del helper server-side `@/lib/tenant/module-contact` para no
+// arrastrar supabaseAdmin a un client component.
+type TenantModule = "shop" | "cleaning" | "checkin" | "maintenance";
+
+type ModuleContactDraft = {
+  name: string;
+  email: string;
+  whatsapp: string;
+};
+
+const emptyContact = (): ModuleContactDraft => ({ name: "", email: "", whatsapp: "" });
+
+const MODULE_TABS: ReadonlyArray<{
+  key: TenantModule;
+  icon: string;
+  label: string;
+  hint: string;
+}> = [
+  {
+    key: "shop",
+    icon: "🛍️",
+    label: "Tienda / Ventas Extras",
+    hint: "Vendor declines, cancelaciones, recordatorios de servicio, pagos PayPal.",
+  },
+  {
+    key: "cleaning",
+    icon: "🧹",
+    label: "Limpieza",
+    hint: "Limpiadoras, validación de fotos, pagos al cleaner, reportes.",
+  },
+  {
+    key: "checkin",
+    icon: "🔑",
+    label: "Check-in",
+    hint: "Llegadas, OCR de documentos, problemas con keybox, dudas del huésped.",
+  },
+  {
+    key: "maintenance",
+    icon: "🔧",
+    label: "Mantenimiento",
+    hint: "Tickets de propiedades, plomero, electricista, internet.",
+  },
+];
+
 interface PropertyLite {
   id: string;
   name: string;
@@ -213,10 +260,21 @@ export default function UpsellsPanel() {
   // tenant.hub_welcome_message) y persiste con PATCH.
   const [hubName, setHubName] = useState<string>("");
   const [hubWelcome, setHubWelcome] = useState<string>("");
-  // Sprint 8c — contacto operativo de la tienda (distinto del owner).
-  const [shopContactName, setShopContactName] = useState<string>("");
-  const [shopContactEmail, setShopContactEmail] = useState<string>("");
-  const [shopContactWhatsapp, setShopContactWhatsapp] = useState<string>("");
+  // Sprint 8d — contactos operativos por módulo (Tienda/Limpieza/Check-in/
+  // Mantenimiento). Datos viven en tenant_module_contacts; el owner del
+  // SaaS es solo el fallback. Cada módulo lo puede atender otra persona.
+  const [moduleContacts, setModuleContacts] = useState<Record<TenantModule, ModuleContactDraft>>(
+    () => ({
+      shop: emptyContact(),
+      cleaning: emptyContact(),
+      checkin: emptyContact(),
+      maintenance: emptyContact(),
+    }),
+  );
+  const [moduleContactsOwnerFallback, setModuleContactsOwnerFallback] = useState<{
+    email: string | null;
+    whatsapp: string | null;
+  }>({ email: null, whatsapp: null });
   const [hubSaving, setHubSaving] = useState(false);
   const [hubSaved, setHubSaved] = useState(false);
   // Estado de "¡Copiado!" por URL. El host comparte dos enlaces distintos:
@@ -226,7 +284,7 @@ export default function UpsellsPanel() {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const [meRes, upsellsRes, vendorsRes, propsRes, settingsRes] = await Promise.all([
+      const [meRes, upsellsRes, vendorsRes, propsRes, settingsRes, contactsRes] = await Promise.all([
         fetch("/api/me", { cache: "no-store", credentials: "include" })
           .then((r) => (r.ok ? r.json() : null))
           .catch(() => null),
@@ -240,6 +298,9 @@ export default function UpsellsPanel() {
           .then((r) => (r.ok ? r.json() : null))
           .catch(() => null),
         fetch("/api/settings", { cache: "no-store", credentials: "include" })
+          .then((r) => (r.ok ? r.json() : null))
+          .catch(() => null),
+        fetch("/api/tenant-module-contacts", { cache: "no-store", credentials: "include" })
           .then((r) => (r.ok ? r.json() : null))
           .catch(() => null),
       ]);
@@ -260,9 +321,40 @@ export default function UpsellsPanel() {
       if (settingsRes) {
         setHubName(settingsRes.company ?? settingsRes.name ?? "");
         setHubWelcome(settingsRes.hubWelcomeMessage ?? "");
-        setShopContactName(settingsRes.shopContactName ?? "");
-        setShopContactEmail(settingsRes.shopContactEmail ?? "");
-        setShopContactWhatsapp(settingsRes.shopContactWhatsapp ?? "");
+      }
+      // Sprint 8d — contactos por módulo. El endpoint devuelve sólo los
+      // módulos que el host ya configuró + el fallback del owner. Mergeamos
+      // sobre el estado base (todos los módulos en "" para que el form
+      // muestre los 4 inputs aunque el host no haya tocado nada).
+      if (contactsRes) {
+        const fresh: Record<TenantModule, ModuleContactDraft> = {
+          shop: emptyContact(),
+          cleaning: emptyContact(),
+          checkin: emptyContact(),
+          maintenance: emptyContact(),
+        };
+        const list = Array.isArray(contactsRes.contacts) ? contactsRes.contacts : [];
+        for (const c of list as Array<{
+          module: string;
+          name: string | null;
+          email: string | null;
+          whatsapp: string | null;
+        }>) {
+          if (c.module === "shop" || c.module === "cleaning" || c.module === "checkin" || c.module === "maintenance") {
+            fresh[c.module] = {
+              name: c.name ?? "",
+              email: c.email ?? "",
+              whatsapp: c.whatsapp ?? "",
+            };
+          }
+        }
+        setModuleContacts(fresh);
+        if (contactsRes.ownerFallback) {
+          setModuleContactsOwnerFallback({
+            email: contactsRes.ownerFallback.email ?? null,
+            whatsapp: contactsRes.ownerFallback.whatsapp ?? null,
+          });
+        }
       }
     } finally {
       setLoading(false);
@@ -291,7 +383,8 @@ export default function UpsellsPanel() {
     setHubSaving(true);
     setHubSaved(false);
     try {
-      const res = await fetch("/api/settings", {
+      // 1) Datos del tenant en /api/settings (company + welcome).
+      const settingsRes = await fetch("/api/settings", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
@@ -300,17 +393,37 @@ export default function UpsellsPanel() {
           // hace el coerce a null cuando viene string vacío.
           company: hubName.trim() || null,
           hubWelcomeMessage: hubWelcome.trim() || null,
-          // Sprint 8c — contacto operativo de la tienda.
-          shopContactName: shopContactName.trim() || null,
-          shopContactEmail: shopContactEmail.trim() || null,
-          shopContactWhatsapp: shopContactWhatsapp.trim() || null,
         }),
       });
-      if (!res.ok) {
-        const j = await res.json().catch(() => ({}));
+      if (!settingsRes.ok) {
+        const j = await settingsRes.json().catch(() => ({}));
         alert(j.error ?? "No se pudo guardar la configuración del Hub");
         return;
       }
+
+      // 2) Contactos operativos por módulo en /api/tenant-module-contacts.
+      // Mandamos un PATCH por módulo (el endpoint hace upsert o DELETE si
+      // los 3 campos vienen vacíos). Si alguno falla, paramos y avisamos.
+      for (const mod of MODULE_TABS) {
+        const c = moduleContacts[mod.key];
+        const contactRes = await fetch("/api/tenant-module-contacts", {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          credentials: "include",
+          body: JSON.stringify({
+            module: mod.key,
+            name: c.name.trim() || null,
+            email: c.email.trim() || null,
+            whatsapp: c.whatsapp.trim() || null,
+          }),
+        });
+        if (!contactRes.ok) {
+          const j = await contactRes.json().catch(() => ({}));
+          alert(`Error guardando contacto de ${mod.label}: ${j.error ?? "desconocido"}`);
+          return;
+        }
+      }
+
       setHubSaved(true);
       // Reset del flag de "Guardado" después de 3s para que vuelva a verse
       // el estado neutro listo para próximo edit.
@@ -318,6 +431,13 @@ export default function UpsellsPanel() {
     } finally {
       setHubSaving(false);
     }
+  };
+
+  const updateModuleContact = (mod: TenantModule, field: keyof ModuleContactDraft, value: string) => {
+    setModuleContacts((prev) => ({
+      ...prev,
+      [mod]: { ...prev[mod], [field]: value },
+    }));
   };
 
   const copyHubUrl = async (key: "full" | "extras", url: string | null) => {
@@ -1196,55 +1316,101 @@ export default function UpsellsPanel() {
                 </div>
               </div>
 
-              {/* Sprint 8c — contacto operativo de la tienda (puede ser
-                  distinto del owner del SaaS). Si se deja vacío, fallback al
-                  contacto del owner. */}
-              <div className="p-4 rounded-xl bg-blue-50/40 border border-blue-100 space-y-3">
-                <div>
-                  <h4 className="font-medium text-sm">🛎 Contacto operativo de la tienda</h4>
-                  <p className="text-[11px] text-muted-foreground mt-0.5">
-                    Quién atiende los pedidos día a día. Puede ser distinto del owner del SaaS.
-                    Si dejás vacío, las notificaciones caen en tu cuenta principal como hasta ahora.
-                  </p>
+              {/* Sprint 8d — contactos operativos por módulo. Cada módulo
+                  del SaaS (Tienda, Limpieza, Check-in, Mantenimiento) puede
+                  estar atendido por otra persona con otro email/WhatsApp.
+                  Si dejás vacío, las notificaciones caen en tu cuenta
+                  principal (owner) como fallback. */}
+              <div className="space-y-3">
+                <div className="flex items-start justify-between gap-3 px-1">
+                  <div>
+                    <h3 className="font-medium text-sm">👥 Encargados por módulo</h3>
+                    <p className="text-[11px] text-muted-foreground mt-0.5">
+                      Cada módulo del SaaS puede tener una persona distinta. Si dejás vacío, todo cae en tu cuenta principal.
+                    </p>
+                  </div>
+                  {(moduleContactsOwnerFallback.email || moduleContactsOwnerFallback.whatsapp) && (
+                    <div className="text-[10px] text-muted-foreground bg-muted/50 border rounded-md px-2 py-1.5 shrink-0 max-w-[200px]">
+                      <div className="font-semibold mb-0.5">Fallback (owner):</div>
+                      {moduleContactsOwnerFallback.email && (
+                        <div className="truncate">📧 {moduleContactsOwnerFallback.email}</div>
+                      )}
+                      {moduleContactsOwnerFallback.whatsapp && (
+                        <div className="truncate">💬 {moduleContactsOwnerFallback.whatsapp}</div>
+                      )}
+                    </div>
+                  )}
                 </div>
-                <div className="space-y-2">
-                  <Label htmlFor="shop-contact-name" className="text-xs">
-                    Nombre del encargado
-                  </Label>
-                  <Input
-                    id="shop-contact-name"
-                    value={shopContactName}
-                    onChange={(e) => setShopContactName(e.target.value)}
-                    placeholder="Ej: María González"
-                    maxLength={120}
-                  />
+
+                <div className="grid gap-3 md:grid-cols-2">
+                  {MODULE_TABS.map((mod) => {
+                    const c = moduleContacts[mod.key];
+                    const hasAny = !!(c.name || c.email || c.whatsapp);
+                    return (
+                      <div
+                        key={mod.key}
+                        className={`p-4 rounded-xl border space-y-3 ${
+                          hasAny
+                            ? "bg-emerald-50/40 border-emerald-200"
+                            : "bg-muted/30 border-muted"
+                        }`}
+                      >
+                        <div className="flex items-start gap-2">
+                          <span className="text-lg leading-none mt-0.5">{mod.icon}</span>
+                          <div className="flex-1 min-w-0">
+                            <h4 className="font-medium text-sm">{mod.label}</h4>
+                            <p className="text-[10px] text-muted-foreground mt-0.5 leading-snug">
+                              {mod.hint}
+                            </p>
+                          </div>
+                          {hasAny && (
+                            <Badge variant="secondary" className="bg-emerald-100 text-emerald-700 border-emerald-200 shrink-0">
+                              Configurado
+                            </Badge>
+                          )}
+                        </div>
+                        <div className="space-y-2">
+                          <Label htmlFor={`contact-${mod.key}-name`} className="text-[11px]">
+                            Nombre del encargado
+                          </Label>
+                          <Input
+                            id={`contact-${mod.key}-name`}
+                            value={c.name}
+                            onChange={(e) => updateModuleContact(mod.key, "name", e.target.value)}
+                            placeholder="Ej: María González"
+                            maxLength={120}
+                          />
+                        </div>
+                        <div className="space-y-2">
+                          <Label htmlFor={`contact-${mod.key}-email`} className="text-[11px]">
+                            📧 Email
+                          </Label>
+                          <Input
+                            id={`contact-${mod.key}-email`}
+                            type="email"
+                            value={c.email}
+                            onChange={(e) => updateModuleContact(mod.key, "email", e.target.value)}
+                            placeholder={moduleContactsOwnerFallback.email ?? "encargado@dominio.com"}
+                          />
+                        </div>
+                        <div className="space-y-2">
+                          <Label htmlFor={`contact-${mod.key}-whatsapp`} className="text-[11px]">
+                            💬 WhatsApp
+                          </Label>
+                          <Input
+                            id={`contact-${mod.key}-whatsapp`}
+                            value={c.whatsapp}
+                            onChange={(e) => updateModuleContact(mod.key, "whatsapp", e.target.value)}
+                            placeholder={moduleContactsOwnerFallback.whatsapp ?? "+18091234567"}
+                          />
+                        </div>
+                      </div>
+                    );
+                  })}
                 </div>
-                <div className="space-y-2">
-                  <Label htmlFor="shop-contact-email" className="text-xs">
-                    📧 Email operativo (vendor declines, cancelaciones, recordatorios)
-                  </Label>
-                  <Input
-                    id="shop-contact-email"
-                    type="email"
-                    value={shopContactEmail}
-                    onChange={(e) => setShopContactEmail(e.target.value)}
-                    placeholder="encargado@tudominio.com"
-                  />
-                </div>
-                <div className="space-y-2">
-                  <Label htmlFor="shop-contact-whatsapp" className="text-xs">
-                    💬 WhatsApp operativo (botón &quot;Hablanos&quot; del hub público)
-                  </Label>
-                  <Input
-                    id="shop-contact-whatsapp"
-                    value={shopContactWhatsapp}
-                    onChange={(e) => setShopContactWhatsapp(e.target.value)}
-                    placeholder="+18091234567"
-                  />
-                  <p className="text-[10px] text-muted-foreground">
-                    Formato internacional con + (ej +18091234567).
-                  </p>
-                </div>
+                <p className="text-[10px] text-muted-foreground px-1">
+                  WhatsApp en formato internacional con + (ej +18091234567).
+                </p>
               </div>
             </CardContent>
             <CardFooter className="bg-muted/30 py-4 border-t flex items-center gap-3">
