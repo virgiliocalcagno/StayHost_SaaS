@@ -64,6 +64,7 @@ type TenantRow = {
   company: string | null;
   contact_email: string | null;
   email: string;
+  shop_contact_email: string | null;
 };
 
 type VendorRow = {
@@ -147,7 +148,7 @@ export async function GET(req: NextRequest) {
   const [{ data: tenants }, { data: vendors }] = await Promise.all([
     supabaseAdmin
       .from("tenants")
-      .select("id, name, company, contact_email, email")
+      .select("id, name, company, contact_email, email, shop_contact_email")
       .in("id", tenantIds),
     vendorIds.length > 0
       ? supabaseAdmin

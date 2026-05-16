@@ -25,7 +25,7 @@ export async function GET() {
   const { data, error } = await supabase
     .from("tenants")
     .select(
-      "id, email, name, company, contact_email, owner_whatsapp, hub_welcome_message, logo_url, plan, plan_expires_at"
+      "id, email, name, company, contact_email, owner_whatsapp, hub_welcome_message, logo_url, plan, plan_expires_at, shop_contact_name, shop_contact_email, shop_contact_whatsapp"
     )
     .eq("id", tenantId)
     .single();
@@ -45,6 +45,9 @@ export async function GET() {
     logo_url: string | null;
     plan: string | null;
     plan_expires_at: string | null;
+    shop_contact_name: string | null;
+    shop_contact_email: string | null;
+    shop_contact_whatsapp: string | null;
   };
 
   return NextResponse.json({
@@ -58,6 +61,9 @@ export async function GET() {
     logoUrl: t.logo_url,
     plan: t.plan,
     planExpiresAt: t.plan_expires_at,
+    shopContactName: t.shop_contact_name,
+    shopContactEmail: t.shop_contact_email,
+    shopContactWhatsapp: t.shop_contact_whatsapp,
   });
 }
 
@@ -115,6 +121,32 @@ export async function PATCH(req: NextRequest) {
       return NextResponse.json({ error: "Mensaje de bienvenida muy largo (máx 500)" }, { status: 400 });
     }
     patch.hub_welcome_message = v || null;
+  }
+
+  // Sprint 8c — contacto operativo de la tienda (módulo Ventas Extras).
+  if ("shopContactName" in body) {
+    const v = body.shopContactName == null ? null : String(body.shopContactName).trim();
+    if (v && v.length > 120) {
+      return NextResponse.json({ error: "shopContactName demasiado largo" }, { status: 400 });
+    }
+    patch.shop_contact_name = v || null;
+  }
+  if ("shopContactEmail" in body) {
+    const v = body.shopContactEmail == null ? null : String(body.shopContactEmail).trim().toLowerCase();
+    if (v && !EMAIL.test(v)) {
+      return NextResponse.json({ error: "shopContactEmail inválido" }, { status: 400 });
+    }
+    patch.shop_contact_email = v || null;
+  }
+  if ("shopContactWhatsapp" in body) {
+    const v = body.shopContactWhatsapp == null ? null : String(body.shopContactWhatsapp).trim();
+    if (v && !E164.test(v)) {
+      return NextResponse.json(
+        { error: "shopContactWhatsapp debe estar en formato +1234567890" },
+        { status: 400 }
+      );
+    }
+    patch.shop_contact_whatsapp = v || null;
   }
 
   if ("logoUrl" in body) {

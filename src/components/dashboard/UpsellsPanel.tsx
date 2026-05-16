@@ -213,6 +213,10 @@ export default function UpsellsPanel() {
   // tenant.hub_welcome_message) y persiste con PATCH.
   const [hubName, setHubName] = useState<string>("");
   const [hubWelcome, setHubWelcome] = useState<string>("");
+  // Sprint 8c — contacto operativo de la tienda (distinto del owner).
+  const [shopContactName, setShopContactName] = useState<string>("");
+  const [shopContactEmail, setShopContactEmail] = useState<string>("");
+  const [shopContactWhatsapp, setShopContactWhatsapp] = useState<string>("");
   const [hubSaving, setHubSaving] = useState(false);
   const [hubSaved, setHubSaved] = useState(false);
   // Estado de "¡Copiado!" por URL. El host comparte dos enlaces distintos:
@@ -256,6 +260,9 @@ export default function UpsellsPanel() {
       if (settingsRes) {
         setHubName(settingsRes.company ?? settingsRes.name ?? "");
         setHubWelcome(settingsRes.hubWelcomeMessage ?? "");
+        setShopContactName(settingsRes.shopContactName ?? "");
+        setShopContactEmail(settingsRes.shopContactEmail ?? "");
+        setShopContactWhatsapp(settingsRes.shopContactWhatsapp ?? "");
       }
     } finally {
       setLoading(false);
@@ -293,6 +300,10 @@ export default function UpsellsPanel() {
           // hace el coerce a null cuando viene string vacío.
           company: hubName.trim() || null,
           hubWelcomeMessage: hubWelcome.trim() || null,
+          // Sprint 8c — contacto operativo de la tienda.
+          shopContactName: shopContactName.trim() || null,
+          shopContactEmail: shopContactEmail.trim() || null,
+          shopContactWhatsapp: shopContactWhatsapp.trim() || null,
         }),
       });
       if (!res.ok) {
@@ -1181,6 +1192,57 @@ export default function UpsellsPanel() {
                   />
                   <p className="text-[11px] text-muted-foreground">
                     {hubWelcome.length}/500 caracteres. Se muestra cerca del header del Hub.
+                  </p>
+                </div>
+              </div>
+
+              {/* Sprint 8c — contacto operativo de la tienda (puede ser
+                  distinto del owner del SaaS). Si se deja vacío, fallback al
+                  contacto del owner. */}
+              <div className="p-4 rounded-xl bg-blue-50/40 border border-blue-100 space-y-3">
+                <div>
+                  <h4 className="font-medium text-sm">🛎 Contacto operativo de la tienda</h4>
+                  <p className="text-[11px] text-muted-foreground mt-0.5">
+                    Quién atiende los pedidos día a día. Puede ser distinto del owner del SaaS.
+                    Si dejás vacío, las notificaciones caen en tu cuenta principal como hasta ahora.
+                  </p>
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="shop-contact-name" className="text-xs">
+                    Nombre del encargado
+                  </Label>
+                  <Input
+                    id="shop-contact-name"
+                    value={shopContactName}
+                    onChange={(e) => setShopContactName(e.target.value)}
+                    placeholder="Ej: María González"
+                    maxLength={120}
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="shop-contact-email" className="text-xs">
+                    📧 Email operativo (vendor declines, cancelaciones, recordatorios)
+                  </Label>
+                  <Input
+                    id="shop-contact-email"
+                    type="email"
+                    value={shopContactEmail}
+                    onChange={(e) => setShopContactEmail(e.target.value)}
+                    placeholder="encargado@tudominio.com"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="shop-contact-whatsapp" className="text-xs">
+                    💬 WhatsApp operativo (botón &quot;Hablanos&quot; del hub público)
+                  </Label>
+                  <Input
+                    id="shop-contact-whatsapp"
+                    value={shopContactWhatsapp}
+                    onChange={(e) => setShopContactWhatsapp(e.target.value)}
+                    placeholder="+18091234567"
+                  />
+                  <p className="text-[10px] text-muted-foreground">
+                    Formato internacional con + (ej +18091234567).
                   </p>
                 </div>
               </div>

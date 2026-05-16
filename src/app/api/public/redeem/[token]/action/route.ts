@@ -216,14 +216,17 @@ export async function POST(
     try {
       const { data: tenant } = await supabaseAdmin
         .from("tenants")
-        .select("name, company, contact_email, email")
+        .select("name, company, contact_email, email, shop_contact_email")
         .eq("id", order.tenant_id)
         .maybeSingle();
       const tenantRow = tenant as {
         name: string | null; company: string | null;
         contact_email: string | null; email: string;
+        shop_contact_email: string | null;
       } | null;
-      const hostEmail = tenantRow?.contact_email ?? tenantRow?.email ?? null;
+      // Sprint 8c — contacto operativo de tienda > owner.
+      const hostEmail =
+        tenantRow?.shop_contact_email ?? tenantRow?.contact_email ?? tenantRow?.email ?? null;
       const hostName = tenantRow?.company || tenantRow?.name || "Host";
       if (hostEmail) {
         const reasonHtml = declineReason

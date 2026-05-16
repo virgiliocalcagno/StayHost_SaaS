@@ -191,14 +191,17 @@ export async function POST(
     try {
       const { data: tenant } = await supabaseAdmin
         .from("tenants")
-        .select("name, company, contact_email, email")
+        .select("name, company, contact_email, email, shop_contact_email")
         .eq("id", order.tenant_id)
         .maybeSingle();
       const tRow = tenant as {
         name: string | null; company: string | null;
         contact_email: string | null; email: string;
+        shop_contact_email: string | null;
       } | null;
-      const hostEmail = tRow?.contact_email ?? tRow?.email ?? null;
+      // Sprint 8c — contacto operativo de tienda > owner.
+      const hostEmail =
+        tRow?.shop_contact_email ?? tRow?.contact_email ?? tRow?.email ?? null;
       const hostName = tRow?.company || tRow?.name || "Host";
 
       if (hostEmail) {

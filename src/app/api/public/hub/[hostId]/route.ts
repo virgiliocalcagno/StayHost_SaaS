@@ -30,7 +30,9 @@ export async function GET(
   // exponía la cuenta del owner a cualquier huésped con la URL del Hub.
   const { data: tenant, error: tenantErr } = await supabaseAdmin
     .from("tenants")
-    .select("id, name, company, contact_email, owner_whatsapp, hub_welcome_message, logo_url")
+    .select(
+      "id, name, company, contact_email, owner_whatsapp, hub_welcome_message, logo_url, shop_contact_email, shop_contact_whatsapp",
+    )
     .eq("id", hostId)
     .maybeSingle();
 
@@ -46,6 +48,8 @@ export async function GET(
     owner_whatsapp: string | null;
     hub_welcome_message: string | null;
     logo_url: string | null;
+    shop_contact_email: string | null;
+    shop_contact_whatsapp: string | null;
   };
 
   // Properties activas del tenant. Filtramos prop_status != 'inactive' y
@@ -236,8 +240,11 @@ export async function GET(
       name: tenantRow.company || tenantRow.name || "Reservas Directas",
       welcomeMessage: tenantRow.hub_welcome_message ?? null,
       logo: tenantRow.logo_url ?? null,
-      contactEmail: tenantRow.contact_email ?? null,
-      whatsapp: tenantRow.owner_whatsapp ?? null,
+      // Sprint 8c — contacto público del hub usa el operativo de la tienda
+      // si está configurado, sino fallback al owner. Esto separa al CEO
+      // del SaaS del encargado de tienda.
+      contactEmail: tenantRow.shop_contact_email ?? tenantRow.contact_email ?? null,
+      whatsapp: tenantRow.shop_contact_whatsapp ?? tenantRow.owner_whatsapp ?? null,
       paymentMethods: {
         paypal: paypalEnabled,
       },

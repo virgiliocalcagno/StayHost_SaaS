@@ -190,7 +190,9 @@ export async function POST(
           .order("created_at", { ascending: true }),
         supabaseAdmin
           .from("tenants")
-          .select("name, company, contact_email, owner_whatsapp, email")
+          .select(
+            "name, company, contact_email, owner_whatsapp, email, shop_contact_email, shop_contact_whatsapp",
+          )
           .eq("id", order.tenant_id)
           .maybeSingle(),
       ]);
@@ -198,12 +200,16 @@ export async function POST(
       const tenantRow = tenant as {
         name: string | null; company: string | null;
         contact_email: string | null; owner_whatsapp: string | null; email: string;
+        shop_contact_email: string | null;
+        shop_contact_whatsapp: string | null;
       } | null;
       const hostName = tenantRow?.company || tenantRow?.name || "Tu host";
-      // Email del host: preferimos contact_email pero si no, caemos al email
-      // de cuenta. Notificación interna — no se expone al huésped.
-      const hostEmail = tenantRow?.contact_email ?? tenantRow?.email ?? null;
-      const hostWhatsapp = tenantRow?.owner_whatsapp ?? null;
+      // Sprint 8c — emails operativos van al contacto de TIENDA si está
+      // configurado, sino fallback al owner. Separa CEO del SaaS de quien
+      // atiende la tienda. Mismo patrón para WhatsApp del huésped → host.
+      const hostEmail =
+        tenantRow?.shop_contact_email ?? tenantRow?.contact_email ?? tenantRow?.email ?? null;
+      const hostWhatsapp = tenantRow?.shop_contact_whatsapp ?? tenantRow?.owner_whatsapp ?? null;
       const baseUrl = process.env.NEXT_PUBLIC_APP_URL ?? new URL(req.url).origin;
 
       const rawItems = (items ?? []) as Array<{
