@@ -1,0 +1,28 @@
+{
+  "name": "StayHost — Portal del Proveedor",
+  "short_name": "StayHost Vendor",
+  "description": "Gestioná las órdenes que te llegan de los hosts: confirmar, declinar, marcar entregada. Recibí notificaciones al instante.",
+  "start_url": "/v",
+  "scope": "/v/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "theme_color": "#f59e0b",
+  "background_color": "#FDFBF7",
+  "lang": "es",
+  "icons": [
+    {
+      "src": "/favicon.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/favicon.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ],
+  "categories": ["business", "productivity"],
+  "shortcuts": []
+}

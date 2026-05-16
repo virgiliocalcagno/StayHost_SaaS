@@ -2044,21 +2044,22 @@ export default function UpsellsPanel() {
                 </p>
               </div>
               <div className="space-y-2">
-                {(["push", "whatsapp_manual", "email", "whatsapp_business"] as VendorNotificationChannel[]).map((ch) => {
+                {/* Filtramos canales con status='pending_setup' — WhatsApp Business
+                    requiere setup Meta multi-tenant que no está implementado.
+                    Cuando se aborde, se quita el filter y el checkbox aparece. */}
+                {(["push", "whatsapp_manual", "email"] as VendorNotificationChannel[])
+                  .filter((ch) => VENDOR_NOTIFICATION_CHANNEL_META[ch].status === "ready")
+                  .map((ch) => {
                   const meta = VENDOR_NOTIFICATION_CHANNEL_META[ch];
                   const checked = vendorForm.notificationChannels.includes(ch);
-                  const disabled = meta.status === "pending_setup";
                   return (
                     <label
                       key={ch}
-                      className={`flex items-start gap-2 p-2 rounded-md cursor-pointer ${
-                        disabled ? "opacity-60 cursor-not-allowed" : "hover:bg-white/60"
-                      }`}
+                      className="flex items-start gap-2 p-2 rounded-md cursor-pointer hover:bg-white/60"
                     >
                       <input
                         type="checkbox"
-                        checked={checked && !disabled}
-                        disabled={disabled}
+                        checked={checked}
                         onChange={(e) => {
                           const next = new Set(vendorForm.notificationChannels);
                           if (e.target.checked) next.add(ch);
@@ -2073,12 +2074,7 @@ export default function UpsellsPanel() {
                       <span className="flex-1 min-w-0">
                         <span className="flex items-center gap-1.5 font-semibold text-sm">
                           {meta.icon} {meta.label}
-                          {disabled && (
-                            <Badge variant="outline" className="text-[9px] px-1.5 py-0">
-                              Próximamente
-                            </Badge>
-                          )}
-                          {meta.auto && !disabled && (
+                          {meta.auto && (
                             <Badge variant="outline" className="text-[9px] px-1.5 py-0 bg-emerald-50 border-emerald-200 text-emerald-700">
                               Auto
                             </Badge>
@@ -2092,12 +2088,11 @@ export default function UpsellsPanel() {
                   );
                 })}
               </div>
-              {!vendorForm.notificationChannels.includes("push") &&
-                !vendorForm.notificationChannels.includes("whatsapp_business") && (
-                  <p className="text-[10px] text-amber-700 bg-amber-50 border border-amber-200 rounded-md p-2">
-                    ⚠️ Sin Push ni WhatsApp Business, el vendor solo recibe email (lento en LATAM). Considerá activar Push.
-                  </p>
-                )}
+              {!vendorForm.notificationChannels.includes("push") && (
+                <p className="text-[10px] text-amber-700 bg-amber-50 border border-amber-200 rounded-md p-2">
+                  ⚠️ Sin Push, el vendor solo recibe email (lento en LATAM). Considerá activarlo — el vendor solo necesita abrir el portal 1 vez para suscribirse.
+                </p>
+              )}
             </div>
 
             <div className="space-y-2">

@@ -35,8 +35,12 @@ import {
   ShieldCheck,
   Bell,
   BellOff,
+  Download,
+  Share,
+  X,
 } from "lucide-react";
 import { formatMoney } from "@/lib/money/format";
+import { usePwaInstall } from "@/lib/pwa/use-install-prompt";
 
 type OrderItem = {
   id: string;
@@ -128,6 +132,9 @@ export default function VendorRedeemPage({
     "checking" | "unsupported" | "denied" | "available" | "subscribed" | "subscribing" | "error"
   >("checking");
   const [pushMessage, setPushMessage] = useState<string | null>(null);
+
+  // Sprint 7.7 — PWA install prompt.
+  const pwa = usePwaInstall();
 
   // Sprint 7.5 — chequear soporte de push notifications al cargar.
   // Si el browser no soporta, push permanece 'unsupported' y no mostramos
@@ -320,6 +327,69 @@ export default function VendorRedeemPage({
       </header>
 
       <div className="max-w-2xl mx-auto px-6 pt-6 space-y-5">
+        {/* Sprint 7.7 — PWA install prompt. Solo se muestra a vendors con
+            action_token (los "reales") para no saturar pantallas read-only.
+            En Android/desktop usamos el flujo nativo; en iOS damos instrucciones
+            visuales porque Safari NO dispara beforeinstallprompt. */}
+        {canAct && pwa.state === "native" && (
+          <div className="bg-gradient-to-br from-amber-50 to-orange-50 border-2 border-amber-300 rounded-2xl p-4 flex items-start gap-3">
+            <Download className="h-6 w-6 text-amber-600 shrink-0 mt-0.5" />
+            <div className="flex-1 min-w-0">
+              <p className="font-bold text-sm text-amber-900">Instalá la app del proveedor</p>
+              <p className="text-xs text-amber-800 mt-1">
+                Sumás un acceso directo en el inicio de tu celular. Más rápido, más profesional y mejora el rendimiento de las notificaciones.
+              </p>
+              <div className="flex gap-2 mt-3">
+                <Button
+                  size="sm"
+                  className="bg-amber-600 hover:bg-amber-700 text-white"
+                  onClick={() => void pwa.promptInstall()}
+                >
+                  <Download className="h-3 w-3 mr-1.5" />
+                  Instalar
+                </Button>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  className="text-amber-700"
+                  onClick={pwa.dismiss}
+                >
+                  Ahora no
+                </Button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {canAct && pwa.state === "ios-manual" && (
+          <div className="bg-gradient-to-br from-amber-50 to-orange-50 border-2 border-amber-300 rounded-2xl p-4">
+            <div className="flex items-start gap-3">
+              <Download className="h-6 w-6 text-amber-600 shrink-0 mt-0.5" />
+              <div className="flex-1 min-w-0">
+                <p className="font-bold text-sm text-amber-900">Instalá la app del proveedor</p>
+                <p className="text-xs text-amber-800 mt-1">
+                  En iPhone: tap el botón <Share className="inline h-3 w-3 mx-0.5" /> <strong>Compartir</strong> abajo de Safari → <strong>Añadir a pantalla de inicio</strong>.
+                </p>
+                <button
+                  type="button"
+                  onClick={pwa.dismiss}
+                  className="text-[11px] text-amber-700 mt-2 underline hover:no-underline"
+                >
+                  Cerrar este mensaje
+                </button>
+              </div>
+              <button
+                type="button"
+                onClick={pwa.dismiss}
+                className="text-amber-600 hover:bg-amber-100 p-1 rounded shrink-0"
+                aria-label="Cerrar"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+          </div>
+        )}
+
         {/* Banner read-only si no tiene action_token */}
         {!canAct && (
           <div className="bg-amber-50 border-2 border-amber-300 rounded-2xl p-4 flex gap-3">
