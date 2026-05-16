@@ -42,8 +42,10 @@ import {
   ExternalLink,
   Store,
   AlertCircle,
+  Bell,
 } from "lucide-react";
 import { formatMoney } from "@/lib/money/format";
+import { useHostPush } from "@/lib/push/use-host-push";
 
 interface OrderItem {
   id: string;
@@ -129,6 +131,10 @@ export default function OrdersTab() {
   const [filter, setFilter] = useState<FilterStatus>("all");
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [acting, setActing] = useState<string | null>(null);
+
+  // Sprint 7.8 — push notifications del host. Cuando vendor decline, llega
+  // al instante; sin push solo email (lento).
+  const hostPush = useHostPush();
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -312,6 +318,35 @@ export default function OrdersTab() {
 
   return (
     <div className="space-y-6 mt-6">
+      {/* Sprint 7.8 — banner para activar push del host. Solo se muestra si
+          el browser soporta + no está ya suscripto + no rechazó. */}
+      {hostPush.status === "available" && (
+        <div className="bg-gradient-to-br from-blue-50 to-indigo-50 border-2 border-blue-200 rounded-2xl p-4 flex items-start gap-3">
+          <Bell className="h-6 w-6 text-blue-600 shrink-0 mt-0.5" />
+          <div className="flex-1 min-w-0">
+            <p className="font-bold text-sm text-blue-900">Activá notificaciones de pedidos</p>
+            <p className="text-xs text-blue-700 mt-1">
+              Recibí un ping instantáneo si un vendor declina una orden o si llega un pedido nuevo — aunque tengas el dashboard cerrado.
+            </p>
+            <Button
+              size="sm"
+              className="mt-3 bg-blue-600 hover:bg-blue-700 text-white"
+              onClick={() => void hostPush.enable()}
+              disabled={hostPush.status !== "available"}
+            >
+              <Bell className="h-3 w-3 mr-1.5" /> Activar notificaciones
+            </Button>
+          </div>
+        </div>
+      )}
+
+      {hostPush.status === "subscribed" && (
+        <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-2 flex items-center gap-2 text-xs text-emerald-900">
+          <Bell className="h-3.5 w-3.5" />
+          <span className="font-semibold">Notificaciones activadas. Te avisamos al instante.</span>
+        </div>
+      )}
+
       {/* Stats */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
         <Card>

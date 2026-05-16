@@ -24,6 +24,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { normalizePin, isValidPinFormat } from "@/lib/upsell/redemption";
 import { sendEmail } from "@/lib/email/send";
+import { sendPushToHost } from "@/lib/push/web-push";
 
 type ActionBody = {
   action?: string;
@@ -194,8 +195,24 @@ export async function POST(
     );
   }
 
-  // Si decline → email al host para que reasigne. Best-effort, no bloqueante.
+  // Si decline → push instantáneo + email al host. Push es lo operativo
+  // real; email es constancia. Ambos best-effort, no bloqueantes.
   if (action === "decline") {
+    const baseUrl = process.env.NEXT_PUBLIC_APP_URL ?? new URL(req.url).origin;
+
+    // Push primero, es el que llega rápido.
+    await sendPushToHost({
+      tenantId: order.tenant_id,
+      payload: {
+        title: `⚠️ Vendor declinó: ${order.guest_name}`,
+        body: declineReason ?? "Abrí el panel para reasignar o reembolsar.",
+        url: `${baseUrl}/dashboard?panel=upsells`,
+        tag: `decline-${order.id.slice(0, 8)}`,
+      },
+    }).catch((e) => {
+      console.error("[redeem/action] host push failed (non-fatal):", e);
+    });
+
     try {
       const { data: tenant } = await supabaseAdmin
         .from("tenants")
@@ -209,7 +226,6 @@ export async function POST(
       const hostEmail = tenantRow?.contact_email ?? tenantRow?.email ?? null;
       const hostName = tenantRow?.company || tenantRow?.name || "Host";
       if (hostEmail) {
-        const baseUrl = process.env.NEXT_PUBLIC_APP_URL ?? new URL(req.url).origin;
         const reasonHtml = declineReason
           ? `<p style="margin:8px 0 0;font-size:14px;color:#475569;font-style:italic">"${escapeHtml(declineReason)}"</p>`
           : "";

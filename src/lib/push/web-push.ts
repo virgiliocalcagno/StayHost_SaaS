@@ -140,6 +140,74 @@ export async function sendPushToVendor(args: {
   return { sent, expired };
 }
 
+/**
+ * Manda push notification a TODAS las subscriptions activas del HOST
+ * (owner/admin del tenant). Sprint 7.8 — vendors decline, recordatorios,
+ * alerts críticos del SaaS.
+ */
+export async function sendPushToHost(args: {
+  tenantId: string;
+  payload: PushPayload;
+}): Promise<{ sent: number; expired: number }> {
+  if (!ensureVapid()) return { sent: 0, expired: 0 };
+
+  const { data: subs } = await supabaseAdmin
+    .from("host_push_subscriptions")
+    .select("id, endpoint, p256dh, auth_key")
+    .eq("tenant_id", args.tenantId)
+    .is("expired_at", null);
+
+  const subscriptions = (subs ?? []) as SubscriptionRow[];
+  if (subscriptions.length === 0) return { sent: 0, expired: 0 };
+
+  const payloadStr = JSON.stringify({
+    title: args.payload.title.slice(0, 100),
+    body: args.payload.body.slice(0, 400),
+    url: args.payload.url,
+    tag: args.payload.tag,
+  });
+
+  let sent = 0;
+  let expired = 0;
+  const nowIso = new Date().toISOString();
+
+  await Promise.all(
+    subscriptions.map(async (sub) => {
+      try {
+        await webpush.sendNotification(
+          {
+            endpoint: sub.endpoint,
+            keys: { p256dh: sub.p256dh, auth: sub.auth_key },
+          },
+          payloadStr,
+          { TTL: 60 * 60, urgency: "high" },
+        );
+        sent++;
+        await supabaseAdmin
+          .from("host_push_subscriptions")
+          .update({ last_used_at: nowIso } as never)
+          .eq("id", sub.id);
+      } catch (err: unknown) {
+        const e = err as { statusCode?: number };
+        if (e?.statusCode === 404 || e?.statusCode === 410) {
+          expired++;
+          await supabaseAdmin
+            .from("host_push_subscriptions")
+            .update({ expired_at: nowIso } as never)
+            .eq("id", sub.id);
+        } else {
+          console.error(
+            `[web-push] host send failed for sub ${sub.id} (tenant ${args.tenantId}):`,
+            err,
+          );
+        }
+      }
+    }),
+  );
+
+  return { sent, expired };
+}
+
 /** Helper público — sirve para que el cliente sepa si push está disponible. */
 export function getVapidPublicKey(): string | null {
   return process.env.VAPID_PUBLIC_KEY ?? null;
