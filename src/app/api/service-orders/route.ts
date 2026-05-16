@@ -49,6 +49,12 @@ type OrderRow = {
   vendor_status: string | null;
   vendor_declined_at: string | null;
   vendor_decline_reason: string | null;
+  // Sprint 8b — cancelación
+  cancellation_requested_at: string | null;
+  cancellation_requested_by: string | null;
+  cancellation_reason: string | null;
+  cancellation_decided_at: string | null;
+  cancellation_decision: string | null;
 };
 
 type ItemRow = {
@@ -201,6 +207,11 @@ export async function GET(req: NextRequest) {
       vendorStatus: o.vendor_status,
       vendorDeclinedAt: o.vendor_declined_at,
       vendorDeclineReason: o.vendor_decline_reason,
+      cancellationRequestedAt: o.cancellation_requested_at,
+      cancellationRequestedBy: o.cancellation_requested_by,
+      cancellationReason: o.cancellation_reason,
+      cancellationDecidedAt: o.cancellation_decided_at,
+      cancellationDecision: o.cancellation_decision,
       items: orderItems,
     };
   });

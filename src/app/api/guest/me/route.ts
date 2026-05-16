@@ -49,7 +49,7 @@ export async function GET() {
   const { data: orderRows } = await supabaseAdmin
     .from("service_orders")
     .select(
-      "id, tenant_id, status, total_amount, currency, paid_at, created_at, guest_name, customer_token, redemption_token, redemption_pin, vendor_status, redeemed_at, vendor_decline_reason, vendor_action_token, refunded_at, refund_amount",
+      "id, tenant_id, status, total_amount, currency, paid_at, created_at, guest_name, customer_token, redemption_token, redemption_pin, vendor_status, redeemed_at, vendor_decline_reason, vendor_action_token, refunded_at, refund_amount, cancellation_requested_at, cancellation_decided_at, cancellation_decision, cancellation_reason",
     )
     .eq("guest_auth_user_id", user.id)
     .order("created_at", { ascending: false })
@@ -73,6 +73,10 @@ export async function GET() {
     vendor_action_token: string | null;
     refunded_at: string | null;
     refund_amount: string | number | null;
+    cancellation_requested_at: string | null;
+    cancellation_decided_at: string | null;
+    cancellation_decision: string | null;
+    cancellation_reason: string | null;
   }>;
 
   // Tenants info pública (para mostrar nombre del host en cada card).
@@ -150,6 +154,10 @@ export async function GET() {
     vendorDeclineReason: o.vendor_decline_reason,
     refundedAt: o.refunded_at,
     refundAmount: o.refund_amount != null ? Number(o.refund_amount) : null,
+    cancellationRequestedAt: o.cancellation_requested_at,
+    cancellationDecidedAt: o.cancellation_decided_at,
+    cancellationDecision: o.cancellation_decision,
+    cancellationReason: o.cancellation_reason,
     // URL del recibo (link al detalle público con customer_token).
     receiptUrl: `/hub/${o.tenant_id}/orden/${o.id}?t=${o.customer_token}`,
     items: itemsByOrder.get(o.id) ?? [],

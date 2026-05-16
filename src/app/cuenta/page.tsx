@@ -52,6 +52,10 @@ interface Order {
   redeemedAt: string | null;
   refundedAt: string | null;
   refundAmount: number | null;
+  cancellationRequestedAt: string | null;
+  cancellationDecidedAt: string | null;
+  cancellationDecision: string | null;
+  cancellationReason: string | null;
   receiptUrl: string;
   items: OrderItem[];
 }
@@ -107,6 +111,36 @@ export default function GuestAccountPage() {
     await supabase.auth.signOut();
     setMe(null);
     setAuthOpen(true);
+  };
+
+  const handleCancel = async (orderId: string) => {
+    const reason = prompt(
+      "¿Querés cancelar este pedido?\n\nMotivo (opcional, lo ve el host):",
+      "",
+    );
+    if (reason === null) return; // canceló el prompt
+    try {
+      const r = await fetch(`/api/guest/orders/${orderId}/cancel`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ reason: reason.trim() || null }),
+      });
+      const j = (await r.json().catch(() => ({}))) as {
+        ok?: boolean;
+        mode?: "auto-cancelled" | "request-pending";
+        message?: string;
+        error?: string;
+      };
+      if (!r.ok || !j.ok) {
+        alert(j.error ?? "No se pudo cancelar.");
+        return;
+      }
+      alert(j.message ?? "Solicitud enviada.");
+      await load();
+    } catch (e) {
+      alert(e instanceof Error ? e.message : "Error de red");
+    }
   };
 
   if (loading) {
@@ -225,16 +259,23 @@ export default function GuestAccountPage() {
               <div className="space-y-2">
                 {group.orders.map((o) => {
                   const isRefunded = !!o.refundedAt;
+                  const isCancelPending =
+                    !!o.cancellationRequestedAt && !o.cancellationDecidedAt;
+                  const wasRejected = o.cancellationDecision === "rejected";
+                  const canCancel =
+                    !isRefunded &&
+                    !isCancelPending &&
+                    o.status === "paid" &&
+                    o.vendorStatus !== "delivered";
                   const badge = isRefunded
                     ? { label: "Reembolsada", cls: "bg-purple-100 text-purple-800 border-purple-200", icon: AlertCircle }
+                    : isCancelPending
+                    ? { label: "Cancelación pendiente", cls: "bg-amber-100 text-amber-800 border-amber-200", icon: Clock }
                     : VENDOR_BADGE[o.vendorStatus] ?? VENDOR_BADGE.awaiting;
                   const Icon = badge.icon;
                   return (
-                    <a
+                    <div
                       key={o.id}
-                      href={o.receiptUrl}
-                      target="_blank"
-                      rel="noopener noreferrer"
                       className="block bg-white rounded-2xl border shadow-sm p-4 hover:shadow-md transition-shadow"
                     >
                       <div className="flex justify-between items-start gap-3 mb-2">
@@ -269,20 +310,60 @@ export default function GuestAccountPage() {
                           </p>
                         )}
                       </div>
-                      <div className="flex items-center justify-between text-[11px] text-slate-500 pt-2 border-t">
+
+                      {/* Sprint 8b — banner de estado de cancelación */}
+                      {isCancelPending && (
+                        <div className="bg-amber-50 border border-amber-200 rounded-lg p-2 mb-3 text-xs text-amber-900">
+                          <p className="font-semibold">Solicitud de cancelación en revisión</p>
+                          <p className="text-[11px] mt-0.5">
+                            El host tiene 24h para decidir. Te avisamos por email.
+                            {o.cancellationReason && (
+                              <span className="italic block mt-1">
+                                Motivo: &ldquo;{o.cancellationReason}&rdquo;
+                              </span>
+                            )}
+                          </p>
+                        </div>
+                      )}
+                      {wasRejected && (
+                        <div className="bg-rose-50 border border-rose-200 rounded-lg p-2 mb-3 text-xs text-rose-900">
+                          <p className="font-semibold">Cancelación rechazada</p>
+                          <p className="text-[11px] mt-0.5">La reserva sigue activa.</p>
+                        </div>
+                      )}
+
+                      <div className="flex items-center justify-between gap-2 text-[11px] text-slate-500 pt-2 border-t flex-wrap">
                         <span>
                           {o.paidAt
                             ? `Pagada ${new Date(o.paidAt).toLocaleDateString("es-ES", { day: "2-digit", month: "short" })}`
                             : `Creada ${new Date(o.createdAt).toLocaleDateString("es-ES", { day: "2-digit", month: "short" })}`}
                         </span>
-                        {o.redemptionPin && !o.redeemedAt && !isRefunded && (
+                        {o.redemptionPin && !o.redeemedAt && !isRefunded && !isCancelPending && (
                           <span className="font-mono font-bold text-slate-700">
                             PIN: {o.redemptionPin}
                           </span>
                         )}
-                        <span className="text-amber-600 font-semibold">Ver detalle →</span>
+                        <div className="flex items-center gap-2 ml-auto">
+                          <a
+                            href={o.receiptUrl}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-amber-600 font-semibold hover:underline"
+                          >
+                            Ver detalle →
+                          </a>
+                          {canCancel && (
+                            <button
+                              type="button"
+                              onClick={() => handleCancel(o.id)}
+                              className="text-rose-600 font-semibold hover:underline text-[11px]"
+                            >
+                              Cancelar
+                            </button>
+                          )}
+                        </div>
                       </div>
-                    </a>
+                    </div>
                   );
                 })}
               </div>

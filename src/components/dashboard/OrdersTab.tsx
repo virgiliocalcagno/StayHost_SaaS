@@ -95,6 +95,12 @@ interface Order {
   vendorStatus: string | null;
   vendorDeclinedAt: string | null;
   vendorDeclineReason: string | null;
+  // Sprint 8b — cancelación del huésped
+  cancellationRequestedAt: string | null;
+  cancellationRequestedBy: string | null;
+  cancellationReason: string | null;
+  cancellationDecidedAt: string | null;
+  cancellationDecision: string | null;
   items: OrderItem[];
 }
 
@@ -259,6 +265,42 @@ export default function OrdersTab() {
         ? `Notificación enviada por: ${usedChannels.join(", ")}.`
         : "Sin canales auto habilitados — coordinala manual.";
       alert(`✓ Reasignada a ${vendorLabel}.\n\n${summary}`);
+      await load();
+    } finally {
+      setActing(null);
+    }
+  };
+
+  // Sprint 8b — decidir solicitud de cancelación del huésped.
+  // approve → server hace refund automático con las credenciales del host.
+  // reject → notif al huésped con motivo. La reserva sigue activa.
+  const decideCancellation = async (order: Order, decision: "approve" | "reject") => {
+    if (acting) return;
+    const action = decision === "approve" ? "APROBAR" : "RECHAZAR";
+    const note = decision === "approve"
+      ? `¿${action} la cancelación de ${order.guestName}?\n\nEsto procesa un refund de ${formatMoney(order.totalAmount, order.currency)} a PayPal automáticamente.\n\nNota al huésped (opcional):`
+      : `¿${action} la cancelación de ${order.guestName}?\n\nLa reserva sigue activa.\n\nMotivo del rechazo (visible al huésped):`;
+    const reason = prompt(note, "");
+    if (reason === null) return;
+
+    setActing(order.id);
+    try {
+      const r = await fetch(`/api/service-orders/${order.id}/cancellation/decide`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ decision, reason: reason.trim() || null }),
+      });
+      const j = (await r.json().catch(() => ({}))) as {
+        ok?: boolean;
+        decision?: string;
+        error?: string;
+      };
+      if (!r.ok || !j.ok) {
+        alert(j.error ?? "No se pudo procesar.");
+        return;
+      }
+      alert(decision === "approve" ? "✓ Aprobada. Refund procesado en PayPal." : "Rechazada. Huésped fue notificado.");
       await load();
     } finally {
       setActing(null);
@@ -618,6 +660,52 @@ export default function OrdersTab() {
                           ID pago: <code className="font-mono">{o.paymentId}</code>
                         </div>
                       )}
+
+                      {/* Sprint 8b — solicitud de cancelación del huésped con SLA visual.
+                          El color escala según horas transcurridas:
+                            <12h amber, 12-20h orange con borde grueso, >20h rojo parpadeante. */}
+                      {o.cancellationRequestedAt && !o.cancellationDecidedAt && (() => {
+                        const hoursSince = (Date.now() - new Date(o.cancellationRequestedAt).getTime()) / 3600000;
+                        const urgencyClass = hoursSince > 20
+                          ? "bg-rose-100 border-rose-400 text-rose-900 animate-pulse"
+                          : hoursSince > 12
+                          ? "bg-orange-50 border-orange-300 text-orange-900"
+                          : "bg-amber-50 border-amber-200 text-amber-900";
+                        const slaText = hoursSince > 20
+                          ? `Quedan ~${Math.max(0, Math.round(24 - hoursSince))}h antes de auto-aprobación.`
+                          : `${Math.round(hoursSince)}h transcurridas · 24h para decidir`;
+                        return (
+                          <div className={`p-3 border-2 rounded-lg space-y-2 ${urgencyClass}`}>
+                            <p className="text-[11px] font-bold uppercase tracking-wider flex items-center gap-1.5">
+                              <AlertCircle className="h-3.5 w-3.5" />
+                              Cancelación pedida por el huésped
+                            </p>
+                            {o.cancellationReason && (
+                              <p className="text-xs italic">&ldquo;{o.cancellationReason}&rdquo;</p>
+                            )}
+                            <p className="text-[10px] font-semibold">{slaText}</p>
+                            <div className="flex gap-2 pt-1">
+                              <Button
+                                size="sm"
+                                disabled={isActing}
+                                onClick={() => decideCancellation(o, "approve")}
+                                className="bg-emerald-600 hover:bg-emerald-700 text-white text-xs"
+                              >
+                                <CheckCircle2 className="h-3 w-3 mr-1" /> Aprobar + refund
+                              </Button>
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                disabled={isActing}
+                                onClick={() => decideCancellation(o, "reject")}
+                                className="text-rose-700 border-rose-200 hover:bg-rose-50 text-xs"
+                              >
+                                <XCircle className="h-3 w-3 mr-1" /> Rechazar
+                              </Button>
+                            </div>
+                          </div>
+                        );
+                      })()}
 
                       {/* Sprint 7 — vendor decline banner + reasignar */}
                       {o.status === "paid" && o.vendorStatus === "declined" && (
