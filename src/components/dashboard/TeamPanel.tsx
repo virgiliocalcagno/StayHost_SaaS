@@ -85,6 +85,13 @@ interface TeamMember {
     canManageTasks: boolean;
     canMessageGuests: boolean;
     canEditProperties: boolean;
+    // Encargado operativo de módulos del SaaS. Si true, las notificaciones
+    // de ese módulo (vendor declines / reportes de limpieza / problemas de
+    // check-in / tickets de mantenimiento) caen en SU email + WhatsApp.
+    canModuleShop: boolean;
+    canModuleCleaning: boolean;
+    canModuleCheckin: boolean;
+    canModuleMaintenance: boolean;
   };
   propertyAccess?: "all" | string[];
   notificationPrefs?: { whatsapp: boolean; email: boolean };
@@ -271,6 +278,13 @@ export default function TeamPanel() {
               canManageTasks: true,
               canMessageGuests: true,
               canEditProperties: true,
+              // El owner NO se marca como encargado de módulos por default.
+              // El helper ya cae al owner cuando ningún team member tiene el
+              // flag activado — marcar acá duplicaría notificaciones.
+              canModuleShop: false,
+              canModuleCleaning: false,
+              canModuleCheckin: false,
+              canModuleMaintenance: false,
             },
             propertyAccess: "all",
             notificationPrefs: { whatsapp: true, email: true },
@@ -336,6 +350,10 @@ export default function TeamPanel() {
       canManageTasks: true,
       canMessageGuests: false,
       canEditProperties: false,
+      canModuleShop: false,
+      canModuleCleaning: false,
+      canModuleCheckin: false,
+      canModuleMaintenance: false,
     },
     propertyAccess: "all" as "all" | string[],
     notificationPrefs: { whatsapp: true, email: true },
@@ -419,7 +437,7 @@ export default function TeamPanel() {
       documentPhoto: "",
       supervisorId: null,
       employmentType: "contractor",
-      permissions: { canViewAnalytics: false, canManageTasks: true, canMessageGuests: false, canEditProperties: false },
+      permissions: { canViewAnalytics: false, canManageTasks: true, canMessageGuests: false, canEditProperties: false, canModuleShop: false, canModuleCleaning: false, canModuleCheckin: false, canModuleMaintenance: false },
       propertyAccess: "all",
       notificationPrefs: { whatsapp: true, email: true },
     });
@@ -442,7 +460,20 @@ export default function TeamPanel() {
       documentPhoto: member.documentPhoto || "",
       supervisorId: member.supervisorId ?? null,
       employmentType: member.employmentType ?? "contractor",
-      permissions: member.permissions || { canViewAnalytics: false, canManageTasks: false, canMessageGuests: false, canEditProperties: false },
+      permissions: member.permissions
+        ? {
+            // Backwards compat: si el miembro existente no tiene los nuevos
+            // flags de módulo, los inicializamos en false (no es encargado).
+            canViewAnalytics: !!member.permissions.canViewAnalytics,
+            canManageTasks: !!member.permissions.canManageTasks,
+            canMessageGuests: !!member.permissions.canMessageGuests,
+            canEditProperties: !!member.permissions.canEditProperties,
+            canModuleShop: !!member.permissions.canModuleShop,
+            canModuleCleaning: !!member.permissions.canModuleCleaning,
+            canModuleCheckin: !!member.permissions.canModuleCheckin,
+            canModuleMaintenance: !!member.permissions.canModuleMaintenance,
+          }
+        : { canViewAnalytics: false, canManageTasks: false, canMessageGuests: false, canEditProperties: false, canModuleShop: false, canModuleCleaning: false, canModuleCheckin: false, canModuleMaintenance: false },
       propertyAccess: member.propertyAccess || "all",
       notificationPrefs: member.notificationPrefs || { whatsapp: true, email: true },
     });
@@ -1285,16 +1316,25 @@ export default function TeamPanel() {
                           onClick={() => {
                             const newRole = key as TeamMember["role"];
                             // Auto-ajustar permisos al elegir rol (UX Dinámico)
+                            // Permisos por defecto al elegir rol. Los flags de
+                            // módulo (canModule*) los marca el host explícitamente
+                            // según quién atiende qué — no se infieren del rol.
+                            const moduleDefaults = {
+                              canModuleShop: false,
+                              canModuleCleaning: false,
+                              canModuleCheckin: false,
+                              canModuleMaintenance: false,
+                            };
                             const autoPerms = {
-                              admin: { canViewAnalytics: true, canManageTasks: true, canMessageGuests: true, canEditProperties: true },
-                              supervisor: { canViewAnalytics: true, canManageTasks: true, canMessageGuests: true, canEditProperties: false },
-                              manager: { canViewAnalytics: true, canManageTasks: true, canMessageGuests: true, canEditProperties: false },
-                              cleaner: { canViewAnalytics: false, canManageTasks: true, canMessageGuests: false, canEditProperties: false },
-                              maintenance: { canViewAnalytics: false, canManageTasks: true, canMessageGuests: false, canEditProperties: false },
-                              guest_support: { canViewAnalytics: false, canManageTasks: false, canMessageGuests: true, canEditProperties: false },
-                              owner: { canViewAnalytics: true, canManageTasks: false, canMessageGuests: false, canEditProperties: false },
-                              accountant: { canViewAnalytics: true, canManageTasks: false, canMessageGuests: false, canEditProperties: false },
-                              co_host: { canViewAnalytics: true, canManageTasks: true, canMessageGuests: true, canEditProperties: false },
+                              admin: { canViewAnalytics: true, canManageTasks: true, canMessageGuests: true, canEditProperties: true, ...moduleDefaults },
+                              supervisor: { canViewAnalytics: true, canManageTasks: true, canMessageGuests: true, canEditProperties: false, ...moduleDefaults },
+                              manager: { canViewAnalytics: true, canManageTasks: true, canMessageGuests: true, canEditProperties: false, ...moduleDefaults },
+                              cleaner: { canViewAnalytics: false, canManageTasks: true, canMessageGuests: false, canEditProperties: false, ...moduleDefaults },
+                              maintenance: { canViewAnalytics: false, canManageTasks: true, canMessageGuests: false, canEditProperties: false, ...moduleDefaults },
+                              guest_support: { canViewAnalytics: false, canManageTasks: false, canMessageGuests: true, canEditProperties: false, ...moduleDefaults },
+                              owner: { canViewAnalytics: true, canManageTasks: false, canMessageGuests: false, canEditProperties: false, ...moduleDefaults },
+                              accountant: { canViewAnalytics: true, canManageTasks: false, canMessageGuests: false, canEditProperties: false, ...moduleDefaults },
+                              co_host: { canViewAnalytics: true, canManageTasks: true, canMessageGuests: true, canEditProperties: false, ...moduleDefaults },
                             };
                             setFormData((prev) => ({ 
                               ...prev, 
@@ -1367,6 +1407,70 @@ export default function TeamPanel() {
                         </div>
                       </label>
 
+                    </div>
+
+                    {/* Encargado operativo de módulos — quién recibe las
+                        notificaciones de cada módulo del SaaS. Si marcás "Limpieza"
+                        para María, las notifs de fotos rechazadas / reportes /
+                        pagos del cleaner le caen a María con SU email + WhatsApp.
+                        Si nadie tiene un módulo marcado, las notifs caen en la
+                        cuenta del dueño como fallback. */}
+                    <div className="pt-2">
+                      <Label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
+                        Encargado operativo de módulos
+                      </Label>
+                      <p className="text-[11px] text-muted-foreground mt-1 mb-3">
+                        Marcá los módulos que esta persona atiende. Si nadie atiende un módulo, las notifs caen en tu cuenta.
+                      </p>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                        <label className={`p-3 rounded-xl border flex items-start gap-3 cursor-pointer transition-colors ${formData.permissions.canModuleShop ? "border-primary/30 bg-primary/5" : "border-border hover:bg-muted/30"}`}>
+                          <div className="pt-0.5">
+                            <input type="checkbox" className="w-4 h-4 rounded text-primary focus:ring-primary accent-primary"
+                                   checked={formData.permissions.canModuleShop}
+                                   onChange={(e) => setFormData(prev => ({...prev, permissions: {...prev.permissions, canModuleShop: e.target.checked}}))} />
+                          </div>
+                          <div>
+                            <p className="font-semibold text-sm">🛍️ Tienda / Ventas Extras</p>
+                            <p className="text-[11px] text-muted-foreground">Vendor declines, cancelaciones, recordatorios.</p>
+                          </div>
+                        </label>
+
+                        <label className={`p-3 rounded-xl border flex items-start gap-3 cursor-pointer transition-colors ${formData.permissions.canModuleCleaning ? "border-primary/30 bg-primary/5" : "border-border hover:bg-muted/30"}`}>
+                          <div className="pt-0.5">
+                            <input type="checkbox" className="w-4 h-4 rounded text-primary focus:ring-primary accent-primary"
+                                   checked={formData.permissions.canModuleCleaning}
+                                   onChange={(e) => setFormData(prev => ({...prev, permissions: {...prev.permissions, canModuleCleaning: e.target.checked}}))} />
+                          </div>
+                          <div>
+                            <p className="font-semibold text-sm">🧹 Limpieza</p>
+                            <p className="text-[11px] text-muted-foreground">Validación de fotos, reportes, pagos al cleaner.</p>
+                          </div>
+                        </label>
+
+                        <label className={`p-3 rounded-xl border flex items-start gap-3 cursor-pointer transition-colors ${formData.permissions.canModuleCheckin ? "border-primary/30 bg-primary/5" : "border-border hover:bg-muted/30"}`}>
+                          <div className="pt-0.5">
+                            <input type="checkbox" className="w-4 h-4 rounded text-primary focus:ring-primary accent-primary"
+                                   checked={formData.permissions.canModuleCheckin}
+                                   onChange={(e) => setFormData(prev => ({...prev, permissions: {...prev.permissions, canModuleCheckin: e.target.checked}}))} />
+                          </div>
+                          <div>
+                            <p className="font-semibold text-sm">🔑 Check-in</p>
+                            <p className="text-[11px] text-muted-foreground">Llegadas, OCR de documentos, problemas con keybox.</p>
+                          </div>
+                        </label>
+
+                        <label className={`p-3 rounded-xl border flex items-start gap-3 cursor-pointer transition-colors ${formData.permissions.canModuleMaintenance ? "border-primary/30 bg-primary/5" : "border-border hover:bg-muted/30"}`}>
+                          <div className="pt-0.5">
+                            <input type="checkbox" className="w-4 h-4 rounded text-primary focus:ring-primary accent-primary"
+                                   checked={formData.permissions.canModuleMaintenance}
+                                   onChange={(e) => setFormData(prev => ({...prev, permissions: {...prev.permissions, canModuleMaintenance: e.target.checked}}))} />
+                          </div>
+                          <div>
+                            <p className="font-semibold text-sm">🔧 Mantenimiento</p>
+                            <p className="text-[11px] text-muted-foreground">Tickets de propiedades, plomero, electricista, internet.</p>
+                          </div>
+                        </label>
+                      </div>
                     </div>
                   </div>
 

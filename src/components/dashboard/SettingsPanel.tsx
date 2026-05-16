@@ -45,55 +45,8 @@ import {
   KeyRound,
   Lock,
   CheckCircle2,
-  Users as UsersIcon,
 } from "lucide-react";
 import Link from "next/link";
-
-// Sprint 8d — encargados operativos por módulo del SaaS. Vive acá (no en
-// UpsellsPanel) porque es config del tenant, no de la Tienda. La razón es
-// la misma que justifica tener "Pagos" y "Mi Hub" en este panel: son
-// settings del negocio en general, no de un módulo individual.
-type TenantModule = "shop" | "cleaning" | "checkin" | "maintenance";
-
-type ModuleContactDraft = {
-  name: string;
-  email: string;
-  whatsapp: string;
-};
-
-const emptyModuleContact = (): ModuleContactDraft => ({ name: "", email: "", whatsapp: "" });
-
-const MODULE_TABS: ReadonlyArray<{
-  key: TenantModule;
-  icon: string;
-  label: string;
-  hint: string;
-}> = [
-  {
-    key: "shop",
-    icon: "🛍️",
-    label: "Tienda / Ventas Extras",
-    hint: "Vendor declines, cancelaciones, recordatorios de servicio, pagos PayPal.",
-  },
-  {
-    key: "cleaning",
-    icon: "🧹",
-    label: "Limpieza",
-    hint: "Limpiadoras, validación de fotos, pagos al cleaner, reportes.",
-  },
-  {
-    key: "checkin",
-    icon: "🔑",
-    label: "Check-in",
-    hint: "Llegadas, OCR de documentos, problemas con keybox, dudas del huésped.",
-  },
-  {
-    key: "maintenance",
-    icon: "🔧",
-    label: "Mantenimiento",
-    hint: "Tickets de propiedades, plomero, electricista, internet.",
-  },
-];
 
 type SettingsData = {
   id: string;
@@ -150,31 +103,6 @@ export default function SettingsPanel() {
     kind: "idle" | "testing";
   } | { kind: "ok"; message: string } | { kind: "err"; message: string }>({ kind: "idle" });
 
-  // Sprint 8d — encargados por módulo. Cargado de /api/tenant-module-contacts.
-  // Mostrado en la tab "Equipo" más abajo. Save por módulo (PATCH por key).
-  const [moduleContacts, setModuleContacts] = useState<Record<TenantModule, ModuleContactDraft>>({
-    shop: emptyModuleContact(),
-    cleaning: emptyModuleContact(),
-    checkin: emptyModuleContact(),
-    maintenance: emptyModuleContact(),
-  });
-  const [moduleContactsLoaded, setModuleContactsLoaded] = useState<Record<TenantModule, ModuleContactDraft>>({
-    shop: emptyModuleContact(),
-    cleaning: emptyModuleContact(),
-    checkin: emptyModuleContact(),
-    maintenance: emptyModuleContact(),
-  });
-  const [moduleContactsFallback, setModuleContactsFallback] = useState<{
-    email: string | null;
-    whatsapp: string | null;
-  }>({ email: null, whatsapp: null });
-  const [moduleContactSave, setModuleContactSave] = useState<Record<TenantModule, SaveState>>({
-    shop: { kind: "idle" },
-    cleaning: { kind: "idle" },
-    checkin: { kind: "idle" },
-    maintenance: { kind: "idle" },
-  });
-
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -229,109 +157,6 @@ export default function SettingsPanel() {
       }
     } catch (e) {
       setPaypalTest({ kind: "err", message: (e as Error).message });
-    }
-  };
-
-  // Cargar contactos por módulo en mount. En paralelo al de paypal y settings
-  // para no encadenar latencia. El endpoint devuelve sólo las rows con datos
-  // — los módulos vacíos los inicializamos con strings vacíos para el form.
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const res = await fetch("/api/tenant-module-contacts", {
-          cache: "no-store",
-          credentials: "include",
-        });
-        if (!res.ok) return;
-        const json = (await res.json()) as {
-          contacts: Array<{
-            module: string;
-            name: string | null;
-            email: string | null;
-            whatsapp: string | null;
-          }>;
-          ownerFallback: { email: string | null; whatsapp: string | null };
-        };
-        const fresh: Record<TenantModule, ModuleContactDraft> = {
-          shop: emptyModuleContact(),
-          cleaning: emptyModuleContact(),
-          checkin: emptyModuleContact(),
-          maintenance: emptyModuleContact(),
-        };
-        for (const c of json.contacts) {
-          if (
-            c.module === "shop" ||
-            c.module === "cleaning" ||
-            c.module === "checkin" ||
-            c.module === "maintenance"
-          ) {
-            fresh[c.module] = {
-              name: c.name ?? "",
-              email: c.email ?? "",
-              whatsapp: c.whatsapp ?? "",
-            };
-          }
-        }
-        if (!cancelled) {
-          setModuleContacts(fresh);
-          setModuleContactsLoaded(fresh);
-          setModuleContactsFallback({
-            email: json.ownerFallback?.email ?? null,
-            whatsapp: json.ownerFallback?.whatsapp ?? null,
-          });
-        }
-      } catch {
-        // Silent — la tab muestra los inputs vacíos si esto falla.
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  const updateModuleContact = (
-    mod: TenantModule,
-    field: keyof ModuleContactDraft,
-    value: string,
-  ) => {
-    setModuleContacts((prev) => ({
-      ...prev,
-      [mod]: { ...prev[mod], [field]: value },
-    }));
-  };
-
-  const saveModuleContact = async (mod: TenantModule) => {
-    setModuleContactSave((prev) => ({ ...prev, [mod]: { kind: "saving" } }));
-    try {
-      const c = moduleContacts[mod];
-      const res = await fetch("/api/tenant-module-contacts", {
-        method: "PATCH",
-        credentials: "include",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          module: mod,
-          name: c.name.trim() || null,
-          email: c.email.trim() || null,
-          whatsapp: c.whatsapp.trim() || null,
-        }),
-      });
-      if (!res.ok) {
-        const j = (await res.json().catch(() => ({}))) as { error?: string };
-        throw new Error(j.error ?? `HTTP ${res.status}`);
-      }
-      // Marcar el snapshot persistido = al draft para que el botón "Guardar"
-      // se desactive hasta que el host vuelva a tocar el form.
-      setModuleContactsLoaded((prev) => ({ ...prev, [mod]: { ...c } }));
-      setModuleContactSave((prev) => ({ ...prev, [mod]: { kind: "ok" } }));
-      setTimeout(() => {
-        setModuleContactSave((prev) => ({ ...prev, [mod]: { kind: "idle" } }));
-      }, 2500);
-    } catch (e) {
-      setModuleContactSave((prev) => ({
-        ...prev,
-        [mod]: { kind: "err", msg: (e as Error).message },
-      }));
     }
   };
 
@@ -532,9 +357,6 @@ export default function SettingsPanel() {
           </TabsTrigger>
           <TabsTrigger value="hub" className="gap-2">
             <Globe className="h-4 w-4" /> Mi Hub
-          </TabsTrigger>
-          <TabsTrigger value="team" className="gap-2">
-            <UsersIcon className="h-4 w-4" /> Equipo
           </TabsTrigger>
           <TabsTrigger value="payments" className="gap-2">
             <CreditCard className="h-4 w-4" /> Pagos
@@ -822,143 +644,6 @@ export default function SettingsPanel() {
                   <span className="text-sm text-destructive">{hubSave.msg}</span>
                 )}
               </div>
-            </CardContent>
-          </Card>
-        </TabsContent>
-
-        {/* ─── EQUIPO (Sprint 8d) ──────────────────────────────────────── */}
-        {/* Encargados por módulo. Cada módulo del SaaS puede tener una persona
-            distinta atendiéndolo. Si vacío → fallback al owner (este tenant). */}
-        <TabsContent value="team" className="space-y-4">
-          <Card>
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2">
-                <UsersIcon className="h-5 w-5 text-primary" />
-                Encargados por módulo
-              </CardTitle>
-              <CardDescription>
-                Cada módulo del SaaS puede tener una persona distinta atendiéndolo
-                (otra María limpia, otro Juan resuelve check-ins). Si dejás vacío,
-                las notificaciones operativas de ese módulo caen en tu cuenta principal.
-              </CardDescription>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              {(moduleContactsFallback.email || moduleContactsFallback.whatsapp) && (
-                <div className="bg-muted/40 border border-muted rounded-xl p-3 text-xs text-muted-foreground space-y-1">
-                  <div className="font-semibold text-foreground">
-                    📥 Fallback (tu cuenta de dueño)
-                  </div>
-                  {moduleContactsFallback.email && (
-                    <div>📧 {moduleContactsFallback.email}</div>
-                  )}
-                  {moduleContactsFallback.whatsapp && (
-                    <div>💬 {moduleContactsFallback.whatsapp}</div>
-                  )}
-                  <p className="text-[10px] pt-1">
-                    Acá caen las notificaciones de cualquier módulo que dejes vacío abajo.
-                  </p>
-                </div>
-              )}
-
-              <div className="grid gap-4 md:grid-cols-2">
-                {MODULE_TABS.map((mod) => {
-                  const c = moduleContacts[mod.key];
-                  const loaded = moduleContactsLoaded[mod.key];
-                  const isDirty =
-                    c.name !== loaded.name ||
-                    c.email !== loaded.email ||
-                    c.whatsapp !== loaded.whatsapp;
-                  const hasAny = !!(loaded.name || loaded.email || loaded.whatsapp);
-                  const saveState = moduleContactSave[mod.key];
-                  return (
-                    <div
-                      key={mod.key}
-                      className={`p-4 rounded-xl border space-y-3 ${
-                        hasAny
-                          ? "bg-emerald-50/40 border-emerald-200"
-                          : "bg-muted/20 border-muted"
-                      }`}
-                    >
-                      <div className="flex items-start gap-2">
-                        <span className="text-lg leading-none mt-0.5">{mod.icon}</span>
-                        <div className="flex-1 min-w-0">
-                          <h4 className="font-semibold text-sm">{mod.label}</h4>
-                          <p className="text-[11px] text-muted-foreground mt-0.5 leading-snug">
-                            {mod.hint}
-                          </p>
-                        </div>
-                        {hasAny && (
-                          <Badge
-                            variant="secondary"
-                            className="bg-emerald-100 text-emerald-700 border-emerald-200 shrink-0"
-                          >
-                            Configurado
-                          </Badge>
-                        )}
-                      </div>
-                      <div className="space-y-2">
-                        <Label htmlFor={`team-${mod.key}-name`} className="text-xs">
-                          Nombre del encargado
-                        </Label>
-                        <Input
-                          id={`team-${mod.key}-name`}
-                          value={c.name}
-                          onChange={(e) => updateModuleContact(mod.key, "name", e.target.value)}
-                          placeholder="Ej: María González"
-                          maxLength={120}
-                        />
-                      </div>
-                      <div className="space-y-2">
-                        <Label htmlFor={`team-${mod.key}-email`} className="text-xs">
-                          📧 Email operativo
-                        </Label>
-                        <Input
-                          id={`team-${mod.key}-email`}
-                          type="email"
-                          value={c.email}
-                          onChange={(e) => updateModuleContact(mod.key, "email", e.target.value)}
-                          placeholder={moduleContactsFallback.email ?? "encargado@dominio.com"}
-                        />
-                      </div>
-                      <div className="space-y-2">
-                        <Label htmlFor={`team-${mod.key}-whatsapp`} className="text-xs">
-                          💬 WhatsApp operativo
-                        </Label>
-                        <Input
-                          id={`team-${mod.key}-whatsapp`}
-                          value={c.whatsapp}
-                          onChange={(e) => updateModuleContact(mod.key, "whatsapp", e.target.value)}
-                          placeholder={moduleContactsFallback.whatsapp ?? "+18091234567"}
-                        />
-                      </div>
-                      <div className="flex items-center gap-3 pt-1">
-                        <Button
-                          size="sm"
-                          onClick={() => saveModuleContact(mod.key)}
-                          disabled={saveState.kind === "saving" || !isDirty}
-                          className="gap-2"
-                        >
-                          {saveState.kind === "saving" ? (
-                            <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                          ) : (
-                            <Save className="h-3.5 w-3.5" />
-                          )}
-                          Guardar
-                        </Button>
-                        {saveState.kind === "ok" && (
-                          <span className="text-xs text-emerald-600">Guardado</span>
-                        )}
-                        {saveState.kind === "err" && (
-                          <span className="text-xs text-destructive">{saveState.msg}</span>
-                        )}
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-              <p className="text-[11px] text-muted-foreground">
-                WhatsApp en formato internacional con + (ej +18091234567). Limpiá los 3 campos y guardá para volver al fallback del dueño.
-              </p>
             </CardContent>
           </Card>
         </TabsContent>
