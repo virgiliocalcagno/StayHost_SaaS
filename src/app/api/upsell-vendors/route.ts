@@ -12,6 +12,7 @@
  */
 import { NextRequest, NextResponse } from "next/server";
 import { getAuthenticatedTenant } from "@/lib/supabase/server";
+import { supabaseAdmin } from "@/lib/supabase/admin";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type {
   UpsellVendor,
@@ -21,6 +22,8 @@ import type {
   VendorNotificationChannel,
 } from "@/types/upsellVendor";
 import { normalizePhoneSmart } from "@/lib/auth/identity";
+import { sendEmail } from "@/lib/email/send";
+import { renderVendorWelcomeEmail } from "@/lib/email/templates/vendor-welcome";
 
 const EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
 
@@ -138,6 +141,7 @@ type VendorRow = {
   email: string | null;
   rnc_cedula: string | null;
   category: string;
+  portal_token: string;
   display_name: string | null;
   hero_photo: string | null;
   description: string | null;
@@ -170,6 +174,7 @@ function rowToVendor(row: VendorRow): UpsellVendor {
     contactName: row.contact_name,
     phone: row.phone,
     email: row.email,
+    portalToken: row.portal_token,
     rncCedula: row.rnc_cedula,
     category: isValidCategory(row.category) ? row.category : "other",
     displayName: row.display_name,
@@ -328,7 +333,56 @@ export async function POST(req: NextRequest) {
     .single();
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
-  return NextResponse.json({ ok: true, vendor: rowToVendor(data as VendorRow) });
+  const created = data as VendorRow;
+
+  // Welcome email al vendor con su magic-link permanente. Best-effort —
+  // si falla, el vendor sigue creado y el host puede reenviarle el link
+  // manualmente desde el panel ("Copiar link del portal").
+  if (created.email && created.portal_token) {
+    await sendWelcomeEmailToVendor({
+      tenantId,
+      vendorEmail: created.email,
+      vendorName: created.display_name || created.name,
+      portalToken: created.portal_token,
+      reqUrl: req.url,
+    }).catch((e) => {
+      console.error("[upsell-vendors POST] welcome email failed:", e);
+    });
+  }
+
+  return NextResponse.json({ ok: true, vendor: rowToVendor(created) });
+}
+
+async function sendWelcomeEmailToVendor(params: {
+  tenantId: string;
+  vendorEmail: string;
+  vendorName: string;
+  portalToken: string;
+  reqUrl: string;
+}): Promise<void> {
+  // Lookup nombre del host para el email.
+  const { data: tenant } = await supabaseAdmin
+    .from("tenants")
+    .select("name, company")
+    .eq("id", params.tenantId)
+    .maybeSingle();
+  const t = tenant as { name: string | null; company: string | null } | null;
+  const hostName = t?.company || t?.name || "tu host";
+
+  const baseUrl = process.env.NEXT_PUBLIC_APP_URL ?? new URL(params.reqUrl).origin;
+  const portalUrl = `${baseUrl}/vendor/${encodeURIComponent(params.portalToken)}`;
+
+  const { subject, html } = renderVendorWelcomeEmail({
+    vendorName: params.vendorName,
+    hostName,
+    portalUrl,
+  });
+  await sendEmail({
+    to: params.vendorEmail,
+    subject,
+    html,
+    fromName: `${hostName} via StayHost`,
+  });
 }
 
 // PATCH /api/upsell-vendors?id=<uuid>
@@ -437,14 +491,53 @@ export async function PATCH(req: NextRequest) {
     return NextResponse.json({ error: "No updatable fields" }, { status: 400 });
   }
 
-  const { error, count } = await supabase
+  // Si el email se está cambiando, leer el valor anterior para decidir si
+  // mandamos welcome (caso: vendor recién agregado, antes era null o
+  // distinto). El read+write no es atómico pero es OK — el welcome es
+  // best-effort y idempotente desde la vista del vendor.
+  let shouldSendWelcome = false;
+  let priorPortalToken: string | null = null;
+  let priorEmail: string | null = null;
+  if (patch.email !== undefined) {
+    const { data: existing } = await supabase
+      .from("upsell_vendors")
+      .select("email, portal_token")
+      .eq("id", id)
+      .eq("tenant_id", tenantId)
+      .maybeSingle();
+    const ex = existing as { email: string | null; portal_token: string } | null;
+    priorEmail = ex?.email ?? null;
+    priorPortalToken = ex?.portal_token ?? null;
+    const newEmail = patch.email as string | null;
+    shouldSendWelcome = !!newEmail && newEmail !== priorEmail;
+  }
+
+  const { data, error, count } = await supabase
     .from("upsell_vendors")
     .update(patch as never, { count: "exact" })
     .eq("id", id)
-    .eq("tenant_id", tenantId);
+    .eq("tenant_id", tenantId)
+    .select("name, display_name, email, portal_token")
+    .maybeSingle();
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
   if (!count) return NextResponse.json({ error: "Not found" }, { status: 404 });
+
+  if (shouldSendWelcome && data) {
+    const updated = data as { name: string; display_name: string | null; email: string | null; portal_token: string };
+    if (updated.email) {
+      await sendWelcomeEmailToVendor({
+        tenantId,
+        vendorEmail: updated.email,
+        vendorName: updated.display_name || updated.name,
+        portalToken: updated.portal_token || priorPortalToken || "",
+        reqUrl: req.url,
+      }).catch((e) => {
+        console.error("[upsell-vendors PATCH] welcome email failed:", e);
+      });
+    }
+  }
+
   return NextResponse.json({ ok: true });
 }
 

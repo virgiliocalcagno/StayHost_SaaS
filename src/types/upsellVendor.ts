@@ -68,6 +68,11 @@ export interface UpsellVendor {
   email: string | null;
   rncCedula: string | null;
 
+  // Token permanente del portal del vendor (/vendor/[portalToken]).
+  // 32 chars hex. NO se loggea. Se manda al vendor por email al crearlo
+  // y se muestra en el panel del host como "Link del portal".
+  portalToken: string;
+
   category: UpsellCategory;
 
   // Cara pública (Hub)
