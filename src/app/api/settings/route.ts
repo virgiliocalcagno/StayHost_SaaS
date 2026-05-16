@@ -117,6 +117,10 @@ export async function PATCH(req: NextRequest) {
     patch.hub_welcome_message = v || null;
   }
 
+  // Contactos operativos por módulo viven en tenant_module_contacts ahora.
+  // Ver /api/tenant-module-contacts (GET/PATCH) — esta tabla ya no acepta
+  // shop_contact_* (Sprint 8d removió las columnas).
+
   if ("logoUrl" in body) {
     const v = body.logoUrl == null ? null : String(body.logoUrl).trim();
     if (v && !/^https?:\/\//.test(v)) {

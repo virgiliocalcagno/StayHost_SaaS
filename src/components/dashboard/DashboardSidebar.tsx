@@ -85,7 +85,6 @@ interface SidebarProps {
 const MODULES_IN_CONSTRUCTION = new Set([
   "messages",     // Sprint 3.5 — IA pendiente
   "pricing",      // Sprint 3.2 — tabla pricing_rules pendiente
-  "upsells",      // Sprint 3.1 — tabla upsells pendiente
   "agreements",   // Sprint 3.4 — tabla agreements pendiente
   "reports",      // Sprint 3.3 — endpoint de agregaciones pendiente
   "documents",    // Supabase Storage flow pendiente

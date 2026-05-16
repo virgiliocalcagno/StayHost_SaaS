@@ -14,6 +14,7 @@
  */
 import { NextRequest, NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabase/admin";
+import { getModuleContactForTenant } from "@/lib/tenant/module-contact";
 
 export async function GET(
   _req: NextRequest,
@@ -24,10 +25,15 @@ export async function GET(
     return NextResponse.json({ error: "hostId required" }, { status: 400 });
   }
 
-  // Validar tenant existe.
+  // Validar tenant existe. NUNCA seleccionamos `tenants.email` — es el email
+  // de login del owner (cuenta Supabase Auth). El campo público es
+  // `contact_email`. Antes hacíamos fallback al email de cuenta, lo que
+  // exponía la cuenta del owner a cualquier huésped con la URL del Hub.
   const { data: tenant, error: tenantErr } = await supabaseAdmin
     .from("tenants")
-    .select("id, name, company, contact_email, owner_whatsapp, hub_welcome_message, logo_url, email")
+    .select(
+      "id, name, company, contact_email, owner_whatsapp, hub_welcome_message, logo_url",
+    )
     .eq("id", hostId)
     .maybeSingle();
 
@@ -43,8 +49,11 @@ export async function GET(
     owner_whatsapp: string | null;
     hub_welcome_message: string | null;
     logo_url: string | null;
-    email: string;
   };
+
+  // Sprint 8d — encargado del módulo "shop" si está configurado.
+  // Fallback al owner si no hay contacto del módulo. Helper centraliza.
+  const shopContact = await getModuleContactForTenant(hostId, "shop");
 
   // Properties activas del tenant. Filtramos prop_status != 'inactive' y
   // direct_enabled != false para que el host pueda excluir propiedades del
@@ -131,17 +140,111 @@ export async function GET(
     enabled?: boolean; client_id?: string; processing_fee_percent?: number | string | null;
   } | null;
   const paypalEnabled = !!ppRow && !!ppRow.enabled && !!ppRow.client_id;
-  // El fee se devuelve siempre que exista config (incluso deshabilitada),
-  // pero solo se aplica en la UI si el huésped elige pagar online.
-  const processingFeePercent = Number(ppRow?.processing_fee_percent ?? 0);
+  // El fee solo se devuelve si PayPal está realmente habilitado — sino, no
+  // hay razón para exponer un % de comisión interna al huésped.
+  const processingFeePercent = paypalEnabled
+    ? Number(ppRow?.processing_fee_percent ?? 0)
+    : 0;
+
+  // ── Upsells activos del tenant (Sprint 3) ────────────────────────────────
+  // Sólo los `is_global` o vinculados a alguna propiedad activa van al Hub.
+  // Si más adelante se pide filtrar "vinculados a esta propiedad específica
+  // que el huésped ya tiene reservada", se hace en el front con la lista
+  // completa, o se agrega un parámetro de query.
+  const { data: upsellRows } = await supabaseAdmin
+    .from("upsells")
+    .select(`
+      id, name, description, name_en, description_en, category, icon_name,
+      price, currency, hero_photo, gallery_photos,
+      pricing_model, min_quantity, max_quantity, cutoff_hours,
+      time_field, pickup_field, flight_field, notes_placeholder,
+      is_global, linked_property_ids,
+      vendor_id
+    `)
+    .eq("tenant_id", hostId)
+    .eq("active", true)
+    .order("created_at", { ascending: false });
+
+  type UpsellRow = {
+    id: string; name: string; description: string | null;
+    name_en: string | null; description_en: string | null;
+    category: string; icon_name: string;
+    price: number | string; currency: string;
+    hero_photo: string | null; gallery_photos: unknown;
+    pricing_model: string;
+    min_quantity: number; max_quantity: number | null;
+    cutoff_hours: number;
+    time_field: string | null;
+    pickup_field: string | null;
+    flight_field: string | null;
+    notes_placeholder: string | null;
+    is_global: boolean; linked_property_ids: unknown;
+    vendor_id: string | null;
+  };
+
+  // Vendors: cargamos solo los que están referenciados por algún upsell.
+  // Exponemos al huésped SOLO display_name y hero_photo (marca pública).
+  // NUNCA: phone, email, rnc, contact_name, notes, commission, payment_terms.
+  const vendorIds = Array.from(
+    new Set(
+      ((upsellRows ?? []) as UpsellRow[])
+        .map((u) => u.vendor_id)
+        .filter((v): v is string => !!v),
+    ),
+  );
+  let vendorMap = new Map<string, { name: string; photo: string | null }>();
+  if (vendorIds.length > 0) {
+    const { data: vendors } = await supabaseAdmin
+      .from("upsell_vendors")
+      .select("id, name, display_name, hero_photo")
+      .in("id", vendorIds)
+      .eq("tenant_id", hostId);
+    vendorMap = new Map(
+      ((vendors ?? []) as { id: string; name: string; display_name: string | null; hero_photo: string | null }[])
+        .map((v) => [v.id, { name: v.display_name ?? v.name, photo: v.hero_photo }]),
+    );
+  }
+
+  const experiences = ((upsellRows ?? []) as UpsellRow[]).map((u) => {
+    const linked = Array.isArray(u.linked_property_ids) ? (u.linked_property_ids as string[]) : [];
+    const gallery = Array.isArray(u.gallery_photos) ? (u.gallery_photos as string[]) : [];
+    const vInfo = u.vendor_id ? vendorMap.get(u.vendor_id) ?? null : null;
+    return {
+      id: u.id,
+      name: u.name,
+      description: u.description,
+      nameEn: u.name_en,
+      descriptionEn: u.description_en,
+      category: u.category,
+      iconName: u.icon_name,
+      price: Number(u.price),
+      currency: u.currency || "USD",
+      heroPhoto: u.hero_photo,
+      galleryPhotos: gallery,
+      pricingModel: u.pricing_model,
+      minQuantity: u.min_quantity,
+      maxQuantity: u.max_quantity,
+      cutoffHours: u.cutoff_hours,
+      // Sprint 5: visibility de info del servicio (3-estado por campo).
+      // El hub público renderiza inputs según esto.
+      timeField: u.time_field ?? "off",
+      pickupField: u.pickup_field ?? "off",
+      flightField: u.flight_field ?? "off",
+      notesPlaceholder: u.notes_placeholder,
+      isGlobal: u.is_global,
+      linkedPropertyIds: linked,
+      // Vendor: solo info de cara pública. Nada del trato comercial ni PII.
+      vendor: vInfo,
+    };
+  });
 
   return NextResponse.json({
     hub: {
       name: tenantRow.company || tenantRow.name || "Reservas Directas",
       welcomeMessage: tenantRow.hub_welcome_message ?? null,
       logo: tenantRow.logo_url ?? null,
-      contactEmail: tenantRow.contact_email ?? tenantRow.email,
-      whatsapp: tenantRow.owner_whatsapp ?? null,
+      contactEmail: shopContact?.email ?? null,
+      whatsapp: shopContact?.whatsapp ?? null,
       paymentMethods: {
         paypal: paypalEnabled,
       },
@@ -149,8 +252,6 @@ export async function GET(
     },
     properties,
     unavailable,
-    // Upsells/experiencias: pendiente Sprint 3.1 (tabla upsells todavía
-    // no existe). Devolvemos array vacío hasta entonces.
-    experiences: [],
+    experiences,
   });
 }
