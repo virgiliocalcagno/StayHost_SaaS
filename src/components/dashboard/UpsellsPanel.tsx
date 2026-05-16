@@ -1189,19 +1189,18 @@ export default function UpsellsPanel() {
                 </div>
               </div>
 
-              {/* Sprint 8d — contactos operativos por módulo MOVIDOS a
-                  Configuración → tab "Equipo" (SettingsPanel). No tenía
-                  sentido enterrar contactos de Limpieza/Check-in/Mantenimiento
-                  dentro de Ventas Extras. Acá solo dejamos un link para que
-                  el host sepa dónde encontrarlo. */}
+              {/* Encargado operativo del módulo Tienda: ahora se configura
+                  desde el panel Equipo, marcando el flag "🛍️ Tienda / Ventas
+                  Extras" en el miembro que atiende. Si nadie lo tiene marcado,
+                  las notifs de la tienda caen en la cuenta del dueño. */}
               <div className="rounded-xl border border-dashed bg-muted/20 p-4 flex items-start gap-3">
                 <UsersIcon className="h-5 w-5 text-muted-foreground shrink-0 mt-0.5" />
                 <div className="flex-1 min-w-0">
-                  <h4 className="font-semibold text-sm">¿Buscás encargados operativos?</h4>
+                  <h4 className="font-semibold text-sm">¿Quién atiende la tienda?</h4>
                   <p className="text-[12px] text-muted-foreground mt-0.5">
-                    Asigná un email y WhatsApp por módulo (Tienda, Limpieza, Check-in,
-                    Mantenimiento) en <strong>Configuración → Equipo</strong>. Cada
-                    módulo puede atenderlo una persona distinta.
+                    En <strong>Equipo</strong>, editá un miembro y marcá <strong>&ldquo;🛍️ Tienda / Ventas Extras&rdquo;</strong> en
+                    Ajuste Fino de Permisos. Las notifs (vendor declines, cancelaciones, recordatorios)
+                    le caen a esa persona. Si nadie está marcado, caen en tu cuenta.
                   </p>
                 </div>
               </div>

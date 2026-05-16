@@ -1,16 +1,13 @@
 /**
  * Resolver de contacto operativo POR MÓDULO del SaaS.
  *
- * Reemplaza al anterior shop-contact.ts. Generalizado a 6 módulos para
- * escalar a futuro: shop, cleaning, checkin, maintenance, reservations,
- * support.
- *
- * Modelo BD: tabla tenant_module_contacts con (tenant_id, module) unique.
- *
- * Estrategia de resolución:
- *   1) Lookup en tenant_module_contacts (tenant_id, module)
- *   2) Si tiene email/whatsapp → usar eso
- *   3) Fallback al owner del tenant (contact_email, email, owner_whatsapp)
+ * Estrategia de resolución (en orden):
+ *   1) team_members.perm_module_X = true  → encargado preferido (caso común)
+ *      Si hay varios, devolvemos el más reciente (created_at desc).
+ *   2) tenant_module_contacts (compat de Sprint 8d)  → encargado externo
+ *      que NO es team member (proveedor, agencia, etc.).
+ *   3) tenants.contact_email / owner_whatsapp  → fallback al dueño.
+ *   4) tenants.email (cuenta Auth)  → SOLO si includeAuthEmailFallback=true.
  *
  * Caso de uso típico:
  *   const c = await getModuleContactForTenant(tenantId, 'shop');
@@ -81,25 +78,35 @@ export type GetModuleContactOptions = {
   includeAuthEmailFallback?: boolean;
 };
 
+// Solo los módulos que existen como columnas en team_members. Los otros
+// (reservations, support) caen directo al fallback de tenant_module_contacts
+// + owner — no tienen flag dedicado en el panel de Equipo.
+const TEAM_MEMBER_MODULE_COLUMNS: Partial<Record<TenantModule, string>> = {
+  shop: "perm_module_shop",
+  cleaning: "perm_module_cleaning",
+  checkin: "perm_module_checkin",
+  maintenance: "perm_module_maintenance",
+};
+
 /**
  * Devuelve el contacto operativo para mandar notifs de un módulo.
  *
- * Orden de preferencia para email:
- *   tenant_module_contacts.email (module)  → preferido
- *   tenants.contact_email                  → fallback público OK
- *   tenants.email (cuenta Auth)            → SOLO si includeAuthEmailFallback=true
- *
- * Para whatsapp:
- *   tenant_module_contacts.whatsapp        → preferido
- *   tenants.owner_whatsapp                 → fallback (campo público, OK siempre)
+ * Orden de preferencia (primer no-null gana):
+ *   1) team_members con perm_module_X = true   → email + phone del staff
+ *   2) tenant_module_contacts (compat 8d)      → encargado externo
+ *   3) tenants.contact_email / owner_whatsapp  → fallback público al dueño
+ *   4) tenants.email (cuenta Auth)             → SOLO si opts.includeAuthEmailFallback
  */
 export async function getModuleContactForTenant(
   tenantId: string,
   module: TenantModule,
   opts: GetModuleContactOptions = {},
 ): Promise<ModuleContact | null> {
-  // Cargamos tenant + contacto del módulo en paralelo.
-  const [{ data: tenant }, { data: moduleContact }] = await Promise.all([
+  const teamMemberColumn = TEAM_MEMBER_MODULE_COLUMNS[module];
+
+  // Cargamos tenant + módulo en paralelo. El team_member solo si el módulo
+  // tiene columna asociada (shop/cleaning/checkin/maintenance).
+  const [{ data: tenant }, { data: moduleContact }, { data: teamMember }] = await Promise.all([
     supabaseAdmin
       .from("tenants")
       .select("id, name, company, email, contact_email, owner_whatsapp")
@@ -111,6 +118,16 @@ export async function getModuleContactForTenant(
       .eq("tenant_id", tenantId)
       .eq("module", module)
       .maybeSingle(),
+    teamMemberColumn
+      ? supabaseAdmin
+          .from("team_members")
+          .select("name, email, phone")
+          .eq("tenant_id", tenantId)
+          .eq(teamMemberColumn, true)
+          .order("created_at", { ascending: false })
+          .limit(1)
+          .maybeSingle()
+      : Promise.resolve({ data: null }),
   ]);
 
   if (!tenant) return null;
@@ -127,12 +144,25 @@ export async function getModuleContactForTenant(
     email: string | null;
     whatsapp: string | null;
   } | null;
+  const tm = teamMember as {
+    name: string | null;
+    email: string | null;
+    phone: string | null;
+  } | null;
+
+  // Email del team_member: filtrar pseudo-emails (`+phone+tenant@stayhost.local`).
+  // Esos no son emails reales, son placeholder para que Supabase Auth acepte
+  // logins por teléfono. Si el staff solo tiene pseudo-email, su "email
+  // operativo" es nulo — caemos al siguiente fallback.
+  const teamMemberEmail =
+    tm?.email && !tm.email.endsWith("@stayhost.local") ? tm.email : null;
+  const teamMemberPhone = tm?.phone ?? null;
 
   // Por defecto NO caemos a tenants.email — ese campo es PII del owner del
   // SaaS y exponerlo al huésped (vía endpoint público de hub) sería un leak.
   // Solo lo permitimos cuando el caller declara explícitamente que es uso
   // interno (cron, email al host, dashboard del owner).
-  const emailFallback = opts.includeAuthEmailFallback
+  const ownerEmailFallback = opts.includeAuthEmailFallback
     ? t.contact_email || t.email
     : t.contact_email;
 
@@ -140,8 +170,11 @@ export async function getModuleContactForTenant(
     tenantId: t.id,
     module,
     hostName: t.company || t.name || "Host",
-    contactName: mc?.name ?? null,
-    email: mc?.email || emailFallback || null,
-    whatsapp: mc?.whatsapp || t.owner_whatsapp || null,
+    // Nombre del encargado: team member > contacto externo > null.
+    contactName: tm?.name ?? mc?.name ?? null,
+    // Email: team member > contacto externo > owner fallback.
+    email: teamMemberEmail || mc?.email || ownerEmailFallback || null,
+    // WhatsApp: team member > contacto externo > owner.
+    whatsapp: teamMemberPhone || mc?.whatsapp || t.owner_whatsapp || null,
   };
 }

@@ -37,6 +37,10 @@ type TeamRow = {
   perm_manage_tasks: boolean;
   perm_message_guests: boolean;
   perm_edit_properties: boolean;
+  perm_module_shop: boolean;
+  perm_module_cleaning: boolean;
+  perm_module_checkin: boolean;
+  perm_module_maintenance: boolean;
   property_access: unknown; // "all" | string[]
   notif_whatsapp: boolean;
   notif_email: boolean;
@@ -79,6 +83,10 @@ function rowToDto(row: TeamRow) {
       canManageTasks: row.perm_manage_tasks,
       canMessageGuests: row.perm_message_guests,
       canEditProperties: row.perm_edit_properties,
+      canModuleShop: row.perm_module_shop,
+      canModuleCleaning: row.perm_module_cleaning,
+      canModuleCheckin: row.perm_module_checkin,
+      canModuleMaintenance: row.perm_module_maintenance,
     },
     propertyAccess:
       Array.isArray(row.property_access)
@@ -118,6 +126,10 @@ type InboundBody = {
     canManageTasks?: boolean;
     canMessageGuests?: boolean;
     canEditProperties?: boolean;
+    canModuleShop?: boolean;
+    canModuleCleaning?: boolean;
+    canModuleCheckin?: boolean;
+    canModuleMaintenance?: boolean;
   };
   propertyAccess?: "all" | string[];
   notificationPrefs?: { whatsapp?: boolean; email?: boolean };
@@ -151,6 +163,10 @@ function dtoToRow(body: InboundBody) {
     if (body.permissions.canManageTasks !== undefined) patch.perm_manage_tasks = body.permissions.canManageTasks;
     if (body.permissions.canMessageGuests !== undefined) patch.perm_message_guests = body.permissions.canMessageGuests;
     if (body.permissions.canEditProperties !== undefined) patch.perm_edit_properties = body.permissions.canEditProperties;
+    if (body.permissions.canModuleShop !== undefined) patch.perm_module_shop = body.permissions.canModuleShop;
+    if (body.permissions.canModuleCleaning !== undefined) patch.perm_module_cleaning = body.permissions.canModuleCleaning;
+    if (body.permissions.canModuleCheckin !== undefined) patch.perm_module_checkin = body.permissions.canModuleCheckin;
+    if (body.permissions.canModuleMaintenance !== undefined) patch.perm_module_maintenance = body.permissions.canModuleMaintenance;
   }
   if (body.propertyAccess !== undefined) {
     patch.property_access =
