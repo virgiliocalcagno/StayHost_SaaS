@@ -7,8 +7,12 @@
  * Auth: Bearer CRON_SECRET (Vercel cron). Sin esto, cualquiera podría
  * disparar auto-aprobaciones masivas.
  *
- * Schedule (vercel.json): cada hora — "0 * * * *". Vercel hobby permite
- * crons frecuentes; los pesados los hacemos diarios.
+ * Schedule (vercel.json): diario al mediodía UTC — "0 12 * * *". Vercel
+ * hobby permite máximo 1 corrida por día por cron. Eso significa que el
+ * SLA "24h" en la práctica puede ser entre 24h y 48h (peor caso: huésped
+ * pide cancelación 1 minuto antes de la corrida diaria → mañana se evalúa
+ * pero todavía no llegaron las 24h reales → pasa a otro día). Aceptable
+ * para v1; upgrade a Pro si queremos cron horario.
  */
 import { NextRequest, NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabase/admin";
