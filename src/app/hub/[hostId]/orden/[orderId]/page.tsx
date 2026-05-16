@@ -22,7 +22,10 @@ import {
   MessageCircle,
   Mail,
   Home,
+  QrCode,
+  Hash,
 } from "lucide-react";
+import { QRCodeSVG } from "qrcode.react";
 import { formatMoney } from "@/lib/money/format";
 
 interface OrderInfo {
@@ -39,6 +42,11 @@ interface OrderInfo {
     // evita leak por intercepción del customer_token (queda en logs URL).
     notes: string | null;
     createdAt: string;
+    // Sprint 6 — credenciales de redención que el huésped muestra al vendor.
+    redemptionToken: string | null;
+    redemptionPin: string | null;
+    vendorStatus: string;
+    redeemedAt: string | null;
     items: Array<{
       id: string;
       name: string;
@@ -57,6 +65,34 @@ interface OrderInfo {
   };
   paypal: { clientId: string; mode: "sandbox" | "live" } | null;
 }
+
+const VENDOR_STATUS_LABELS: Record<string, { es: string; en: string; cls: string }> = {
+  awaiting: {
+    es: "⏳ Aguardando confirmación del proveedor",
+    en: "⏳ Waiting for vendor confirmation",
+    cls: "bg-amber-50 border-amber-200 text-amber-900",
+  },
+  confirmed: {
+    es: "✓ El proveedor confirmó tu reserva",
+    en: "✓ Vendor confirmed your booking",
+    cls: "bg-blue-50 border-blue-200 text-blue-900",
+  },
+  declined: {
+    es: "✗ El proveedor no puede atender — el host te contactará",
+    en: "✗ Vendor can't fulfill — your host will contact you",
+    cls: "bg-rose-50 border-rose-200 text-rose-900",
+  },
+  delivered: {
+    es: "✅ Servicio entregado",
+    en: "✅ Service delivered",
+    cls: "bg-emerald-50 border-emerald-200 text-emerald-900",
+  },
+  no_show: {
+    es: "❌ No te presentaste al servicio",
+    en: "❌ No-show",
+    cls: "bg-slate-50 border-slate-200 text-slate-700",
+  },
+};
 
 const PRICING_SUFFIX: Record<string, string> = {
   fixed: "",
@@ -260,12 +296,75 @@ export default function ServiceOrderPayPage({
             <CheckCircle2 className="h-12 w-12 mx-auto text-emerald-600 mb-3" />
             <h2 className="text-xl font-bold text-emerald-900 mb-1">¡Pago confirmado!</h2>
             <p className="text-sm text-emerald-700">
-              El host fue notificado. Coordinará los detalles del servicio con vos.
+              El host y el proveedor del servicio fueron notificados.
             </p>
             {info.order.paymentId && (
               <p className="text-[10px] text-emerald-600 mt-3 font-mono">
                 Pago: {info.order.paymentId}
               </p>
+            )}
+          </div>
+        )}
+
+        {/* Sprint 6 — QR + PIN para que el huésped valide la entrega con el
+            vendor. Solo se muestra cuando la orden está pagada y todavía no
+            fue redimida. Si ya se entregó, mostramos confirmación cerrada. */}
+        {isPaid && info.order.redemptionToken && info.order.redemptionPin && (
+          <div className="bg-white rounded-2xl shadow-md border-2 border-amber-200 p-6 mb-6">
+            <h2 className="font-bold text-lg mb-1 flex items-center gap-2">
+              <QrCode className="h-5 w-5 text-amber-600" /> Tu pase de entrega
+            </h2>
+            <p className="text-xs text-slate-500 mb-5">
+              Mostrale este código o dictá el PIN al proveedor a la llegada para validar el servicio.
+            </p>
+
+            {info.order.redeemedAt ? (
+              <div className="text-center py-6 bg-emerald-50 rounded-xl border border-emerald-200">
+                <CheckCircle2 className="h-10 w-10 mx-auto text-emerald-600 mb-2" />
+                <p className="font-bold text-emerald-900">Servicio entregado</p>
+                <p className="text-[11px] text-emerald-700 mt-1">
+                  {new Date(info.order.redeemedAt).toLocaleString("es-ES", {
+                    dateStyle: "short",
+                    timeStyle: "short",
+                  })}
+                </p>
+              </div>
+            ) : (
+              <>
+                {/* QR grande centrado. Codifica una URL absoluta al portal
+                    del vendor — cuando el vendor escanea, abre el portal con
+                    el token cargado y listo para confirmar. */}
+                <div className="flex justify-center mb-4">
+                  <div className="p-4 bg-white border-2 border-slate-200 rounded-2xl shadow-sm">
+                    <QRCodeSVG
+                      value={`${typeof window !== "undefined" ? window.location.origin : ""}/v/${info.order.redemptionToken}`}
+                      size={200}
+                      level="M"
+                      includeMargin={false}
+                    />
+                  </div>
+                </div>
+
+                {/* PIN como fallback dictable. Tamaño grande para que sea
+                    legible al mostrar la pantalla a un proveedor. */}
+                <div className="text-center pt-4 border-t">
+                  <p className="text-[11px] uppercase tracking-widest text-slate-500 mb-2 flex items-center justify-center gap-1.5">
+                    <Hash className="h-3 w-3" /> O dictá este código
+                  </p>
+                  <p className="text-4xl font-mono font-extrabold tracking-[0.3em] text-slate-900">
+                    {info.order.redemptionPin}
+                  </p>
+                </div>
+
+                {/* Estado del vendor — el huésped sabe qué espera */}
+                {VENDOR_STATUS_LABELS[info.order.vendorStatus] && (
+                  <div
+                    className={`mt-5 p-3 rounded-lg border text-sm text-center ${VENDOR_STATUS_LABELS[info.order.vendorStatus].cls}`}
+                  >
+                    {VENDOR_STATUS_LABELS[info.order.vendorStatus].es}
+                  </div>
+                )}
+              </>
             )}
           </div>
         )}

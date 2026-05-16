@@ -29,7 +29,9 @@ export async function GET(
   // del huésped a través de este GET. El huésped ya conoce sus propios datos.
   const { data: orderRow } = await supabaseAdmin
     .from("service_orders")
-    .select("id, tenant_id, status, total_amount, currency, paid_at, payment_id, guest_name, notes, created_at")
+    .select(
+      "id, tenant_id, status, total_amount, currency, paid_at, payment_id, guest_name, notes, created_at, redemption_token, redemption_pin, vendor_status, redeemed_at",
+    )
     .eq("id", orderId)
     .eq("tenant_id", hostId)
     .eq("customer_token", token)
@@ -43,6 +45,10 @@ export async function GET(
     paid_at: string | null; payment_id: string | null;
     guest_name: string;
     notes: string | null; created_at: string;
+    redemption_token: string | null;
+    redemption_pin: string | null;
+    vendor_status: string;
+    redeemed_at: string | null;
   };
 
   // Items snapshot.
@@ -86,6 +92,16 @@ export async function GET(
       // guestEmail/guestPhone removidos del response público — ver query.
       notes: order.notes,
       createdAt: order.created_at,
+      // Redención (Sprint 6) — exponemos token + PIN al cliente porque el
+      // huésped es la cuenta legítima de este token. Quien intercepte el
+      // customer_token ya tiene acceso completo de todas formas. El QR se
+      // arma con la URL `/v/{redemption_token}` que abre el portal de
+      // redención del vendor; el vendor sigue necesitando auth propia
+      // para marcar entregada.
+      redemptionToken: order.redemption_token,
+      redemptionPin: order.redemption_pin,
+      vendorStatus: order.vendor_status,
+      redeemedAt: order.redeemed_at,
       items: ((items ?? []) as Array<{
         id: string; name: string; quantity: number; pricing_model: string;
         unit_price: string | number; line_total: string | number;

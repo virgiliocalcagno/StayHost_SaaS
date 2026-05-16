@@ -45,7 +45,9 @@ export async function POST(
 
   const { data: orderRow } = await supabaseAdmin
     .from("service_orders")
-    .select("id, tenant_id, status, total_amount, currency, paid_at, customer_token, guest_name, guest_email, guest_phone, notes")
+    .select(
+      "id, tenant_id, status, total_amount, currency, paid_at, customer_token, guest_name, guest_email, guest_phone, notes, redemption_pin",
+    )
     .eq("id", orderId)
     .eq("tenant_id", hostId)
     .eq("customer_token", customerToken)
@@ -59,6 +61,7 @@ export async function POST(
     paid_at: string | null; customer_token: string;
     guest_name: string; guest_email: string | null; guest_phone: string | null;
     notes: string | null;
+    redemption_pin: string | null;
   };
 
   // Idempotente: si ya estaba pagada, devolvemos OK sin re-capturar.
@@ -238,6 +241,9 @@ export async function POST(
           currency: order.currency,
           paymentId: captureResult.id,
           items: itemsMapped,
+          // Sprint 6 — pase de entrega visible en el email
+          redemptionPin: order.redemption_pin,
+          orderUrl: `${baseUrl}/hub/${encodeURIComponent(hostId)}/orden/${encodeURIComponent(order.id)}?t=${encodeURIComponent(customerToken)}`,
         });
         await sendEmail({
           to: order.guest_email,

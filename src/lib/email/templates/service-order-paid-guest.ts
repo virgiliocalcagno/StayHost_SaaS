@@ -27,6 +27,11 @@ type GuestPaidEmailData = {
   currency: string;
   paymentId: string;
   items: Item[];
+  // Sprint 6 — credenciales de redención. El PIN va en el cuerpo del email
+  // (texto plano grande), y orderUrl apunta a la página del huésped donde
+  // ve el QR + estado en vivo de la orden.
+  redemptionPin: string | null;
+  orderUrl: string | null;
 };
 
 const SUFFIX: Record<string, string> = {
@@ -91,6 +96,15 @@ export function renderServiceOrderPaidGuestEmail(
             Recibimos tu pago. ${escapeHtml(d.hostName)} se va a comunicar con vos para coordinar los detalles del servicio.
           </p>
         </td></tr>
+
+        ${d.redemptionPin ? `<tr><td style="padding:0 32px 24px">
+          <div style="background:#fef3c7;border:2px dashed #f59e0b;border-radius:14px;padding:20px;text-align:center">
+            <p style="margin:0;font-size:11px;font-weight:700;color:#92400e;letter-spacing:1.5px;text-transform:uppercase">🎟 Tu pase de entrega</p>
+            <p style="margin:10px 0 6px;font-size:36px;font-weight:800;font-family:Menlo,Monaco,monospace;letter-spacing:8px;color:#1e293b">${escapeHtml(d.redemptionPin)}</p>
+            <p style="margin:0;font-size:12px;color:#78716c">Mostrale este código (o el QR) al proveedor al llegar.</p>
+            ${d.orderUrl ? `<a href="${escapeHtml(d.orderUrl)}" style="display:inline-block;margin-top:14px;background:#1e293b;color:#ffffff;padding:10px 22px;border-radius:24px;text-decoration:none;font-weight:700;font-size:13px">Ver mi QR ↗</a>` : ""}
+          </div>
+        </td></tr>` : ""}
 
         <tr><td style="padding:0 32px 24px">
           <p style="margin:0 0 12px;font-size:11px;font-weight:700;color:#64748b;letter-spacing:1px;text-transform:uppercase">Tu pedido</p>

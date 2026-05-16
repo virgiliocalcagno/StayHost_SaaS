@@ -28,6 +28,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { DEFAULT_TENANT_TZ } from "@/lib/datetime/tenant-time";
+import { generateRedemptionPin, generateRedemptionToken } from "@/lib/upsell/redemption";
 
 /**
  * Convierte una fecha YYYY-MM-DD en el timestamp del inicio del día en
@@ -449,6 +450,18 @@ export async function POST(
   // Insertar order + items. Como no hay transacción multi-statement en el
   // client de Supabase, hacemos best-effort: insert orden, si falla retorna
   // error; insert items, si falla borramos la orden (cleanup manual).
+  // Redemption credentials (Sprint 6) — token largo para el QR + PIN corto
+  // para el fallback dictable. Se generan acá en el server al crear la orden
+  // y se guardan en BD. El vendor los validará desde su portal al entregar.
+  //
+  // Colisión del PIN: ~191M combinaciones; probabilidad de colisión cross-
+  // tenant baja pero no nula. Para v1 no chequeamos colisión activa — si
+  // hay duplicado, el vendor del host A puede confundirse con orden de B.
+  // Mitigamos requiriendo que el vendor venga autenticado (con su propio
+  // token) en la validación, así el match se hace por (PIN, vendor_id).
+  const redemptionToken = generateRedemptionToken();
+  const redemptionPin = generateRedemptionPin();
+
   const { data: orderInsert, error: orderErr } = await supabaseAdmin
     .from("service_orders")
     .insert({
@@ -460,6 +473,8 @@ export async function POST(
       total_amount: totalAmount,
       currency: orderCurrency,
       notes,
+      redemption_token: redemptionToken,
+      redemption_pin: redemptionPin,
     } as never)
     .select("id, customer_token")
     .single();
