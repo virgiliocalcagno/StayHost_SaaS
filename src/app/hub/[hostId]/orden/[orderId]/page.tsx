@@ -47,6 +47,8 @@ interface OrderInfo {
     redemptionPin: string | null;
     vendorStatus: string;
     redeemedAt: string | null;
+    // Sprint 7.5 — para armar wa.me click-to-chat al vendor.
+    vendorActionToken: string | null;
     items: Array<{
       id: string;
       name: string;
@@ -55,6 +57,7 @@ interface OrderInfo {
       unitPrice: number;
       lineTotal: number;
       serviceDate: string | null;
+      vendor: { name: string; phone: string | null } | null;
     }>;
   };
   host: {
@@ -364,6 +367,72 @@ export default function ServiceOrderPayPage({
                     {VENDOR_STATUS_LABELS[info.order.vendorStatus].es}
                   </div>
                 )}
+
+                {/* Sprint 7.5 — WhatsApp click-to-chat al/los vendor(es).
+                    Vendors en Punta Cana no chequean email seguido. El
+                    huésped puede mandarles WhatsApp con un click pasando
+                    todos los datos + link al portal en el mensaje. */}
+                {info.order.vendorStatus === "awaiting" && (() => {
+                  // Agrupar items por vendor único (por phone). Mostrar 1 botón por vendor.
+                  const vendorsWithPhone = new Map<string, { name: string; phone: string; items: typeof info.order.items }>();
+                  for (const it of info.order.items) {
+                    if (!it.vendor?.phone) continue;
+                    const key = it.vendor.phone;
+                    const existing = vendorsWithPhone.get(key);
+                    if (existing) {
+                      existing.items.push(it);
+                    } else {
+                      vendorsWithPhone.set(key, {
+                        name: it.vendor.name,
+                        phone: it.vendor.phone,
+                        items: [it],
+                      });
+                    }
+                  }
+                  const vendorList = Array.from(vendorsWithPhone.values());
+                  if (vendorList.length === 0) return null;
+
+                  return (
+                    <div className="mt-5 pt-5 border-t space-y-2">
+                      <p className="text-[11px] uppercase tracking-widest text-slate-500 text-center mb-2 flex items-center justify-center gap-1.5">
+                        <MessageCircle className="h-3 w-3" /> Avisá a tu proveedor por WhatsApp
+                      </p>
+                      {vendorList.map((v) => {
+                        const itemsLabel = v.items.map((it) => `• ${it.name}${it.serviceDate ? ` (${it.serviceDate})` : ""}`).join("\n");
+                        const manageUrl = info.order.redemptionToken && info.order.vendorActionToken
+                          ? `${typeof window !== "undefined" ? window.location.origin : ""}/v/${info.order.redemptionToken}?k=${info.order.vendorActionToken}`
+                          : "";
+                        const message = [
+                          `¡Hola! Soy ${info.order.guestName}, ya pagué la reserva:`,
+                          "",
+                          itemsLabel,
+                          "",
+                          `PIN: ${info.order.redemptionPin ?? ""}`,
+                          manageUrl ? `Detalles: ${manageUrl}` : "",
+                          "",
+                          "¿Confirmamos?",
+                        ].filter(Boolean).join("\n");
+                        const waLink = `https://wa.me/${v.phone.replace(/\D/g, "")}?text=${encodeURIComponent(message)}`;
+                        return (
+                          <Button
+                            key={v.phone}
+                            asChild
+                            className="w-full bg-emerald-600 hover:bg-emerald-700 text-white"
+                            size="lg"
+                          >
+                            <a href={waLink} target="_blank" rel="noopener noreferrer">
+                              <MessageCircle className="h-4 w-4 mr-2" />
+                              Avisar a {v.name}
+                            </a>
+                          </Button>
+                        );
+                      })}
+                      <p className="text-[10px] text-slate-500 text-center italic">
+                        Esto le manda los datos completos y el link para que confirme directo desde su celular.
+                      </p>
+                    </div>
+                  );
+                })()}
               </>
             )}
           </div>

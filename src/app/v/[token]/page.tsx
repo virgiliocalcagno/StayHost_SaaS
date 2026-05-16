@@ -33,6 +33,8 @@ import {
   MapPin,
   Plane,
   ShieldCheck,
+  Bell,
+  BellOff,
 } from "lucide-react";
 import { formatMoney } from "@/lib/money/format";
 
@@ -85,6 +87,17 @@ const PRICING_SUFFIX: Record<string, string> = {
   per_night: "noches",
 };
 
+// VAPID public key viene en base64url (RFC 7515). El browser quiere
+// Uint8Array, así que decodificamos manualmente.
+function urlBase64ToUint8Array(base64: string): Uint8Array {
+  const padding = "=".repeat((4 - (base64.length % 4)) % 4);
+  const padded = (base64 + padding).replace(/-/g, "+").replace(/_/g, "/");
+  const raw = atob(padded);
+  const arr = new Uint8Array(raw.length);
+  for (let i = 0; i < raw.length; i++) arr[i] = raw.charCodeAt(i);
+  return arr;
+}
+
 const VENDOR_STATUS_BADGE: Record<string, { label: string; cls: string; icon: string }> = {
   awaiting: { label: "Aguardando confirmación", cls: "bg-amber-100 text-amber-800 border-amber-200", icon: "⏳" },
   confirmed: { label: "Confirmada", cls: "bg-blue-100 text-blue-800 border-blue-200", icon: "✓" },
@@ -109,6 +122,99 @@ export default function VendorRedeemPage({
   const [pinInput, setPinInput] = useState("");
   const [declineReason, setDeclineReason] = useState("");
   const [actionError, setActionError] = useState<string | null>(null);
+
+  // Sprint 7.5 — push notifications state.
+  const [pushStatus, setPushStatus] = useState<
+    "checking" | "unsupported" | "denied" | "available" | "subscribed" | "subscribing" | "error"
+  >("checking");
+  const [pushMessage, setPushMessage] = useState<string | null>(null);
+
+  // Sprint 7.5 — chequear soporte de push notifications al cargar.
+  // Si el browser no soporta, push permanece 'unsupported' y no mostramos
+  // el prompt. Si soporta + permiso ya concedido + subscription activa,
+  // marcamos 'subscribed'.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      if (typeof window === "undefined") return;
+      if (!("serviceWorker" in navigator) || !("PushManager" in window) || !("Notification" in window)) {
+        if (!cancelled) setPushStatus("unsupported");
+        return;
+      }
+      if (Notification.permission === "denied") {
+        if (!cancelled) setPushStatus("denied");
+        return;
+      }
+      // Registrar el SW (idempotente — si ya está registrado, el browser
+      // devuelve la registration existente sin re-instalar).
+      try {
+        const reg = await navigator.serviceWorker.register("/sw-vendor.js", { scope: "/" });
+        const existing = await reg.pushManager.getSubscription();
+        if (existing) {
+          if (!cancelled) setPushStatus("subscribed");
+        } else {
+          if (!cancelled) setPushStatus("available");
+        }
+      } catch (e) {
+        console.error("[push] SW register failed:", e);
+        if (!cancelled) setPushStatus("error");
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Subscribe: pide permiso, genera subscription, manda al server con el
+  // actionToken para que el server resuelva el vendor.
+  const handleEnablePush = useCallback(async () => {
+    if (!actionToken) {
+      setPushMessage("Abrí el link único desde tu email para activar notificaciones.");
+      return;
+    }
+    const vapidPublicKey = process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY;
+    if (!vapidPublicKey) {
+      setPushMessage("Push no configurado en el servidor (sin VAPID).");
+      setPushStatus("error");
+      return;
+    }
+    setPushStatus("subscribing");
+    setPushMessage(null);
+    try {
+      const permission = await Notification.requestPermission();
+      if (permission !== "granted") {
+        setPushStatus(permission === "denied" ? "denied" : "available");
+        return;
+      }
+      const reg = await navigator.serviceWorker.ready;
+      const sub = await reg.pushManager.subscribe({
+        userVisibleOnly: true,
+        // Cast a BufferSource — el tipo TS estricto no acepta Uint8Array<ArrayBufferLike>
+        // pero la spec del browser lo acepta sin problema.
+        applicationServerKey: urlBase64ToUint8Array(vapidPublicKey) as BufferSource,
+      });
+      // POST al server con redemption_token + action_token para auth.
+      const r = await fetch("/api/vendor/push-subscribe", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          redemptionToken: token,
+          actionToken,
+          subscription: sub.toJSON(),
+        }),
+      });
+      if (!r.ok) {
+        const j = await r.json().catch(() => ({}));
+        throw new Error(j.error ?? `HTTP ${r.status}`);
+      }
+      setPushStatus("subscribed");
+      setPushMessage("¡Listo! Te llegarán notificaciones al instante.");
+    } catch (e) {
+      console.error("[push] subscribe failed:", e);
+      setPushStatus("error");
+      setPushMessage(e instanceof Error ? e.message : "No se pudo activar");
+    }
+  }, [actionToken, token]);
 
   const fetchInfo = useCallback(async () => {
     const url = `/api/public/redeem/${encodeURIComponent(token)}${actionToken ? `?k=${encodeURIComponent(actionToken)}` : ""}`;
@@ -224,6 +330,52 @@ export default function VendorRedeemPage({
                 Esta vista es pública. Para confirmar, declinar o marcar entregada esta orden, abrila desde el link único que recibiste en tu email.
               </p>
             </div>
+          </div>
+        )}
+
+        {/* Sprint 7.5 — banner para activar push notifications. Solo si:
+            - canAct (vendor real con action_token)
+            - browser soporta
+            - todavía no está subscripto */}
+        {canAct && (pushStatus === "available" || pushStatus === "subscribing") && (
+          <div className="bg-gradient-to-br from-blue-50 to-indigo-50 border-2 border-blue-200 rounded-2xl p-4 flex items-start gap-3">
+            <Bell className="h-6 w-6 text-blue-600 shrink-0 mt-0.5" />
+            <div className="flex-1 min-w-0">
+              <p className="font-bold text-sm text-blue-900">No te pierdas ninguna orden</p>
+              <p className="text-xs text-blue-700 mt-1">
+                Activá las notificaciones para recibir un ping al instante cuando llegue una nueva reserva, aunque tengas el celular cerrado.
+              </p>
+              <Button
+                size="sm"
+                className="mt-3 bg-blue-600 hover:bg-blue-700 text-white"
+                onClick={handleEnablePush}
+                disabled={pushStatus === "subscribing"}
+              >
+                {pushStatus === "subscribing" ? (
+                  <Loader2 className="h-3 w-3 mr-1.5 animate-spin" />
+                ) : (
+                  <Bell className="h-3 w-3 mr-1.5" />
+                )}
+                Activar notificaciones
+              </Button>
+              {pushMessage && <p className="text-[11px] text-rose-700 mt-2">{pushMessage}</p>}
+            </div>
+          </div>
+        )}
+
+        {canAct && pushStatus === "subscribed" && (
+          <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-3 flex items-center gap-2 text-sm text-emerald-900">
+            <Bell className="h-4 w-4" />
+            <span className="font-semibold">Notificaciones activadas en este dispositivo.</span>
+          </div>
+        )}
+
+        {canAct && pushStatus === "denied" && (
+          <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 flex items-start gap-2 text-xs text-amber-900">
+            <BellOff className="h-4 w-4 mt-0.5 shrink-0" />
+            <p>
+              Bloqueaste las notificaciones para este sitio. Si querés recibir órdenes al instante, habilitalas en la configuración del navegador.
+            </p>
           </div>
         )}
 

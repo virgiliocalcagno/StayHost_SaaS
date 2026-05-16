@@ -17,6 +17,7 @@ import { sendEmail } from "@/lib/email/send";
 import { renderServiceOrderPaidHostEmail } from "@/lib/email/templates/service-order-paid-host";
 import { renderServiceOrderPaidGuestEmail } from "@/lib/email/templates/service-order-paid-guest";
 import { renderServiceOrderVendorEmail } from "@/lib/email/templates/service-order-vendor";
+import { sendPushToVendor } from "@/lib/push/web-push";
 
 export async function POST(
   req: NextRequest,
@@ -305,12 +306,7 @@ export async function POST(
           };
 
           for (const v of ((vendors ?? []) as VendorRow[])) {
-            // Respeta la preferencia de notificación del host. Default
-            // 'both' o no configurado → mandamos email.
             const pref = v.notification_pref ?? "both";
-            if (pref === "whatsapp_manual") continue;
-            if (!v.email) continue;
-
             const vendorItems = itemsByVendor.get(v.id) ?? [];
             if (vendorItems.length === 0) continue;
 
@@ -322,6 +318,34 @@ export async function POST(
             const manageUrl =
               `${baseUrl}/v/${encodeURIComponent(order.redemption_token!)}` +
               `?k=${encodeURIComponent(vendorActionToken)}`;
+
+            // Sprint 7.5 — push notification SIEMPRE se intenta, incluso si
+            // notification_pref='whatsapp_manual'. La PWA del vendor es el
+            // canal instantáneo principal en Punta Cana; el email/WhatsApp
+            // son backup. Si no hay subscription registrada, el helper es no-op.
+            const firstItemName = vendorItems[0]?.name ?? "Nueva orden";
+            const extraItemsLabel = vendorItems.length > 1
+              ? ` (+${vendorItems.length - 1} más)`
+              : "";
+            await sendPushToVendor({
+              vendorId: v.id,
+              payload: {
+                title: `🛎 Nueva orden de ${order.guest_name}`,
+                body: `${firstItemName}${extraItemsLabel} — abrí para confirmar.`,
+                url: manageUrl,
+                tag: `order-${order.id.slice(0, 8)}`,
+              },
+            }).catch((pErr) => {
+              console.error(
+                `[capture] vendor push failed for vendor ${v.id}:`,
+                pErr,
+              );
+            });
+
+            // Email: skip si pref='whatsapp_manual' o sin email configurado.
+            // (Si solo tenía push, ya recibió la notif arriba.)
+            if (pref === "whatsapp_manual") continue;
+            if (!v.email) continue;
 
             const { subject, html } = renderServiceOrderVendorEmail({
               vendorName: v.display_name ?? v.name,

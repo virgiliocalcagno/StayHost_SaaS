@@ -26,6 +26,7 @@ import { getAuthenticatedTenant } from "@/lib/supabase/server";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { sendEmail } from "@/lib/email/send";
 import { renderServiceOrderVendorEmail } from "@/lib/email/templates/service-order-vendor";
+import { sendPushToVendor } from "@/lib/push/web-push";
 
 const MANAGE_ROLES = new Set(["owner", "admin", "manager", "co_host"]);
 
@@ -152,6 +153,21 @@ export async function POST(
       // vendor_email_sent_at se actualiza solo si se manda el email.
     } as never)
     .eq("id", order.id);
+
+  // Sprint 7.5 — push notification al nuevo vendor ANTES del email
+  // (si tiene subscription registrada). Helper es no-op si no hay subs.
+  const baseUrlForPush = process.env.NEXT_PUBLIC_APP_URL ?? new URL(req.url).origin;
+  await sendPushToVendor({
+    vendorId: newVendorId,
+    payload: {
+      title: `🔁 Orden reasignada — ${order.guest_name}`,
+      body: "El host te asignó esta orden. Abrí para confirmar.",
+      url: `${baseUrlForPush}/v/${encodeURIComponent(order.redemption_token ?? "")}?k=${encodeURIComponent(newActionToken)}`,
+      tag: `order-${order.id.slice(0, 8)}`,
+    },
+  }).catch((e) => {
+    console.error("[reassign] push failed (non-fatal):", e);
+  });
 
   // Email al nuevo vendor (si notif_pref lo permite). Reutilizamos el
   // template del capture endpoint.

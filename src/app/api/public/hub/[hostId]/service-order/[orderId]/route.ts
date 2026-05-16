@@ -30,7 +30,7 @@ export async function GET(
   const { data: orderRow } = await supabaseAdmin
     .from("service_orders")
     .select(
-      "id, tenant_id, status, total_amount, currency, paid_at, payment_id, guest_name, notes, created_at, redemption_token, redemption_pin, vendor_status, redeemed_at",
+      "id, tenant_id, status, total_amount, currency, paid_at, payment_id, guest_name, notes, created_at, redemption_token, redemption_pin, vendor_status, redeemed_at, vendor_action_token",
     )
     .eq("id", orderId)
     .eq("tenant_id", hostId)
@@ -49,14 +49,44 @@ export async function GET(
     redemption_pin: string | null;
     vendor_status: string;
     redeemed_at: string | null;
+    vendor_action_token: string | null;
   };
 
   // Items snapshot.
   const { data: items } = await supabaseAdmin
     .from("service_order_items")
-    .select("id, name, quantity, pricing_model, unit_price, line_total, service_date")
+    .select("id, name, quantity, pricing_model, unit_price, line_total, service_date, vendor_id")
     .eq("order_id", orderId)
     .order("created_at", { ascending: true });
+
+  // Sprint 7.5 — info pública de los vendors involucrados para que el
+  // huésped pueda mandarles WhatsApp directo. Solo display_name + phone.
+  // NUNCA exponemos comisión, email interno, notas, contrato, etc.
+  const itemRows = (items ?? []) as Array<{
+    id: string; name: string; quantity: number; pricing_model: string;
+    unit_price: string | number; line_total: string | number;
+    service_date: string | null;
+    vendor_id: string | null;
+  }>;
+  const vendorIds = Array.from(
+    new Set(itemRows.map((i) => i.vendor_id).filter((v): v is string => !!v)),
+  );
+  const vendorMap = new Map<string, { name: string; phone: string | null }>();
+  if (vendorIds.length > 0) {
+    const { data: vendors } = await supabaseAdmin
+      .from("upsell_vendors")
+      .select("id, name, display_name, phone")
+      .in("id", vendorIds)
+      .eq("tenant_id", hostId);
+    for (const v of ((vendors ?? []) as Array<{
+      id: string; name: string; display_name: string | null; phone: string | null;
+    }>)) {
+      vendorMap.set(v.id, {
+        name: v.display_name ?? v.name,
+        phone: v.phone,
+      });
+    }
+  }
 
   // Tenant info pública (no exponemos email de cuenta).
   const { data: tenant } = await supabaseAdmin
@@ -102,11 +132,14 @@ export async function GET(
       redemptionPin: order.redemption_pin,
       vendorStatus: order.vendor_status,
       redeemedAt: order.redeemed_at,
-      items: ((items ?? []) as Array<{
-        id: string; name: string; quantity: number; pricing_model: string;
-        unit_price: string | number; line_total: string | number;
-        service_date: string | null;
-      }>).map((i) => ({
+      // Sprint 7.5 — vendorActionToken para armar el wa.me directo al
+      // vendor con link al portal. Solo sale al huésped legítimo (auth
+      // por customer_token). El huésped puede iniciar el contacto pero
+      // NO puede actuar acciones del vendor con este token (eso requiere
+      // que se haga POST con el k correcto — el huésped lo tiene pero
+      // los botones de acción no se le muestran).
+      vendorActionToken: order.vendor_action_token,
+      items: itemRows.map((i) => ({
         id: i.id,
         name: i.name,
         quantity: i.quantity,
@@ -114,6 +147,7 @@ export async function GET(
         unitPrice: Number(i.unit_price),
         lineTotal: Number(i.line_total),
         serviceDate: i.service_date,
+        vendor: i.vendor_id ? vendorMap.get(i.vendor_id) ?? null : null,
       })),
     },
     host: {
