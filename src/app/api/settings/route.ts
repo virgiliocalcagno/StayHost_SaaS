@@ -15,6 +15,7 @@
  */
 import { NextRequest, NextResponse } from "next/server";
 import { getAuthenticatedTenant } from "@/lib/supabase/server";
+import { normalizePhoneSmart } from "@/lib/auth/identity";
 
 export async function GET() {
   const { user, tenantId, supabase } = await getAuthenticatedTenant();
@@ -61,7 +62,6 @@ export async function GET() {
   });
 }
 
-const E164 = /^\+[1-9]\d{6,14}$/;
 const EMAIL = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
 
 export async function PATCH(req: NextRequest) {
@@ -99,14 +99,22 @@ export async function PATCH(req: NextRequest) {
   }
 
   if ("ownerWhatsapp" in body) {
-    const v = body.ownerWhatsapp == null ? null : String(body.ownerWhatsapp).trim();
-    if (v && !E164.test(v)) {
-      return NextResponse.json(
-        { error: "WhatsApp debe estar en formato internacional, ej +18091234567" },
-        { status: 400 }
-      );
+    const raw = body.ownerWhatsapp == null ? "" : String(body.ownerWhatsapp).trim();
+    if (!raw) {
+      patch.owner_whatsapp = null;
+    } else {
+      // Auto-normaliza: "8092585009" → "+18092585009". Si menos de 10 dígitos
+      // es un error real (no se puede inventar el código). Si llega con +, lo
+      // respetamos.
+      const normalized = normalizePhoneSmart(raw);
+      if (!normalized) {
+        return NextResponse.json(
+          { error: "WhatsApp inválido. Mínimo 10 dígitos." },
+          { status: 400 }
+        );
+      }
+      patch.owner_whatsapp = normalized;
     }
-    patch.owner_whatsapp = v || null;
   }
 
   if ("hubWelcomeMessage" in body) {

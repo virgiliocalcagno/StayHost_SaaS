@@ -46,6 +46,7 @@ import {
   Loader2,
   Users as UsersIcon,
   Phone,
+  Mail,
   Star,
 } from "lucide-react";
 import { formatMoney } from "@/lib/money/format";
@@ -1012,6 +1013,18 @@ export default function UpsellsPanel() {
                             </a>
                           </p>
                         )}
+                        {v.email && (
+                          <p className="flex items-center gap-1">
+                            <Mail className="h-3 w-3" />
+                            <a
+                              href={`mailto:${v.email}`}
+                              className="hover:underline truncate"
+                              title={v.email}
+                            >
+                              {v.email}
+                            </a>
+                          </p>
+                        )}
                       </div>
 
                       <div className="flex items-center justify-between text-[11px] pt-3 border-t">
@@ -1945,15 +1958,19 @@ export default function UpsellsPanel() {
                 <Input
                   value={vendorForm.phone}
                   onChange={(e) => setVendorForm({ ...vendorForm, phone: e.target.value })}
-                  placeholder="+1 809..."
+                  placeholder="8092585009"
                 />
+                <p className="text-[10px] text-muted-foreground">
+                  Tipea solo los dígitos (10 mín). Agregamos el +1 automático.
+                </p>
               </div>
               <div className="space-y-2">
                 <Label>Email</Label>
                 <Input
+                  type="email"
                   value={vendorForm.email}
                   onChange={(e) => setVendorForm({ ...vendorForm, email: e.target.value })}
-                  placeholder="Opcional"
+                  placeholder="proveedor@dominio.com"
                 />
               </div>
             </div>

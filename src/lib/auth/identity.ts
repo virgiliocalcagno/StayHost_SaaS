@@ -31,6 +31,38 @@ export function normalizePhone(input: string): string | null {
 }
 
 /**
+ * Normalización amigable para inputs de usuario en LATAM.
+ *
+ * Reglas (en orden):
+ *   - "8092585009"     (10 dígitos)          → "+18092585009"   (asume DR/USA = +1)
+ *   - "18092585009"    (11 dígitos con 1)    → "+18092585009"
+ *   - "+18092585009"   (ya tiene +)          → "+18092585009"
+ *   - "+5491123456789" (otro país)           → "+5491123456789" (respeta)
+ *   - "5491123456789"  (12+ dígitos sin +)   → "+5491123456789" (asume código país incluido)
+ *
+ * Devuelve null si menos de 10 dígitos (no es un teléfono móvil válido).
+ *
+ * Pensado para Punta Cana — el usuario tipea su número como lo dicta sin
+ * acordarse del prefijo. Si tipea solo 10 dígitos, asumimos +1.
+ */
+export function normalizePhoneSmart(input: string): string | null {
+  const hadPlus = input.trim().startsWith("+");
+  const digits = input.replace(/\D/g, "");
+  if (digits.length < 10) return null;
+
+  // Caso 1: 10 dígitos sin +  → asumimos código país +1 (DR/USA/Canada).
+  if (digits.length === 10 && !hadPlus) {
+    return `+1${digits}`;
+  }
+  // Caso 2: 11 dígitos sin + arrancando con 1 → es +1 incluido.
+  if (digits.length === 11 && !hadPlus && digits.startsWith("1")) {
+    return `+${digits}`;
+  }
+  // Caso 3: ya tiene + o tiene 11+ dígitos sin + → respetamos lo que vino.
+  return `+${digits}`;
+}
+
+/**
  * Construye el pseudo-email para un teléfono dado dentro de un tenant.
  * Formato: `+18091234567+{tenantIdShort}@stayhost.local`.
  *

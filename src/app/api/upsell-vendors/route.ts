@@ -20,6 +20,28 @@ import type {
   VendorPricingMethod,
   VendorNotificationChannel,
 } from "@/types/upsellVendor";
+import { normalizePhoneSmart } from "@/lib/auth/identity";
+
+const EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
+
+/**
+ * Normaliza un teléfono input del usuario. Si tipea solo dígitos (sin +),
+ * asumimos +1 (Punta Cana). Si tipea cualquier otra cosa válida, respeta.
+ * Si vino vacío o inválido devuelve null para que se guarde NULL.
+ */
+function cleanPhone(raw: unknown): string | null {
+  if (typeof raw !== "string") return null;
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+  return normalizePhoneSmart(trimmed) ?? null;
+}
+
+function cleanEmail(raw: unknown): string | null {
+  if (typeof raw !== "string") return null;
+  const v = raw.trim().toLowerCase();
+  if (!v) return null;
+  return EMAIL_RE.test(v) ? v : null;
+}
 
 const VALID_CHANNELS = new Set<VendorNotificationChannel>([
   "email",
@@ -281,8 +303,8 @@ export async function POST(req: NextRequest) {
     tenant_id: tenantId,
     name,
     contact_name: typeof body.contactName === "string" ? body.contactName : null,
-    phone: typeof body.phone === "string" ? body.phone : null,
-    email: typeof body.email === "string" ? body.email : null,
+    phone: cleanPhone(body.phone),
+    email: cleanEmail(body.email),
     rnc_cedula: typeof body.rncCedula === "string" ? body.rncCedula : null,
     category,
     display_name: typeof body.displayName === "string" ? body.displayName : null,
@@ -337,8 +359,8 @@ export async function PATCH(req: NextRequest) {
     patch.name = n;
   }
   if (body.contactName !== undefined) patch.contact_name = typeof body.contactName === "string" ? body.contactName : null;
-  if (body.phone !== undefined) patch.phone = typeof body.phone === "string" ? body.phone : null;
-  if (body.email !== undefined) patch.email = typeof body.email === "string" ? body.email : null;
+  if (body.phone !== undefined) patch.phone = cleanPhone(body.phone);
+  if (body.email !== undefined) patch.email = cleanEmail(body.email);
   if (body.rncCedula !== undefined) patch.rnc_cedula = typeof body.rncCedula === "string" ? body.rncCedula : null;
   if (body.category !== undefined) {
     if (!isValidCategory(body.category)) {

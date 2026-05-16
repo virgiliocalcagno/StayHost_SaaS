@@ -12,7 +12,7 @@ import {
   buildPseudoEmail,
   isPseudoEmail,
   looksLikeEmail,
-  normalizePhone,
+  normalizePhoneSmart,
 } from "@/lib/auth/identity";
 
 type TeamRow = {
@@ -146,7 +146,12 @@ function dtoToRow(body: InboundBody) {
   const patch: Record<string, unknown> = {};
   if (body.name !== undefined) patch.name = body.name;
   if (body.email !== undefined) patch.email = String(body.email).trim().toLowerCase();
-  if (body.phone !== undefined) patch.phone = body.phone || null;
+  // Auto-normaliza el teléfono. "8092585009" → "+18092585009" (asume +1).
+  // Si vino vacío o null, lo guardamos como null. Si vino con +, respeta.
+  if (body.phone !== undefined) {
+    const trimmed = body.phone ? String(body.phone).trim() : "";
+    patch.phone = trimmed ? (normalizePhoneSmart(trimmed) ?? trimmed) : null;
+  }
   if (body.avatar !== undefined) patch.avatar_url = body.avatar || null;
   if (body.role !== undefined) patch.role = body.role;
   if (body.status !== undefined) patch.status = body.status;
@@ -255,7 +260,7 @@ export async function POST(req: NextRequest) {
   }
 
   const hasEmail = body.email && looksLikeEmail(body.email);
-  const phoneNorm = body.phone ? normalizePhone(body.phone) : null;
+  const phoneNorm = body.phone ? normalizePhoneSmart(body.phone) : null;
   if (!hasEmail && !phoneNorm) {
     return NextResponse.json(
       { error: "Se requiere email o teléfono válido" },
