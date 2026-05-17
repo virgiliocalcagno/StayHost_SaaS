@@ -47,8 +47,11 @@ type OrderRow = {
   refund_note: string | null;
   // Sprint 7 — estado del vendor
   vendor_status: string | null;
+  vendor_confirmed_at: string | null;
   vendor_declined_at: string | null;
   vendor_decline_reason: string | null;
+  redeemed_at: string | null;
+  redemption_pin: string | null;
   // Sprint 8b — cancelación
   cancellation_requested_at: string | null;
   cancellation_requested_by: string | null;
@@ -205,8 +208,15 @@ export async function GET(req: NextRequest) {
       refundPaymentId: o.refund_payment_id,
       refundNote: o.refund_note,
       vendorStatus: o.vendor_status,
+      vendorConfirmedAt: o.vendor_confirmed_at,
       vendorDeclinedAt: o.vendor_declined_at,
       vendorDeclineReason: o.vendor_decline_reason,
+      redeemedAt: o.redeemed_at,
+      // PIN del huésped — el host lo necesita por si el huésped lo pierde
+      // y lo llama. El owner del tenant tiene autoridad sobre la orden,
+      // RLS ya filtra por tenant. Solo va al host (no se loggea a staff
+      // ni se expone a endpoints públicos).
+      redemptionPin: o.redemption_pin,
       cancellationRequestedAt: o.cancellation_requested_at,
       cancellationRequestedBy: o.cancellation_requested_by,
       cancellationReason: o.cancellation_reason,
