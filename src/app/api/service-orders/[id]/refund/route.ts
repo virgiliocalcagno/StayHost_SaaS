@@ -5,7 +5,7 @@
  *
  * Pre-condiciones:
  *   - Caller autenticado + tenant linkado + role en MANAGE_ROLES.
- *   - Orden status='paid' + payment_provider='paypal'.
+ *   - Orden status='paid' o 'completed' + payment_provider='paypal'.
  *   - tenant_payment_configs PayPal habilitado y con credenciales.
  *
  * Flujo:
@@ -113,10 +113,14 @@ export async function POST(
       { status: 422 },
     );
   }
-  if (order.status !== "paid") {
+  // Aceptamos 'paid' (entrega pendiente) y 'completed' (ya entregada).
+  // Una orden ya entregada también puede necesitar refund parcial si el
+  // huésped reporta un problema con el servicio post-entrega. PayPal
+  // permite refund hasta 180 días después del capture.
+  if (order.status !== "paid" && order.status !== "completed") {
     return NextResponse.json(
       {
-        error: `Solo se pueden refundear órdenes pagadas (estado actual: ${order.status}).`,
+        error: `Solo se pueden refundear órdenes pagadas o entregadas (estado actual: ${order.status}).`,
       },
       { status: 422 },
     );

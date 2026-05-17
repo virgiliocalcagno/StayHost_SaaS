@@ -411,7 +411,12 @@ export default function UpsellsPanel() {
     });
     if (res.ok) {
       setUpsells((prev) => prev.filter((u) => u.id !== id));
+      return;
     }
+    // Server puede bloquear el delete con 409 si hay órdenes activas. El
+    // mensaje viene en el body — mostrarlo para que el host sepa qué hacer.
+    const err = (await res.json().catch(() => ({}))) as { error?: string };
+    alert(err.error || "No se pudo eliminar el producto.");
   };
 
   // Llama a /api/upsells/translate (Gemini Flash-Lite) y rellena los

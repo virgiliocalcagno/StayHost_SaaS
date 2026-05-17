@@ -39,15 +39,12 @@ type OrderRow = {
   id: string;
   tenant_id: string;
   guest_name: string;
-  guest_email: string | null;
   guest_phone: string | null;
   status: string;
   vendor_status: string;
   total_amount: string | number;
   currency: string;
   paid_at: string | null;
-  redemption_token: string | null;
-  vendor_action_token: string | null;
   redemption_pin: string | null;
   redeemed_at: string | null;
   vendor_decline_reason: string | null;
@@ -120,12 +117,18 @@ export async function GET(
 
   // 4. Órdenes de esos items. Excluimos no-pagadas (vendor solo ve lo
   // pagado) y limitamos a últimos 90 días + pendientes futuras.
+  //
+  // Privacidad: NO seleccionamos guest_email — el vendor no debe ver el email
+  // del huésped (canal del owner/host, no del vendor). guest_phone sí: es
+  // operativamente necesario para coordinar servicios presenciales (shuttle
+  // aeropuerto, entrega física). vendor_action_token y redemption_token NO
+  // se exponen al cliente.
   let orders: OrderRow[] = [];
   if (orderIds.length > 0) {
     const { data: orderRows } = await supabaseAdmin
       .from("service_orders")
       .select(
-        "id, tenant_id, guest_name, guest_email, guest_phone, status, vendor_status, total_amount, currency, paid_at, redemption_token, vendor_action_token, redemption_pin, redeemed_at, vendor_decline_reason, vendor_confirmed_at, vendor_declined_at, cancellation_decided_at, created_at",
+        "id, tenant_id, guest_name, guest_phone, status, vendor_status, total_amount, currency, paid_at, redemption_pin, redeemed_at, vendor_decline_reason, vendor_confirmed_at, vendor_declined_at, cancellation_decided_at, created_at",
       )
       .in("id", orderIds)
       .in("status", ["paid", "completed"])
@@ -210,8 +213,7 @@ export async function GET(
       return {
         id: o.id,
         guestName: o.guest_name,
-        guestPhone: o.guest_phone, // necesario para el vendor para coordinar
-        guestEmail: o.guest_email,
+        guestPhone: o.guest_phone, // necesario para coordinar servicios presenciales
         status: o.status,
         vendorStatus: o.vendor_status,
         myTotal: myItems.reduce((s, i) => s + Number(i.line_total), 0),

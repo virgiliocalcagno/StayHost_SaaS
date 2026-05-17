@@ -127,9 +127,13 @@ export async function POST(req: NextRequest) {
 }
 
 export async function DELETE(req: NextRequest) {
-  let body: { endpoint?: string };
+  let body: { endpoint?: string; redemptionToken?: string; actionToken?: string };
   try {
-    body = (await req.json()) as { endpoint?: string };
+    body = (await req.json()) as {
+      endpoint?: string;
+      redemptionToken?: string;
+      actionToken?: string;
+    };
   } catch {
     return NextResponse.json({ error: "Invalid JSON" }, { status: 400 });
   }
@@ -137,10 +141,27 @@ export async function DELETE(req: NextRequest) {
   if (!endpoint || endpoint.length > 1000) {
     return NextResponse.json({ error: "endpoint inválido" }, { status: 400 });
   }
-  // Soft-delete: marcar expired pero mantener la row para audit.
+
+  // Mismos tokens que POST — sin esto, un atacante con el endpoint (que es
+  // un identificador conocido del push service) podría des-suscribir a
+  // cualquier vendor y suprimir sus notificaciones operativas.
+  const redemptionToken = String(body.redemptionToken ?? "").trim();
+  const actionToken = String(body.actionToken ?? "").trim();
+  const resolved = await resolveVendorFromOrder(redemptionToken, actionToken);
+  if (!resolved) {
+    return NextResponse.json(
+      { error: "Token inválido o vendor no resoluble" },
+      { status: 401 },
+    );
+  }
+
+  // Soft-delete: marcar expired pero mantener la row para audit. Scope:
+  // solo la suscripción del vendor resuelto — si el endpoint pertenece a
+  // otro vendor, la query no encuentra match y no se modifica nada.
   await supabaseAdmin
     .from("vendor_push_subscriptions")
     .update({ expired_at: new Date().toISOString() } as never)
-    .eq("endpoint", endpoint);
+    .eq("endpoint", endpoint)
+    .eq("vendor_id", resolved.vendorId);
   return NextResponse.json({ ok: true });
 }

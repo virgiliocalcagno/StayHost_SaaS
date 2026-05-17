@@ -20,12 +20,21 @@ import { executeRefundForOrder } from "@/lib/upsell/refund-service";
 import { sendEmail } from "@/lib/email/send";
 
 export async function GET(req: NextRequest) {
+  // CRON_SECRET es obligatorio — sin él cualquiera podría disparar
+  // aprobaciones masivas de cancelaciones y refunds reales con PayPal.
+  // Antes el código permitía el call si la env var no estaba seteada
+  // (fail-open), lo cual era un agujero en producción si Vercel quedaba
+  // sin la variable por accidente.
   const cronSecret = process.env.CRON_SECRET;
-  if (cronSecret) {
-    const auth = req.headers.get("authorization") ?? "";
-    if (auth !== `Bearer ${cronSecret}`) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
+  if (!cronSecret) {
+    return NextResponse.json(
+      { error: "CRON_SECRET no configurado en el entorno" },
+      { status: 500 },
+    );
+  }
+  const auth = req.headers.get("authorization") ?? "";
+  if (auth !== `Bearer ${cronSecret}`) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
   // 24h ago.

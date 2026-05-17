@@ -774,6 +774,42 @@ export async function DELETE(req: NextRequest) {
   const id = req.nextUrl.searchParams.get("id");
   if (!id) return NextResponse.json({ error: "id required" }, { status: 400 });
 
+  // Guard: bloquear DELETE si hay órdenes activas que referencian este
+  // upsell. service_order_items.upsell_id es ON DELETE SET NULL, así que
+  // sin este guard el upsell se borra y los items quedan huérfanos:
+  //   - el cron de recordatorios pierde acceso a cutoff_hours / service info
+  //   - el endpoint de cancelación del huésped defaultea cutoff a 0 y
+  //     permite auto-cancel inmediato sin reglas
+  //   - el panel del host muestra "Producto eliminado" en órdenes pagadas
+  // El host debe primero resolver las órdenes activas (entregar, declinar
+  // o reembolsar) antes de poder eliminar el upsell.
+  const { data: itemRows } = await supabase
+    .from("service_order_items")
+    .select("order_id")
+    .eq("upsell_id", id);
+  const orderIds = Array.from(
+    new Set((itemRows ?? []).map((r) => (r as { order_id: string }).order_id)),
+  );
+  if (orderIds.length > 0) {
+    const { data: activeOrders } = await supabase
+      .from("service_orders")
+      .select("id")
+      .in("id", orderIds)
+      .eq("status", "paid")
+      .in("vendor_status", ["awaiting", "confirmed"])
+      .limit(1);
+    if (activeOrders && activeOrders.length > 0) {
+      return NextResponse.json(
+        {
+          error:
+            "No se puede eliminar: hay pedidos pagados sin resolver. Primero marcalos como entregados o procesá el reembolso.",
+          code: "UPSELL_HAS_ACTIVE_ORDERS",
+        },
+        { status: 409 },
+      );
+    }
+  }
+
   // Leer las URLs de fotos antes de borrar el row, para limpiar Storage
   // después. Best-effort — si Storage falla, igual se elimina el upsell.
   const { data: photoRow } = await supabase

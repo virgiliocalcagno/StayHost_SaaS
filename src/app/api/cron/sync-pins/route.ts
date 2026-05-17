@@ -6,9 +6,9 @@
  * y sync_next_retry_at <= now (o null, recien creados), y los sincroniza
  * uno por uno.
  *
- * Auth: opcional via CRON_SECRET. Si no esta configurado, el endpoint es
- * publico — como el path es conocido solo para el cron, no es un riesgo
- * alto, pero recomendable setearlo.
+ * Auth: dual. Acepta Bearer CRON_SECRET (cron externo, procesa todos los
+ * tenants) o sesion de host autenticado via cookie (panel del dashboard,
+ * scope al tenant del caller). Sin uno de los dos, 401.
  *
  * Idempotente: si el sync ya se completo entre requests, updateSyncState
  * optimista evita dobles operaciones.
