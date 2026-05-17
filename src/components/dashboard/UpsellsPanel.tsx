@@ -219,6 +219,9 @@ export default function UpsellsPanel() {
   // Estado de "¡Copiado!" por URL. El host comparte dos enlaces distintos:
   // hub completo (/hub/{id}) y solo-ventas-extras (/hub/{id}/extras).
   const [copiedKey, setCopiedKey] = useState<"full" | "extras" | null>(null);
+  // ID del vendor cuya URL del portal está mostrando "¡Copiado!" — se
+  // reset a null después de 1.5s.
+  const [copiedVendorId, setCopiedVendorId] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -1043,6 +1046,63 @@ export default function UpsellsPanel() {
                           {linkedCount} producto{linkedCount === 1 ? "" : "s"}
                         </span>
                       </div>
+
+                      {/* Magic-link al portal del vendor — el host puede
+                          copiar para mandarlo por WhatsApp, o abrirlo en
+                          una pestaña incógnita para ver lo que ve el vendor. */}
+                      {v.portalToken && (
+                        <div className="mt-3 rounded-lg bg-amber-50 border border-amber-200 p-2 space-y-1.5">
+                          <p className="text-[10px] font-semibold text-amber-900 uppercase tracking-wider">
+                            🔗 Portal del vendor
+                          </p>
+                          <div className="flex gap-1">
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              className="flex-1 h-8 text-[11px] bg-white"
+                              onClick={async () => {
+                                const url = `${window.location.origin}/vendor/${v.portalToken}`;
+                                try {
+                                  await navigator.clipboard.writeText(url);
+                                  setCopiedVendorId(v.id);
+                                  setTimeout(
+                                    () =>
+                                      setCopiedVendorId((cur) =>
+                                        cur === v.id ? null : cur,
+                                      ),
+                                    1500,
+                                  );
+                                } catch {
+                                  prompt("Copiá el link del portal:", url);
+                                }
+                              }}
+                            >
+                              <Copy className="h-3 w-3 mr-1" />
+                              {copiedVendorId === v.id ? "¡Copiado!" : "Copiar link"}
+                            </Button>
+                            <Button
+                              asChild
+                              variant="outline"
+                              size="sm"
+                              className="h-8 text-[11px] bg-white shrink-0"
+                              title="Abrir portal del vendor en una pestaña nueva"
+                            >
+                              <a
+                                href={`/vendor/${v.portalToken}`}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                              >
+                                <ExternalLink className="h-3 w-3" />
+                              </a>
+                            </Button>
+                          </div>
+                          <p className="text-[10px] text-amber-800/80 leading-tight">
+                            {v.email
+                              ? "Le mandamos este link por email al crearlo. Podés re-enviárselo por WhatsApp si lo perdió."
+                              : "Sin email registrado — copiá el link y mandáselo por WhatsApp."}
+                          </p>
+                        </div>
+                      )}
 
                       <div className="flex gap-2 mt-3">
                         <Button variant="outline" size="sm" className="flex-1" onClick={() => handleEditVendor(v)}>
