@@ -75,15 +75,19 @@ type VendorRow = {
 
 export async function GET(req: NextRequest) {
   // Auth: Vercel cron envía Authorization header con CRON_SECRET.
+  // Obligatorio en cualquier entorno — sin él, cualquiera podría disparar
+  // envío de recordatorios y push masivos.
   const cronSecret = process.env.CRON_SECRET;
-  if (cronSecret) {
-    const auth = req.headers.get("authorization") ?? "";
-    if (auth !== `Bearer ${cronSecret}`) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
+  if (!cronSecret) {
+    return NextResponse.json(
+      { error: "CRON_SECRET no configurado en el entorno" },
+      { status: 500 },
+    );
   }
-  // Si CRON_SECRET no está seteado, permitimos el call (modo dev / setup
-  // inicial). Una vez configurada la env var, exige Bearer match.
+  const auth = req.headers.get("authorization") ?? "";
+  if (auth !== `Bearer ${cronSecret}`) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
 
   // Calcular "mañana" en UTC. Aceptamos cualquier item con service_date
   // que matchee la fecha de mañana (LOCAL del tenant idealmente, pero

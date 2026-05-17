@@ -27,7 +27,6 @@ import {
   XCircle,
   AlertCircle,
   Phone,
-  Mail,
   MessageCircle,
   Calendar,
   Clock,
@@ -66,7 +65,6 @@ type VendorOrder = {
   id: string;
   guestName: string;
   guestPhone: string | null;
-  guestEmail: string | null;
   status: string;
   vendorStatus: string;
   myTotal: number;
@@ -687,14 +685,6 @@ function OrderCard({
                 className="flex items-center gap-1 px-2 py-1 rounded-md bg-emerald-50 text-emerald-700 border border-emerald-200 hover:bg-emerald-100"
               >
                 <MessageCircle className="h-3 w-3" /> {order.guestPhone}
-              </a>
-            )}
-            {order.guestEmail && (
-              <a
-                href={`mailto:${order.guestEmail}`}
-                className="flex items-center gap-1 px-2 py-1 rounded-md bg-blue-50 text-blue-700 border border-blue-200 hover:bg-blue-100"
-              >
-                <Mail className="h-3 w-3" /> {order.guestEmail}
               </a>
             )}
           </div>

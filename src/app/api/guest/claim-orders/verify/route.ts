@@ -11,6 +11,19 @@
  *      robar órdenes ya asociadas a otro user.
  *
  * Body: { email: string, code: string }
+ *
+ * Scope cross-tenant — intencional: al reclamar, asociamos TODAS las
+ * service_orders con ese guest_email a la cuenta del huésped (sin filtrar
+ * por tenant_id). Esto es deliberado porque la cuenta `/cuenta` es del
+ * HUÉSPED, no de un host particular: si Virgilio compró shuttle en Hotel
+ * A y desayunos en Hotel B usando el mismo email, su cuenta unificada
+ * debe mostrar ambos pedidos (mismo modelo que Booking.com o Airbnb).
+ *
+ * Seguridad: el código se envió al email reclamado, así que solo quien
+ * controla esa bandeja puede reclamar. Eve no puede reclamar órdenes de
+ * Alice salvo que tenga acceso a la bandeja de Alice — y si la tiene, es
+ * Alice a efectos prácticos. El guard `guest_auth_user_id IS NULL`
+ * impide robar órdenes ya reclamadas por otro user.
  */
 import { NextRequest, NextResponse } from "next/server";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
