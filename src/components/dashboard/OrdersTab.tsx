@@ -93,8 +93,13 @@ interface Order {
   refundNote: string | null;
   // Sprint 7 — estado del lado del vendor + razón de decline si aplica.
   vendorStatus: string | null;
+  vendorConfirmedAt: string | null;
   vendorDeclinedAt: string | null;
   vendorDeclineReason: string | null;
+  redeemedAt: string | null;
+  // PIN del huésped — visible al host para poder dictarselo si el huésped
+  // lo perdió. No se loggea ni se expone a staff/endpoints públicos.
+  redemptionPin: string | null;
   // Sprint 8b — cancelación del huésped
   cancellationRequestedAt: string | null;
   cancellationRequestedBy: string | null;
@@ -111,6 +116,52 @@ const STATUS_META: Record<string, { label: string; cls: string; emoji: string }>
   cancelled: { label: "Cancelada", cls: "bg-rose-50 text-rose-700 border-rose-200", emoji: "✖️" },
   refunded: { label: "Reembolsada", cls: "bg-purple-50 text-purple-700 border-purple-200", emoji: "↩️" },
 };
+
+// Cuando el pago está OK (paid/completed), el badge "Pagada" / "Completada"
+// no le dice al host qué hizo el vendor. Mostramos el vendor_status real:
+//   awaiting   → esperando que el vendor confirme
+//   confirmed  → vendor ya confirmó (todavía no entregó)
+//   delivered  → vendor marcó entregada
+//   declined   → vendor rechazó, requiere reasignar/refund
+// Para pending/cancelled/refunded usamos el status original.
+function resolveOrderBadge(
+  status: string,
+  vendorStatus: string | null,
+): { label: string; cls: string; emoji: string } {
+  if (status === "paid" || status === "completed") {
+    switch (vendorStatus) {
+      case "awaiting":
+        return {
+          label: "Esperando vendor",
+          cls: "bg-amber-100 text-amber-800 border-amber-200",
+          emoji: "⏳",
+        };
+      case "confirmed":
+        return {
+          label: "Confirmada por vendor",
+          cls: "bg-blue-100 text-blue-800 border-blue-200",
+          emoji: "🔵",
+        };
+      case "delivered":
+        return {
+          label: "Entregada",
+          cls: "bg-emerald-100 text-emerald-800 border-emerald-200",
+          emoji: "✅",
+        };
+      case "declined":
+        return {
+          label: "Declinada por vendor",
+          cls: "bg-red-100 text-red-800 border-red-200",
+          emoji: "⚠️",
+        };
+      default:
+        // Sin vendor (host se encarga directo) o sin vendor_status seteado:
+        // mantenemos el status original.
+        return STATUS_META[status] ?? STATUS_META.pending;
+    }
+  }
+  return STATUS_META[status] ?? STATUS_META.pending;
+}
 
 const PRICING_SUFFIX: Record<string, string> = {
   fixed: "",
@@ -137,6 +188,39 @@ export default function OrdersTab() {
   const [filter, setFilter] = useState<FilterStatus>("all");
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [acting, setActing] = useState<string | null>(null);
+  // Estado del botón "Reenviar email" por orden. Se reset solo a los 3s.
+  const [resending, setResending] = useState<Record<string, "saving" | "ok" | { error: string }>>({});
+
+  const resendReceipt = useCallback(async (orderId: string) => {
+    setResending((prev) => ({ ...prev, [orderId]: "saving" }));
+    try {
+      const res = await fetch(`/api/service-orders/${orderId}/resend-receipt`, {
+        method: "POST",
+        credentials: "include",
+      });
+      if (!res.ok) {
+        const j = (await res.json().catch(() => ({}))) as { error?: string };
+        throw new Error(j.error ?? `HTTP ${res.status}`);
+      }
+      setResending((prev) => ({ ...prev, [orderId]: "ok" }));
+      setTimeout(() => {
+        setResending((prev) => {
+          const next = { ...prev };
+          delete next[orderId];
+          return next;
+        });
+      }, 3000);
+    } catch (e) {
+      setResending((prev) => ({ ...prev, [orderId]: { error: (e as Error).message } }));
+      setTimeout(() => {
+        setResending((prev) => {
+          const next = { ...prev };
+          delete next[orderId];
+          return next;
+        });
+      }, 5000);
+    }
+  }, []);
 
   // Sprint 7.8 — push notifications del host. Cuando vendor decline, llega
   // al instante; sin push solo email (lento).
@@ -463,7 +547,7 @@ export default function OrdersTab() {
       ) : (
         <div className="space-y-3">
           {filtered.map((o) => {
-            const meta = STATUS_META[o.status] ?? STATUS_META.pending;
+            const meta = resolveOrderBadge(o.status, o.vendorStatus);
             const isExpanded = expanded.has(o.id);
             const allowed = allowedTransitions(o.status);
             const isActing = acting === o.id;
@@ -510,9 +594,35 @@ export default function OrdersTab() {
                     <div className="px-4 pb-4 pt-2 border-t bg-muted/10 space-y-4">
                       {/* Contacto del huésped */}
                       <div className="space-y-1 text-sm">
-                        <p className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground">
-                          Contacto del huésped
-                        </p>
+                        <div className="flex items-center justify-between gap-2">
+                          <p className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground">
+                            Contacto del huésped
+                          </p>
+                          {/* Botón reenviar email — solo si hay guest_email y
+                              la orden está pagada/completada. Para órdenes
+                              pending/cancelled/refunded no tiene sentido. */}
+                          {o.guestEmail &&
+                            (o.status === "paid" || o.status === "completed") && (
+                              <Button
+                                type="button"
+                                variant="outline"
+                                size="sm"
+                                onClick={() => resendReceipt(o.id)}
+                                disabled={resending[o.id] === "saving"}
+                                className="h-7 text-[11px] gap-1"
+                                title="Reenviar email con PIN, items, link al hub"
+                              >
+                                {resending[o.id] === "saving" ? (
+                                  <Loader2 className="h-3 w-3 animate-spin" />
+                                ) : (
+                                  <Mail className="h-3 w-3" />
+                                )}
+                                {resending[o.id] === "ok"
+                                  ? "Enviado ✓"
+                                  : "Reenviar email"}
+                              </Button>
+                            )}
+                        </div>
                         <p>{o.guestName}</p>
                         {o.guestEmail && (
                           <a href={`mailto:${o.guestEmail}`} className="text-xs text-blue-600 hover:underline flex items-center gap-1">
@@ -524,7 +634,38 @@ export default function OrdersTab() {
                             <Phone className="h-3 w-3" /> {o.guestPhone} (WhatsApp)
                           </a>
                         )}
+                        {resending[o.id] &&
+                          typeof resending[o.id] === "object" &&
+                          "error" in (resending[o.id] as object) && (
+                            <p className="text-[11px] text-red-600 flex items-center gap-1 mt-1">
+                              <AlertCircle className="h-3 w-3" />{" "}
+                              {(resending[o.id] as { error: string }).error}
+                            </p>
+                          )}
                       </div>
+
+                      {/* PIN del huésped — visible solo si la orden está
+                          pagada y todavía no fue entregada. Sirve para que
+                          el host pueda dictárselo al huésped si se lo olvidó
+                          (lo lleva en el email original). Una vez entregada
+                          ya no tiene utilidad operativa. */}
+                      {o.redemptionPin &&
+                        (o.status === "paid" || o.status === "completed") &&
+                        o.vendorStatus !== "delivered" && (
+                          <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 flex items-center justify-between gap-3">
+                            <div className="min-w-0">
+                              <p className="text-[10px] font-bold uppercase tracking-wider text-amber-900">
+                                🔑 PIN del huésped
+                              </p>
+                              <p className="font-mono font-bold text-base text-amber-900 mt-0.5 tracking-widest">
+                                {o.redemptionPin}
+                              </p>
+                              <p className="text-[10px] text-amber-700 mt-1 leading-tight">
+                                Si el huésped lo perdió, dictáselo por WhatsApp. El vendor lo necesita para marcar entregada.
+                              </p>
+                            </div>
+                          </div>
+                        )}
 
                       {/* Items con vendor */}
                       <div className="space-y-2">
