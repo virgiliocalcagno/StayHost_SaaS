@@ -222,10 +222,34 @@ export default function GuestAccountPage() {
         )}
 
         {me.orders.length === 0 ? (
-          <div className="text-center py-16">
-            <ShoppingBag className="h-12 w-12 mx-auto text-slate-300 mb-3" />
-            <p className="font-bold text-lg">Sin pedidos todavía</p>
-            <p className="text-slate-500 text-sm">Cuando compres algo en un hub de StayHost, lo vas a ver acá.</p>
+          <div className="text-center py-12 space-y-4">
+            <ShoppingBag className="h-12 w-12 mx-auto text-slate-300" />
+            <div className="space-y-1">
+              <p className="font-bold text-lg">Sin pedidos todavía</p>
+              <p className="text-slate-500 text-sm max-w-md mx-auto">
+                Cuando compres algo en un hub de StayHost, lo vas a ver acá.
+              </p>
+            </div>
+
+            {/* Si el huésped visitó algún hub recientemente, le mostramos
+                botón directo para volver. Persistimos en localStorage en
+                las páginas /hub/[hostId] y /hub/[hostId]/extras. */}
+            <RecentHubsLinks lang="es" />
+
+            {/* Tip cuando ningún hub visitado: lo más común es que el
+                pedido lo hicieron con OTRO email (caso typo o cuenta
+                distinta). Le ofrecemos reclamar por email + OTP. */}
+            <div className="max-w-md mx-auto mt-4 p-4 rounded-xl bg-blue-50 border border-blue-200 text-left text-xs space-y-2">
+              <p className="font-semibold text-blue-900 flex items-center gap-1">
+                <AlertCircle className="h-3.5 w-3.5" /> ¿Tu pedido no aparece?
+              </p>
+              <p className="text-blue-800">
+                Asegurate de loguearte con el <strong>mismo email</strong> que
+                usaste al comprar. Si compraste con otro email, podés reclamar
+                tus pedidos:
+              </p>
+              <ClaimOrdersForm onClaimed={() => load()} />
+            </div>
           </div>
         ) : (
           Array.from(byHost.entries()).map(([tenantId, group]) => (
@@ -372,5 +396,198 @@ export default function GuestAccountPage() {
         )}
       </div>
     </main>
+  );
+}
+
+// ─── Hubs visitados recientemente ───────────────────────────────────────────
+// El hub público guarda en localStorage los últimos 5 hosts visitados (key
+// "stayhost.recent_hubs" = JSON con [{tenantId, name, visitedAt}]). Acá los
+// listamos como CTAs para volver al lugar donde el huésped probablemente
+// quiere comprar.
+function RecentHubsLinks({ lang }: { lang: "es" | "en" }) {
+  const [recent, setRecent] = useState<
+    Array<{ tenantId: string; name: string; visitedAt: number }>
+  >([]);
+
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem("stayhost.recent_hubs");
+      if (!raw) return;
+      const parsed = JSON.parse(raw) as Array<{
+        tenantId: string;
+        name: string;
+        visitedAt: number;
+      }>;
+      // Validamos shape mínimo + ordenamos por visita más reciente.
+      const valid = parsed
+        .filter((h) => h?.tenantId && h?.name)
+        .sort((a, b) => b.visitedAt - a.visitedAt)
+        .slice(0, 5);
+      setRecent(valid);
+    } catch {
+      /* localStorage off (private mode) o JSON corrupto — ignorar */
+    }
+  }, []);
+
+  if (recent.length === 0) return null;
+
+  return (
+    <div className="max-w-md mx-auto space-y-2">
+      <p className="text-[11px] text-slate-500 uppercase tracking-wider font-semibold">
+        {lang === "es" ? "Hubs que visitaste" : "Hubs you've visited"}
+      </p>
+      <div className="grid gap-2">
+        {recent.map((h) => (
+          <Link
+            key={h.tenantId}
+            href={`/hub/${h.tenantId}`}
+            className="flex items-center justify-between gap-2 p-3 rounded-lg border border-slate-200 hover:bg-slate-50 transition text-left"
+          >
+            <span className="font-semibold text-sm truncate">{h.name}</span>
+            <ExternalLink className="h-4 w-4 text-slate-400 shrink-0" />
+          </Link>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ─── Reclamar pedidos por email ─────────────────────────────────────────────
+// El huésped que compró con email distinto al que usa para loguearse
+// puede asociarse pedidos viejos. Disparamos el flow:
+//   1. POST /api/guest/claim-orders { email } → manda OTP al email viejo
+//   2. POST /api/guest/claim-orders/verify { email, code } → asocia
+function ClaimOrdersForm({ onClaimed }: { onClaimed: () => void }) {
+  const [step, setStep] = useState<"email" | "code">("email");
+  const [email, setEmail] = useState("");
+  const [code, setCode] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [okMsg, setOkMsg] = useState<string | null>(null);
+
+  const requestCode = async () => {
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) {
+      setErr("Email inválido");
+      return;
+    }
+    setBusy(true);
+    setErr(null);
+    try {
+      const r = await fetch("/api/guest/claim-orders", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: email.trim() }),
+      });
+      const j = (await r.json().catch(() => ({}))) as { error?: string };
+      if (!r.ok) {
+        setErr(j.error ?? "No se pudo enviar el código");
+        return;
+      }
+      setStep("code");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const verifyCode = async () => {
+    if (code.trim().length < 4) {
+      setErr("Código incompleto");
+      return;
+    }
+    setBusy(true);
+    setErr(null);
+    try {
+      const r = await fetch("/api/guest/claim-orders/verify", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: email.trim(), code: code.trim() }),
+      });
+      const j = (await r.json().catch(() => ({}))) as { error?: string; claimed?: number };
+      if (!r.ok) {
+        setErr(j.error ?? "Código inválido");
+        return;
+      }
+      setOkMsg(`Reclamaste ${j.claimed ?? 0} pedido${j.claimed === 1 ? "" : "s"}.`);
+      // Recargar el listado del padre.
+      setTimeout(() => onClaimed(), 800);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (okMsg) {
+    return (
+      <p className="text-sm text-emerald-700 font-semibold flex items-center gap-1">
+        <CheckCircle2 className="h-4 w-4" /> {okMsg}
+      </p>
+    );
+  }
+
+  return (
+    <div className="space-y-2">
+      {step === "email" ? (
+        <>
+          <div className="flex gap-2">
+            <input
+              type="email"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              placeholder="email-viejo@gmail.com"
+              className="flex-1 px-2 py-1.5 text-xs rounded border border-slate-300 bg-white"
+              disabled={busy}
+            />
+            <Button
+              size="sm"
+              className="h-8 text-xs"
+              onClick={requestCode}
+              disabled={busy || !email}
+            >
+              {busy ? <Loader2 className="h-3 w-3 animate-spin" /> : "Enviar código"}
+            </Button>
+          </div>
+        </>
+      ) : (
+        <>
+          <p className="text-[11px] text-blue-700">
+            Te mandamos un código de 6 dígitos a <strong>{email}</strong>. Revisalo y pegalo acá.
+          </p>
+          <div className="flex gap-2">
+            <input
+              type="text"
+              value={code}
+              onChange={(e) => setCode(e.target.value.toUpperCase())}
+              placeholder="A1B2C3"
+              maxLength={6}
+              className="flex-1 px-2 py-1.5 text-xs rounded border border-slate-300 bg-white font-mono uppercase tracking-widest text-center"
+              disabled={busy}
+            />
+            <Button
+              size="sm"
+              className="h-8 text-xs"
+              onClick={verifyCode}
+              disabled={busy || code.length < 4}
+            >
+              {busy ? <Loader2 className="h-3 w-3 animate-spin" /> : "Reclamar"}
+            </Button>
+          </div>
+          <button
+            type="button"
+            onClick={() => {
+              setStep("email");
+              setCode("");
+              setErr(null);
+            }}
+            className="text-[10px] text-blue-700 underline"
+          >
+            Usar otro email
+          </button>
+        </>
+      )}
+      {err && (
+        <p className="text-[11px] text-rose-600 flex items-center gap-1">
+          <AlertCircle className="h-3 w-3" /> {err}
+        </p>
+      )}
+    </div>
   );
 }

@@ -46,6 +46,7 @@ import {
 } from "@/lib/upsell/categoryVisuals";
 import { getSupabaseBrowserClient } from "@/lib/supabase/client";
 import GuestAuthModal from "@/components/auth/GuestAuthModal";
+import { useRecordHubVisit } from "@/lib/hub/use-record-visit";
 
 type PricingModel = "fixed" | "per_person" | "per_unit" | "per_kg" | "per_night";
 
@@ -109,6 +110,10 @@ export default function HubExtrasPage({ params }: { params: Promise<{ hostId: st
   const [experiences, setExperiences] = useState<StoredUpsell[]>([]);
   const [loading, setLoading] = useState(true);
   const [notFound, setNotFound] = useState(false);
+
+  // Sprint 8e — registrar visita en localStorage para que /cuenta pueda
+  // mostrar links de vuelta a hubs visitados.
+  useRecordHubVisit(hostId, hubName || null);
 
   // Sprint 8a — estado del huésped logueado.
   const [guestEmail, setGuestEmail] = useState<string | null>(null);

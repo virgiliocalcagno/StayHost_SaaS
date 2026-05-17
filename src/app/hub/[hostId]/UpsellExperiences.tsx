@@ -11,6 +11,7 @@
 // estaba armando si recarga la página o cierra el modal por error.
 
 import { useState, useEffect, useMemo, useCallback } from "react";
+import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
@@ -33,6 +34,17 @@ import {
 } from "lucide-react";
 import { formatMoney } from "@/lib/money/format";
 import { CategoryHero } from "@/lib/upsell/categoryVisuals";
+import { getSupabaseBrowserClient } from "@/lib/supabase/client";
+import GuestAuthModal from "@/components/auth/GuestAuthModal";
+
+// Datos mínimos del huésped logueado para precargar checkout y mostrar
+// "Hola {nombre}" en el header. Si null = no logueado.
+type GuestUser = {
+  id: string;
+  email: string | null;
+  name: string | null;
+  avatar: string | null;
+};
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 type PricingModel = "fixed" | "per_person" | "per_unit" | "per_kg" | "per_night";
@@ -181,11 +193,149 @@ export default function UpsellExperiences({
   const [creatingOrder, setCreatingOrder] = useState(false);
   const [orderError, setOrderError] = useState<string | null>(null);
 
+  // ── Auth del huésped ──
+  // Detectamos si hay sesión activa para gatear "Agregar al carrito" y
+  // "Pagar". Modal de auth se abre cuando el huésped intenta una acción
+  // que lo requiere sin estar logueado. Pendiente del intent: una vez
+  // que vuelve logueado, retomamos la acción (agregar item o abrir pago).
+  const [currentUser, setCurrentUser] = useState<GuestUser | null>(null);
+  const [authModalOpen, setAuthModalOpen] = useState(false);
+  // Acción pendiente que se ejecuta tras login exitoso. Soporta:
+  //   - { kind: "add", item: CartItem }   → agregar item al carrito y abrir
+  //   - { kind: "checkout" }              → abrir carrito y disparar pago
+  //
+  // Se persiste en sessionStorage para sobrevivir al redirect de Google
+  // OAuth (que recarga la página completa). Sin esto, el huésped vuelve
+  // logueado pero el item del carrito se perdería del state in-memory.
+  const [pendingAction, _setPendingAction] = useState<
+    { kind: "add"; item: CartItem } | { kind: "checkout" } | null
+  >(null);
+  const setPendingAction = useCallback(
+    (action: { kind: "add"; item: CartItem } | { kind: "checkout" } | null) => {
+      _setPendingAction(action);
+      try {
+        if (action) {
+          sessionStorage.setItem(
+            `stayhost.hub.pending.${hostId}`,
+            JSON.stringify(action),
+          );
+        } else {
+          sessionStorage.removeItem(`stayhost.hub.pending.${hostId}`);
+        }
+      } catch {
+        /* private mode storage off — ignore */
+      }
+    },
+    [hostId],
+  );
+
+  // Restaurar pendingAction desde sessionStorage al hidratar (sobrevive
+  // al redirect OAuth de Google a tab nueva).
+  useEffect(() => {
+    try {
+      const raw = sessionStorage.getItem(`stayhost.hub.pending.${hostId}`);
+      if (!raw) return;
+      const parsed = JSON.parse(raw) as
+        | { kind: "add"; item: CartItem }
+        | { kind: "checkout" };
+      _setPendingAction(parsed);
+    } catch {
+      /* corrupto o storage off — ignore */
+    }
+  }, [hostId]);
+
   // Hidratar carrito tras el primer render (sessionStorage es client-only).
   useEffect(() => {
     setCart(loadCart(hostId));
     setHydrated(true);
   }, [hostId]);
+
+  // Suscribirnos al estado de sesión Supabase. onAuthStateChange se dispara
+  // al login/logout, refresh de token, y al cargar la página si ya había
+  // sesión. Esto resuelve el patrón "logueate y volvé al hub": el huésped
+  // hace login, vuelve a /hub/X, y este efecto carga el user.
+  useEffect(() => {
+    const supabase = getSupabaseBrowserClient();
+    let mounted = true;
+    void supabase.auth.getUser().then(({ data }) => {
+      if (!mounted) return;
+      if (data.user) {
+        setCurrentUser({
+          id: data.user.id,
+          email: data.user.email ?? null,
+          name:
+            (data.user.user_metadata?.full_name as string) ??
+            (data.user.user_metadata?.name as string) ??
+            null,
+          avatar:
+            (data.user.user_metadata?.avatar_url as string) ??
+            (data.user.user_metadata?.picture as string) ??
+            null,
+        });
+      }
+    });
+    const { data: sub } = supabase.auth.onAuthStateChange((_event, session) => {
+      if (!mounted) return;
+      if (session?.user) {
+        setCurrentUser({
+          id: session.user.id,
+          email: session.user.email ?? null,
+          name:
+            (session.user.user_metadata?.full_name as string) ??
+            (session.user.user_metadata?.name as string) ??
+            null,
+          avatar:
+            (session.user.user_metadata?.avatar_url as string) ??
+            (session.user.user_metadata?.picture as string) ??
+            null,
+        });
+      } else {
+        setCurrentUser(null);
+      }
+    });
+    return () => {
+      mounted = false;
+      sub.subscription.unsubscribe();
+    };
+  }, []);
+
+  // Pre-cargar guestName / guestEmail con datos del user cuando se loguea
+  // por primera vez. Solo si los campos están vacíos para no pisar lo
+  // que el huésped haya tipeado a mano.
+  useEffect(() => {
+    if (!currentUser) return;
+    if (!guestName.trim() && currentUser.name) setGuestName(currentUser.name);
+    if (!guestEmail.trim() && currentUser.email) setGuestEmail(currentUser.email);
+    // No queremos refrescar cada render — solo cuando el user cambia.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentUser?.id]);
+
+  // Retomar la acción pendiente cuando el huésped vuelve logueado del
+  // modal de auth. Resuelve UX típica "estaba intentando comprar → me
+  // pidieron login → ahora qué". Sin esto, el huésped tendría que
+  // hacer click de nuevo en "Agregar al carrito" o "Pagar".
+  useEffect(() => {
+    if (!currentUser || !pendingAction) return;
+    if (pendingAction.kind === "add") {
+      addToCart(pendingAction.item);
+      toast.success(
+        lang === "es"
+          ? `${pendingAction.item.name} agregado al carrito`
+          : `${pendingAction.item.name} added to cart`,
+        {
+          action: {
+            label: lang === "es" ? "Ver carrito" : "View cart",
+            onClick: () => setCartOpen(true),
+          },
+        },
+      );
+    } else if (pendingAction.kind === "checkout") {
+      setCartOpen(true);
+    }
+    setPendingAction(null);
+    // addToCart es estable (useCallback con []), no lo agregamos a deps.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentUser, pendingAction, lang]);
 
   // Persistir cambios.
   useEffect(() => {
@@ -290,6 +440,13 @@ export default function UpsellExperiences({
   // re-valida igual, pero corregimos UX antes de pegar al endpoint).
   const handlePayOnline = useCallback(async () => {
     if (creatingOrder || cart.length === 0) return;
+    // Login obligatorio antes de pagar. Si no hay sesión, abrimos modal
+    // y guardamos intent. Tras login, el useEffect retoma desde acá.
+    if (!currentUser) {
+      setPendingAction({ kind: "checkout" });
+      setAuthModalOpen(true);
+      return;
+    }
     if (!guestName.trim()) {
       setOrderError(
         lang === "es"
@@ -340,7 +497,7 @@ export default function UpsellExperiences({
     } finally {
       setCreatingOrder(false);
     }
-  }, [cart, creatingOrder, guestName, guestEmail, guestPhone, hostId, lang]);
+  }, [cart, creatingOrder, guestName, guestEmail, guestPhone, hostId, lang, currentUser]);
 
   // ── WhatsApp template ──
   const whatsappMessage = useMemo(() => {
@@ -509,12 +666,43 @@ export default function UpsellExperiences({
           lang={lang}
           onClose={() => setDetailOpen(null)}
           onAdd={(item) => {
+            // Login obligatorio para agregar al carrito (Sprint 8e). Si
+            // no hay sesión, abrimos modal y guardamos la intención;
+            // tras login exitoso, el useEffect [currentUser] retoma el
+            // pendingAction y agrega el item automáticamente.
+            if (!currentUser) {
+              setDetailOpen(null);
+              setPendingAction({ kind: "add", item });
+              setAuthModalOpen(true);
+              return;
+            }
             addToCart(item);
             setDetailOpen(null);
-            setCartOpen(true);
+            toast.success(
+              lang === "es"
+                ? `${item.name} agregado al carrito`
+                : `${item.name} added to cart`,
+              {
+                action: {
+                  label: lang === "es" ? "Ver carrito" : "View cart",
+                  onClick: () => setCartOpen(true),
+                },
+              },
+            );
           }}
         />
       )}
+
+      {/* Auth modal — gating de "Agregar al carrito" y "Pagar".
+          redirectTo de vuelta a la misma URL para retomar el flujo. */}
+      <GuestAuthModal
+        open={authModalOpen}
+        onOpenChange={(open) => {
+          setAuthModalOpen(open);
+          if (!open) setPendingAction(null);
+        }}
+        redirectTo={typeof window !== "undefined" ? window.location.href : undefined}
+      />
 
       {/* Cart drawer */}
       <Sheet open={cartOpen} onOpenChange={setCartOpen}>
@@ -533,9 +721,16 @@ export default function UpsellExperiences({
           {cart.length === 0 ? (
             <div className="py-12 text-center text-slate-400">
               <ShoppingCart className="h-10 w-10 mx-auto mb-3 opacity-30" />
-              <p className="text-sm">
+              <p className="text-sm mb-4">
                 {lang === "es" ? "Aún no agregaste nada." : "Nothing in your cart yet."}
               </p>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setCartOpen(false)}
+              >
+                {lang === "es" ? "← Ver catálogo" : "← Browse catalog"}
+              </Button>
             </div>
           ) : (
             <div className="space-y-3 mt-6">
@@ -669,6 +864,19 @@ export default function UpsellExperiences({
                   </div>
                 </div>
               </div>
+            </div>
+          )}
+
+          {cart.length > 0 && (
+            <div className="mt-4">
+              <Button
+                variant="ghost"
+                size="sm"
+                className="w-full text-slate-600 hover:text-slate-900"
+                onClick={() => setCartOpen(false)}
+              >
+                ← {lang === "es" ? "Seguir comprando" : "Continue shopping"}
+              </Button>
             </div>
           )}
 

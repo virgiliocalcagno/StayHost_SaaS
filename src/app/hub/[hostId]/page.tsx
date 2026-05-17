@@ -22,6 +22,7 @@ import {
 import { useLanguage } from "../LanguageContext";
 import { formatMoney } from "@/lib/money/format";
 import UpsellExperiences from "./UpsellExperiences";
+import { useRecordHubVisit } from "@/lib/hub/use-record-visit";
 
 // ─── Types (matching stayhost_properties & stayhost_upsells shapes) ─────────
 interface StoredProperty {
@@ -87,6 +88,14 @@ export default function HostHubPage({ params }: { params: Promise<{ hostId: stri
   const [properties, setProperties] = useState<StoredProperty[]>([]);
   const [experiences, setExperiences] = useState<StoredUpsell[]>([]);
   const [hubName, setHubName] = useState("Reservas Directas");
+
+  // Sprint 8e — registrar visita para que /cuenta muestre CTAs a hubs
+  // visitados cuando el huésped no tiene pedidos. Solo guarda cuando el
+  // nombre ya está poblado y no es el placeholder genérico.
+  useRecordHubVisit(
+    resolvedParams.hostId,
+    hubName && hubName !== "Reservas Directas" ? hubName : null,
+  );
   const [welcomeMessage, setWelcomeMessage] = useState<string | null>(null);
   const [hubLogo, setHubLogo] = useState<string | null>(null);
   const [contactEmail, setContactEmail] = useState<string | null>(null);

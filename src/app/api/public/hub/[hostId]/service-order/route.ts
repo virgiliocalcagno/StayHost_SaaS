@@ -114,6 +114,21 @@ export async function POST(
     return NextResponse.json({ error: "hostId inválido" }, { status: 400 });
   }
 
+  // Sprint 8e — login obligatorio para crear orden. El UI del hub gatea
+  // antes de mostrar el botón "Pagar", pero eso es solo UX — un atacante
+  // con curl podría bypasear. Acá lo hacemos obligatorio en el server.
+  // Si no hay sesión, devolvemos 401. El UI ya redirige al modal de auth.
+  const supabaseSession = await createSupabaseServerClient();
+  const {
+    data: { user: sessionUser },
+  } = await supabaseSession.auth.getUser();
+  if (!sessionUser) {
+    return NextResponse.json(
+      { error: "Login requerido para crear la orden" },
+      { status: 401 },
+    );
+  }
+
   let body: OrderBody;
   try {
     body = (await req.json()) as OrderBody;
@@ -463,20 +478,11 @@ export async function POST(
   const redemptionToken = generateRedemptionToken();
   const redemptionPin = generateRedemptionPin();
 
-  // Sprint 8a — si el huésped está logueado, vinculamos la orden a su
-  // auth_user_id al instante. La leemos vía sesión Supabase (cookie).
-  // Si no hay sesión, queda NULL y se vincula retroactivo al primer login.
-  let guestAuthUserId: string | null = null;
-  try {
-    const supabase = await createSupabaseServerClient();
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
-    if (user?.id) guestAuthUserId = user.id;
-  } catch {
-    // Si falla la auth (cookies raras, etc) seguimos sin vincular — no
-    // bloquea la compra. El linkeo retroactivo al login lo arregla.
-  }
+  // Sprint 8e — la sesión ya está validada arriba (login obligatorio).
+  // Vinculamos guest_auth_user_id desde el inicio. El bloque viejo de
+  // Sprint 8a (try/catch + fallback NULL) ya no aplica porque sin sesión
+  // ni siquiera llegamos acá (401 al inicio).
+  const guestAuthUserId: string = sessionUser.id;
 
   const { data: orderInsert, error: orderErr } = await supabaseAdmin
     .from("service_orders")
